@@ -17,6 +17,10 @@ internal static class NavMeshPipeline
     /// </summary>
     const int InteriorEdgeCells = 24;
     /// <summary>
+    /// Interior cells are twice as fine as zone cells so furniture does not inflate over narrow walkable gaps.
+    /// </summary>
+    const int InteriorCellDivisor = 2;
+    /// <summary>
     /// The zone's mesh with its interiors (pruned polygons still present; use <see cref = "ZoneNavMesh.WithoutPruned"/> for what is kept).
     /// </summary>
     public static ZoneNavMesh BuildZone(ZoneGeometryGatherer gatherer, ZoneGeometry geometry, NavBuildSettings settings, out NavBuildTimes times, bool interiors = true, Action<string>? log = null) => BuildZone(gatherer, geometry, settings, out times, out _, interiors, log);
@@ -88,17 +92,25 @@ internal static class NavMeshPipeline
     }
 
     /// <summary>
-    /// The settings an interior is built with: one tile over its box, monotone regions, edges of at most <see cref = "InteriorEdgeCells"/>.
+    /// The settings an interior is built with: one tile over its box at <see cref="InteriorCellDivisor"/> times finer cells, monotone regions,
+    /// edges of at most <see cref="InteriorEdgeCells"/> zone cells. Region areas, edge length and door inflation keep their size in units; the
+    /// simplification error stays in cells (finer).
     /// </summary>
     public static NavBuildSettings InteriorSettings(NavBuildSettings settings, ZoneGeometry interior)
     {
-        int side = (int)MathF.Round((interior.ZoneMax.X - interior.ZoneMin.X) / settings.CellSize);
+        const int d = InteriorCellDivisor;
+        float cell = settings.CellSize / d;
+        int side = (int)MathF.Round((interior.ZoneMax.X - interior.ZoneMin.X) / cell);
         return settings with
         {
             Threads = 1,
+            CellSize = cell,
             TileCells = side,
             Watershed = false,
-            MaxEdgeLength = InteriorEdgeCells
+            MaxEdgeLength = InteriorEdgeCells * d,
+            MinRegionArea = settings.MinRegionArea * d * d,
+            MergeRegionArea = settings.MergeRegionArea * d * d,
+            DoorInflateCells = settings.DoorInflateCells * d,
         };
     }
 

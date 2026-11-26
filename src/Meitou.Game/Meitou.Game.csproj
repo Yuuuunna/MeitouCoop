@@ -60,6 +60,7 @@
     <ProjectReference Include="../Meitou.Runtime/Meitou.Runtime.csproj" />
     <Compile Remove="Mods/*.cs;Ui/UiHost.cs;Ui/UiNode.cs;Ui/MarkerImagePaths.cs;Ui/ContextVerbNames.cs;Ui/CharacterPanelHooks.cs;Ui/ItemTooltipLines.cs;Ui/MyGuiEvent.cs;Host/Input/Keys.cs;Host/Input/InputState.cs;Host/Input/InputBindings.cs;Host/Input/ModKeyActions.cs" />
     <Compile Include="Mods/GameMods.cs;Mods/PlayerUiExtension.cs" />
+    <Compile Remove="Ui/UiHost.Pointer.cs;Ui/UiLineStyle.cs;Ui/UiTextBuffer.cs;Ui/UiMapView.cs;Ui/BuildingPanelRows.cs;Ui/ScreenControls.cs;Ui/ScreenOverrides.cs;Ui/DialogueReplies.cs;Ui/MenuTargets.cs;Ui/MapInputs.cs;Ui/KeyInputs.cs;Ui/ModLayouts.cs" />
     <ProjectReference Include="..\Meitou.Core\Meitou.Core.csproj" />
     <ProjectReference Include="..\Meitou.Data\Meitou.Data.csproj" />
     <ProjectReference Include="..\Meitou.Simulation\Meitou.Simulation.csproj" />

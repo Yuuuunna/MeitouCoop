@@ -1,4 +1,6 @@
 using Meitou.Game.Host;
+using Meitou.Content;
+using Meitou.Modding;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Meitou.Data;
@@ -33,6 +35,39 @@ sealed class CharacterAudio(GameHost host)
     /// The code mods' own sound objects (made on the first posted mod sound, again for another audio).
     /// </summary>
     ModSoundPosts? _modPosts;
+    /// <summary>
+    /// Server playback identities mapped to this audio device's handles.
+    /// </summary>
+    readonly Dictionary<ulong, uint> _sharedModSounds = [];
+    /// <summary>
+    /// Active mod sounds retired at completion or a view boundary.
+    /// </summary>
+    readonly Dictionary<uint, SoundEvent> _playingModSounds = [];
+    /// <summary>
+    /// Mixer completions fenced against a replaced device or world.
+    /// </summary>
+    readonly System.Collections.Concurrent.ConcurrentQueue<(int Generation, uint Playing)> _finishedModSounds = new();
+    /// <summary>
+    /// Current visible character positions, gathered once per audio frame while shared sounds are active.
+    /// </summary>
+    readonly Dictionary<CharacterId, Vector3> _modSoundPositions = [];
+    /// <summary>
+    /// Shared playbacks retiring after a visibility or range change.
+    /// </summary>
+    readonly List<uint> _retiredModSounds = [];
+    /// <summary>
+    /// Generation of callbacks accepted from the mixer.
+    /// </summary>
+    int _modSoundGeneration;
+    /// <summary>
+    /// Current recipient presentation generation.
+    /// </summary>
+    ulong _soundsEpoch;
+    /// <summary>
+    /// Unique enabled code-mod folders resolved once per world for portable loose audio.
+    /// </summary>
+    Dictionary<string, string>? _modSoundFolders;
+
 
     /// <summary>
     /// Remote UI mods' client-only sounds, fenced by the presentation world active when they were posted.
@@ -178,8 +213,14 @@ sealed class CharacterAudio(GameHost host)
     /// </summary>
     internal void Update(AudioSystem sound, Vector3 eye)
     {
+        if (host.Session is not { HasWorldView: true })
+        {
+            Reset();
+            return;
+        }
         if (!ReferenceEquals(_characterAudioFor, sound))
         {
+            ClearModSounds();
             _characterAudioFor = sound;
             _modPosts = null;
             Sounds = null;
@@ -191,7 +232,9 @@ sealed class CharacterAudio(GameHost host)
 
         var sounds = Sounds!;
         IPlayerSession source = host.Session;
-        if (!ReferenceEquals(_soundsFor, source.WorldIdentity)) FollowWorld(sounds, source);
+        ulong epoch = source is RemotePlayerSession remote ? remote.PresentationEpoch : 0;
+        if (!ReferenceEquals(_soundsFor, source.WorldIdentity) || _soundsEpoch != epoch) FollowWorld(sounds, source);
+        RetireModSounds(sound.Player, eye);
 
         sounds.BeginFrame(eye);
         _soundFrame++;
@@ -210,6 +253,7 @@ sealed class CharacterAudio(GameHost host)
     /// </summary>
     internal void Reset()
     {
+        ClearModSounds();
         Sounds?.Clear();
         _fedBodies?.Clear();
         _soundSource?.EnableSounds(false);
@@ -256,6 +300,10 @@ sealed class CharacterAudio(GameHost host)
     /// </summary>
     void FollowWorld(CharacterSounds sounds, IPlayerSession source)
     {
+        ClearModSounds();
+        _localModSounds.Clear();
+        _modSoundFolders = null;
+        _soundsEpoch = source is RemotePlayerSession remote ? remote.PresentationEpoch : 0;
         sounds.Clear();
         _fedBodies?.Clear();
         _workLayers.Clear();
@@ -317,11 +365,11 @@ sealed class CharacterAudio(GameHost host)
     static ulong SoundKey(CharacterId id) => (ulong)(uint)id.Slot << 32 | (uint)id.Generation;
 
     /// <summary>
-    /// The loop a character's task (and its unlocking or shackling) plays; none for the rest.
+    /// The loop a character's task (and its unlocking or shackling) plays; none for the rest. Building plays only at the site.
     /// </summary>
     static CharacterLoop LoopOf(CharacterSnapshot c)
     {
-        if (c.Task == CharacterTask.Build) return CharacterLoop.Build;
+        if (c.Task == CharacterTask.Build && c.Engineering) return CharacterLoop.Build;
         if (c.Task == CharacterTask.Treat) return CharacterLoop.Medic;
         if ((c.PickingLock || c.WorkingShackles) && c.Task != CharacterTask.GoTo) return CharacterLoop.Unlock;
 
@@ -590,20 +638,145 @@ sealed class CharacterAudio(GameHost host)
     /// <summary>
     /// A code mod's event (docs/modding.md "Sounds"), never setting a switch on an object of the game's: on the mods' interface object; on a
     /// character, its own object when there is no switch (the sound follows it), else a mods' pooled object at its place; or a mods' pooled object
-    /// at the point. A character too far to have an object hears nothing.
+    /// at the point. A character too far to have an object hears nothing. Its sounds are tagged with a playback the mod's handle stops
+    /// (<see cref="SoundHandle.Stop"/>); one the mod stopped before this frame plays nothing.
     /// </summary>
     void PlayModSound(CharacterSounds sounds, in SoundEvent e, PostedSound posted, ulong subject, Vector3 eye)
     {
-        var (name, group, value) = (posted.Event, posted.SwitchGroup, posted.SwitchValue);
         if (_characterAudioFor is not { } audio) return;
+        if (posted.Stop)
+        {
+            if (_sharedModSounds.TryGetValue(posted.PlaybackId, out uint stopped))
+            {
+                audio.Player.StopPlaying(stopped, posted.FadeSeconds);
+                // The fading playback remains tracked until the mixer ends it, so a world/epoch reset can still stop its tail.
+            }
+            return;
+        }
+        if (posted.PlaybackId != 0 && _sharedModSounds.ContainsKey(posted.PlaybackId)) return;
+        if (PlayingFor(e.Handle, audio.Player) is not { } playing) return;
 
+        _playingModSounds[playing] = e;
+        if (posted.PlaybackId != 0) _sharedModSounds[posted.PlaybackId] = playing;
         var posts = _modPosts ??= new ModSoundPosts(audio.Player);
-        if (e.Kind == SoundKind.PostedInterface) posts.OnInterface(name, group, value);
-        else if (e.Subject.IsNone) posts.At(e.Position, eye, name, group, value);
-        else if (group is null) sounds.Job(subject, name, CharacterSounds.EventLimit);
-        else if (sounds.TryPlace(subject, out var at)) posts.At(at, eye, name, group, value);
+        var (name, group, value) = (posted.Event, posted.SwitchGroup, posted.SwitchValue);
+        try
+        {
+            if (posted.Loose) PlayLooseSound(sounds, in e, posted, subject, eye, posts, playing);
+            else if (e.Kind == SoundKind.PostedInterface) posts.OnInterface(name, group, value, playing);
+            else if (e.Subject.IsNone) posts.At(e.Position, eye, name, group, value, playing);
+            else if (group is null) sounds.Job(subject, name, CharacterSounds.EventLimit, playing: playing);
+            else if (sounds.TryPlace(subject, out var at)) posts.At(at, eye, name, group, value, playing);
+        }
+        finally
+        {
+            int generation = _modSoundGeneration;
+            audio.Player.WhenPlayingEnds(playing, () => _finishedModSounds.Enqueue((generation, playing)));
+        }
     }
 
+    /// <summary>
+    /// A unique playback for a mod's sound, bound to <paramref name="handle"/> when present so its stop ends it; null when already stopped.
+    /// </summary>
+    static uint? PlayingFor(SoundHandle? handle, WwisePlayer player)
+    {
+        uint playing = player.NewPlaying();
+        return handle is null || handle.Bind(seconds => player.StopPlaying(playing, seconds)) ? playing : null;
+    }
+
+    /// <summary>
+    /// A code mod's loose sound file (docs/modding.md "Sounds"): on the mods' interface object, or on a mods' pooled object at the character's place
+    /// or the point. A file that cannot be read as a short 16-bit PCM WAV is logged once and plays nothing.
+    /// </summary>
+    void PlayLooseSound(CharacterSounds sounds, in SoundEvent e, PostedSound posted, ulong subject, Vector3 eye, ModSoundPosts posts,
+        uint playing)
+    {
+        string? path = posted.ModId is null ? posted.Event : ModSoundPath(posted.ModId, posted.Event);
+        if (path is null || posts.Loose(path) is not { } pcm) return;
+
+        float db = 20 * MathF.Log10(Math.Clamp(posted.Volume, 1e-4f, 4));
+        if (e.Kind == SoundKind.PostedInterface) posts.LooseOnInterface(path, pcm, db, playing);
+        else if (e.Subject.IsNone) posts.LooseAt(e.Position, eye, path, pcm, db, playing);
+        else if (sounds.TryPlace(subject, out var at)) posts.LooseAt(at, eye, path, pcm, db, playing);
+    }
+
+
+    /// <summary>
+    /// Drops completed playbacks and shared three-dimensional sounds whose authorized subject or audible range is gone.
+    /// </summary>
+    void RetireModSounds(WwisePlayer player, Vector3 eye)
+    {
+        while (_finishedModSounds.TryDequeue(out var finished))
+            if (finished.Generation == _modSoundGeneration) ForgetModSound(finished.Playing);
+        if (_sharedModSounds.Count == 0) return;
+
+        _modSoundPositions.Clear();
+        foreach (var character in host.Session.CurrentSnapshot.Characters) _modSoundPositions[character.Id] = character.Position;
+        _retiredModSounds.Clear();
+        foreach (var (playing, sound) in _playingModSounds)
+        {
+            if (sound.Posted is not { PlaybackId: > 0 } || sound.Kind == SoundKind.PostedInterface) continue;
+            Vector3 at = sound.Position;
+            if (!sound.Subject.IsNone && !_modSoundPositions.TryGetValue(sound.Subject, out at)
+                || player.HeardDistanceSquared(at, eye) >= CharacterSounds.EventLimit) _retiredModSounds.Add(playing);
+        }
+        foreach (uint playing in _retiredModSounds)
+        {
+            player.StopPlaying(playing, 0);
+            ForgetModSound(playing);
+        }
+    }
+
+    /// <summary>
+    /// Removes both lookup directions, without deleting a later use of an authority identity.
+    /// </summary>
+    void ForgetModSound(uint playing)
+    {
+        if (!_playingModSounds.Remove(playing, out var sound) || sound.Posted is not { PlaybackId: > 0 } posted) return;
+        if (_sharedModSounds.GetValueOrDefault(posted.PlaybackId) == playing) _sharedModSounds.Remove(posted.PlaybackId);
+    }
+
+    /// <summary>
+    /// Stops all old-world or old-device mod sounds, including loops on interface and pooled point objects.
+    /// </summary>
+    void ClearModSounds()
+    {
+        if (_characterAudioFor is { } audio)
+            foreach (uint playing in _playingModSounds.Keys) audio.Player.StopPlaying(playing, 0);
+        _playingModSounds.Clear();
+        _sharedModSounds.Clear();
+        _finishedModSounds.Clear();
+        _modSoundGeneration = unchecked(_modSoundGeneration + 1);
+    }
+
+    /// <summary>
+    /// Resolves only an enabled mod's own relative WAV, rejecting escaping paths and symlinks beneath its content root.
+    /// </summary>
+    string? ModSoundPath(string modId, string relative)
+    {
+        if (!PostedSound.ValidRelativeFile(relative)) return null;
+        if (_modSoundFolders is null)
+        {
+            _modSoundFolders = ModHost.EnabledCodeMods(host.Install)
+                .Select(mod => (Id: CodeModManifest.TryReadId(mod.CodeManifestPath), mod.Folder))
+                .Where(mod => mod.Id is not null).GroupBy(mod => mod.Id!, StringComparer.Ordinal)
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => Path.GetFullPath(group.First().Folder), StringComparer.Ordinal);
+        }
+        if (!_modSoundFolders.TryGetValue(modId, out string? folder)) return null;
+        try
+        {
+            string full = GameFiles.Resolve(Path.Combine(folder, relative.Replace('/', Path.DirectorySeparatorChar)));
+            if (!File.Exists(full) || !PostedSound.ValidRelativeFile(Path.GetRelativePath(folder, full).Replace('\\', '/'))) return null;
+            for (string? current = full; current is not null && current != folder; current = Path.GetDirectoryName(current))
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return null;
+            return full;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
 
     #endregion
 }

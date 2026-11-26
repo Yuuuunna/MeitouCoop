@@ -18,6 +18,7 @@ sealed class ScreenRouter(PlayerInterface player)
         if (player.OverlayText(e)) return;
 
         player.InterfaceSounds.SoundForScreen(e);
+        if (player.ModScreenAction(e)) return;
 
         if (e.Action.StartsWith("inventory-scroll:", StringComparison.Ordinal))
         {
@@ -78,8 +79,11 @@ sealed class ScreenRouter(PlayerInterface player)
     /// </summary>
     internal UiBindings BindFaithfulScreen(string id)
     {
+        // Kenshi scales every resource's pixels with the screen (docs/formats/mygui.md, "Kenshi's resource scale"): list lines, text insets and
+        // template parts follow the UI scale, as the text does. A feature may still set its own.
         var b = new UiBindings
         {
+            TemplateScale = player.UiScale,
             TextHeight = c => player.UiPainter?.TextHeight(c, player.Height, player.StandardPixels) ?? 0,
             TextWidths = c => player.UiPainter?.TextWidths(c, player.Height, player.StandardPixels),
         };
@@ -151,13 +155,23 @@ sealed class ScreenRouter(PlayerInterface player)
     }
 
     /// <summary>
+    /// The caption of the character window <paramref name="id"/> (stats, bag, limbs or inventory): the lead's name, the backpack's name or the
+    /// window's own title when there is none.
+    /// </summary>
+    string CharacterWindowCaption(string id, CharacterSnapshot? lead) => id switch
+    {
+        "stats" => player.ShownLeadName(lead) ?? "CHARACTER STATS",
+        "bag" => player.ShownBackpackName(lead) ?? "BACKPACK",
+        "limbs" => "LIMBS",
+        _ => player.ShownLeadName(lead) ?? "INVENTORY",
+    };
+
+    /// <summary>
     /// The character windows: the inventory, stats, bag and limbs windows' captions and buttons, the stats window's geometry.
     /// </summary>
     void BindCharacterWindow(string id, UiBindings b, MyGuiLayout layout, CharacterSnapshot? lead, bool pinned)
     {
-        b.Text["Root"] = id == "stats" ? lead?.Name.ToUpperInvariant() ?? "CHARACTER STATS"
-            : id == "bag" ? lead?.ItemGrid?.Items.FirstOrDefault(i => i.Section == "backpack_attach")?.Name.ToUpperInvariant() ?? "BACKPACK"
-            : id == "limbs" ? "LIMBS" : lead?.Name.ToUpperInvariant() ?? "INVENTORY";
+        b.Text["Root"] = CharacterWindowCaption(id, lead).ToUpperInvariant();
         if (id == "limbs")
         {
             b.Text["lbLeftArm"] = "-ARMS-";
@@ -214,8 +228,7 @@ sealed class ScreenRouter(PlayerInterface player)
         foreach (var tab in layout.Widgets.Where(w => w.Type == "TabItem"))
             b.Properties[tab.Name] = new Dictionary<string, string> { ["Visible"] = "true" };
         player.FactionWindow.BindFactionTab(b);
-        b.Text["MessagesTextBox"] = player.DialogueLog.MessagesText();
-        b.Properties["MessagesTextBox"] = new Dictionary<string, string> { ["Static"] = "true", ["WordWrap"] = "true", ["TextAlign"] = "Left Top" };
+        if (shown >= 0 && shown < tabs.Length && tabs[shown].Name == "MessagesTab") player.DialogueLog.Bind(b);
         player.SquadWindows.BindSquadsTab(b);
         player.Production.BindResearchTab(b);
         player.Production.BindCraftTab(b);
@@ -238,10 +251,19 @@ sealed class ScreenRouter(PlayerInterface player)
     }
 
     /// <summary>
+    /// Adds a faithful screen's own controls (<see cref="AddOwnContent"/>), then the UI extensions' over them.
+    /// </summary>
+    internal void AddFaithfulContent(string id, List<UiControl> controls)
+    {
+        AddOwnContent(id, controls);
+        player.AddModScreenControls(id, controls);
+    }
+
+    /// <summary>
     /// Adds a faithful screen's own controls: the owning feature's content, the map, the overview's tabs, the trader's stock and the character
     /// windows' item cells.
     /// </summary>
-    internal void AddFaithfulContent(string id, List<UiControl> controls)
+    void AddOwnContent(string id, List<UiControl> controls)
     {
         if (id == DebugCharactersLayout.Screen)
         {
@@ -421,7 +443,8 @@ sealed class ScreenRouter(PlayerInterface player)
 
             // The name carries the character: the loot window's cells would otherwise take over the same names' tooltips in the player's window.
             string name = $"inventory-item-{lead.Id}-{item.Index}";
-            var tip = TooltipRuntime.ItemTip.Of(item, player.TradeWindows.SellTip(lead.Id, item.Index), player.WorldMap.MapItemCaption(item.Record));
+            var tip = TooltipRuntime.ItemTip.Of(item, player.TradeWindows.SellTip(lead.Id, item.Index), player.WorldMap.MapItemCaption(item.Record))
+                with { Owner = Simulation.Items.ItemOwner.Of(lead.Id), Index = item.Index };
             var clip = slot.Bounds.Intersect(slot.Clip ?? slot.Bounds);
             player.ItemCells.AddItemCell(controls, name, area, item.Record, item.Material, item.Name, item.Quantity, tip, "InventoryItem",
                 item.Index, clip, charge: item.Charge, colour: item.Colour, rotated: item.Rotated);

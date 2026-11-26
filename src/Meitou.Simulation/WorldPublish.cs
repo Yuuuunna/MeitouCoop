@@ -259,6 +259,9 @@ public sealed partial class World
             ModVisuals = ModVisuals.Capture(this),
             FactionHeads = SquadManagement.FactionHeads(this),
             CappedHeads = SquadManagement.CappedHeads(this),
+            MaxFactionSize = population?.Bodies.MaxFactionSize ?? 30,
+            MaxSquadSize = population?.Bodies.MaxSquadSize ?? 20,
+            MaxSquads = population?.Bodies.MaxSquads ?? 10,
             ActiveSquad = Player.Squad,
             OpenLoot = Player.OpenLoot,
             LootOpener = Player.LootOpener,
@@ -297,6 +300,7 @@ public sealed partial class World
             Research = _production?.ResearchView(this) ?? Production.ResearchSnapshot.Empty,
             Outposts = _production?.OutpostView(this) ?? [],
             FoliageOutposts = PublishFoliageOutposts(population),
+            WorkSites = _production?.LocalWorkSitesView(this) ?? [],
             MapSquads = _mapSquads.Published(this),
             Crafts = _production?.CraftsView(this) ?? Snapshot.Crafts,
             Smiths = _production?.SmithsView(this) ?? Snapshot.Smiths
@@ -343,13 +347,15 @@ public sealed partial class World
     /// <summary>
     /// The sneaker's watchers of the last <see cref="AggroSystem.WatcherSeconds"/> that are still about, where they stand now.
     /// </summary>
-    SquadView[] PublishSquads() => [.. SquadManagement.LedSquads(this).Select(s => new SquadView(s.Id, s.Name, [.. s.Members]))];
+    SquadView[] PublishSquads() =>
+        [.. SquadManagement.LedSquads(this).Select(s => new SquadView(s.Id, s.Name, [.. s.Members]) { TemplateId = s.TemplateId })];
 
     /// <summary>
     /// The player's squads the player does not lead, for <see cref="WorldSnapshot.IndependentSquads"/>.
     /// </summary>
     SquadView[] PublishIndependentSquads() =>
-        [.. SquadManagement.PlayerSquads(this).Where(s => s.Independent).Select(s => new SquadView(s.Id, s.Name, [.. s.Members]))];
+        [.. SquadManagement.PlayerSquads(this).Where(s => s.Independent)
+            .Select(s => new SquadView(s.Id, s.Name, [.. s.Members]) { TemplateId = s.TemplateId })];
 
     /// <summary>
     /// The registered job labels from the authoritative player system, detached before network encoding.
@@ -508,8 +514,9 @@ public sealed partial class World
             : [];
         s.Slave = cold is { SlaveState: >= 1 and <= 3 }
             ? new SlaveView(cold.SlaveState,
-                population is { Factions: { } factions } && (uint)cold.SlaveOwner < (uint)factions.Count ? factions[cold.SlaveOwner].Name : "",
-                SystemOf<Kidnap.CaptiveSystem>()?.LooksLikeSlaveLevel(cold) ?? 0)
+                population is { Factions: { } factions } && (uint)cold.SlaveOwner < (uint)factions.Count ? ShownName(factions[cold.SlaveOwner]) : "",
+                SystemOf<Kidnap.CaptiveSystem>()?.LooksLikeSlaveLevel(cold) ?? 0, Locks.FixtureRegistry.SlaveHoursLeft(this, cold),
+                cold.RecentlyWanted > 0)
             : null;
         s.Disguise = detailed && cold is { IsPlayer: true } && (cold.DisguiseLevel > 0 || cold.RecentlyWanted > 0)
             ? DisguiseOf(cold, state[i].Position, population)
@@ -572,6 +579,7 @@ public sealed partial class World
         s.LookAt = _looks.TryGetValue(i, out var lookAt) ? lookAt : null;
         s.PickingLock = cold?.PickingLock is not null;
         s.WorkingShackles = cold?.Shackles is { Work: Locks.ShackleWork.Pick or Locks.ShackleWork.Cut };
+        s.Engineering = cold is { SkillInUse: StatsEnumerated.Engineering } && cold.SkillInUseTick >= Tick - 1;
         s.InBed = cold is { InSomething: Locks.HeldState.Bed };
         s.Imprisoned = cold is { InSomething: Locks.HeldState.Imprisoned };
         s.CageOpen = cold is { InSomething: Locks.HeldState.Imprisoned, InWhat: { } heldIn }
@@ -595,6 +603,7 @@ public sealed partial class World
         var population = f.Population;
 
         s.InCombat = cold?.InCombat ?? false;
+        s.Attacking = combat?.Playing(id, Tick) is { IsAttack: true };
         s.CombatMode = cold is not null && combat is not null && CharacterFacts.InCombatMode(combat, table, id, cold, true, true);
         s.FightsPlayer = fightsPlayer;
         s.HostileToPlayer = cold is not null && CharacterFacts.HostileToPlayer(population?.Relations, f.Viewer.Faction, cold.Faction, fightsPlayer);
@@ -604,6 +613,8 @@ public sealed partial class World
         s.ShacklesLocked = shown && Locks.LockSystem.WornShackles(cold) is not null;
         s.CanBeShackled = shown && cold is { IsPlayer: false } && Locks.LockSystem.CanBeShackled(cold, true);
         s.CarriesShackles = selected && Locks.LockSystem.CarriedShackles(cold) is not null;
+        s.HasMedkit = selected && cold is not null && FirstAid.FirstAidSystem.MedkitAtHand(cold);
+        s.HasSplintKit = selected && cold is not null && FirstAid.FirstAidSystem.SplintKitAtHand(cold);
         s.Orders = cold?.Orders ?? CharacterOrders.None;
         s.RunSpeed = cold?.RunSpeed ?? SpeedMode.Free;
         s.JobsRevision = f.JobRevisions[i];
@@ -661,7 +672,8 @@ public sealed partial class World
         s.Stealth = sneaking ? watchers.Length == 0 ? StealthExposure.Unobserved : watchers.Max(w => w.Level) : null;
         s.Light = sneaking ? Sight.PeekLight(i) : 1;
         s.Watchers = watchers;
-        var gameBar = cold is { IsPlayer: true } ? PickBar(cold, state[i].Task) ?? CutBar(cold, state[i].Task) ?? TrainBar(cold) : null;
+        var gameBar = cold is { IsPlayer: true } ? PickBar(cold, state[i].Task) ?? CutBar(cold, state[i].Task) ?? LockBar(cold) ?? TrainBar(cold)
+            : null;
         s.Bar = ModBar(cold) ?? gameBar;
         s.Prison = cold is { IsImprisoned: true }
             ? new PrisonView(!(cold.InWhat is { } cageId && Fixtures.Find(cageId) is { } cage && cage.Lock is not { EffectivelyLocked: true }),
@@ -765,7 +777,9 @@ public sealed partial class World
 
         bool Marked(int k) => marks is not null && marks[k] > 0;
 
-        string name = data is { Factions: { } factions } && (uint)c.DisguiseFaction < (uint)factions.Count ? factions[c.DisguiseFaction].Name : "";
+        string name = data is { Factions: { } factions } && (uint)c.DisguiseFaction < (uint)factions.Count
+            ? ShownName(factions[c.DisguiseFaction])
+            : "";
         bool secure = SystemOf<Crime.ArrestSystem>()?.SecureLocation(this, at) ?? false;
         return new DisguiseView(c.DisguiseLevel, name, c.RecentlyWanted, Crime.ArrestSystem.SeenFaction(c) != c.Faction, secure,
             Marked(Crime.ArrestSystem.SameFactionMark), Marked(Crime.ArrestSystem.SlaveOwnerMark), Marked(Crime.ArrestSystem.KnowsMeMark));
@@ -840,13 +854,12 @@ public sealed partial class World
             .. Items.InventoryCommands.MainClosed(cold) ? MainGrid : []];
 
     /// <summary>
-    /// The health panel's rows: each body part's flesh, stun, bandage and rig.
+    /// The health panel's rows: each body part's name as the mods' text sources show it, flesh, stun, bandage and rig.
     /// </summary>
     static IReadOnlyList<HealthPartView> HealthPartsOf(MedicalState health, RaceData anatomy) =>
         Array.AsReadOnly(health.Parts
-            .Select(p => new HealthPartView(p.Template.StringId, p.Template.Name, p.Flesh, p.Stun, p.Bandage, p.Rig, p.MaxHp,
-                p.IsRobotic(anatomy))
-            { Vital = p.Template.Vital, Type = p.Template.Type, Limb = p.Limb, Wear = p.Wear })
+            .Select(p => new HealthPartView(p.Template.StringId, ShownText.Record(p.Template.StringId, p.Template.Name), p.Flesh, p.Stun, p.Bandage,
+                p.Rig, p.MaxHp, p.IsRobotic(anatomy)) { Vital = p.Template.Vital, Type = p.Template.Type, Limb = p.Limb, Wear = p.Wear })
             .ToArray());
 
     /// <summary>
@@ -903,7 +916,7 @@ public sealed partial class World
         return InventoryItemView.Of(index, item) with
         {
             StolenFrom = stolen ? item.StolenFrom : -1,
-            StolenOwner = stolen ? Characters.OwnerNameOf(item.Owner) : null,
+            StolenOwner = stolen ? ShownOwnerNameOf(item.Owner) : null,
             StealChance = steal?.Invoke(item)
         };
     }
@@ -952,6 +965,14 @@ public sealed partial class World
 
         return new TaskBar(Loc.Tr("Cutting: {1,num}", (int)(l.Hardness * 10)), 0);
     }
+
+    /// <summary>
+    /// The bar of Task_LockDoor and Task_UnlockDoor (<c>ProgressBarTask</c>, captions "Locking" and "Unlocking", <b>Verified</b>
+    /// <c>FUN_140351fd0</c>, <c>FUN_140352140</c>), while the character works the lock (<see cref="CharacterCold.LockWork"/>).
+    /// </summary>
+    TaskBar? LockBar(CharacterCold c) => c.LockWork.Tick >= Tick - 1
+        ? new TaskBar(c.LockWork.Locking ? Loc.Tr("Locking") : Loc.Tr("Unlocking"), c.LockWork.Fill)
+        : null;
 
     /// <summary>
     /// The bar of Task_UseTrainingDummy (docs/game/ai-tasks.md "Finders of the jobs"): "Training", filled with the trained stat's fraction, while the

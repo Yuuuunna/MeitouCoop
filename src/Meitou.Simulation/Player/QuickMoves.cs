@@ -38,7 +38,7 @@ sealed class QuickMoves(PopulationData? data)
         }
         if (quick.Into != CharacterId.None)
         {
-            QuickMoveInto(world, quick, cold, holder, item);
+            QuickMoveInto(world, quick, s, cold, holder, item);
             return;
         }
         if (item.ItemFunction == PlayerSystem.MoneyFunction && cold.Faction >= 0)
@@ -170,10 +170,10 @@ sealed class QuickMoves(PopulationData? data)
 
     /// <summary>
     /// A right click into another player character's open window (<c>FUN_140713d20</c>): units into its bag window first when open, then its slots,
-    /// then its grid (<see cref="InventoryCommands.MoveInto"/>), money as one stack; no range limit, as a drag between the two windows. A worn bag
-    /// with contents stays.
+    /// then its grid (<see cref="InventoryCommands.MoveInto"/>), money as one stack; only within the item move's reach of the clicked character
+    /// (<see cref="ItemMoveReach.CharactersNear"/>, "Out of trading range."), as a drag between the two windows. A worn bag with contents stays.
     /// </summary>
-    void QuickMoveInto(World world, QuickMoveItem quick, CharacterCold from, Inventory holder, ItemInstance item)
+    void QuickMoveInto(World world, QuickMoveItem quick, int source, CharacterCold from, Inventory holder, ItemInstance item)
     {
         var table = world.Characters;
         if (quick.Into == quick.Character || !table.TryResolveNext(quick.Into, out int t)
@@ -183,11 +183,12 @@ sealed class QuickMoves(PopulationData? data)
             && (quick.TargetRevision == 0 || world.InventoryRevision(into) != quick.TargetRevision)) return;
         if (!InventoryCommands.IsMovableSection(item.Section) || item.Contents is not null && item.Section == "backpack_attach")
             return;
+        if (!ItemMoveReach.CharactersNear(data, world, source, t, quick.Issuer)) return;
         bool worn = InventoryCommands.IsEquipmentSection(item.Section);
         if (InventoryCommands.MoveInto(holder, item, InventoryCommands.ClickCount(item, quick.All ? 0 : 1), into, quick.IntoBag, out bool wear,
                 taker) == 0)
         {
-            world.Post(quick.Issuer ?? PlayerId.Local, $"{taker.Name} has no room for {item.Name}.");
+            world.Post(quick.Issuer ?? PlayerId.Local, $"{world.ShownName(taker)} has no room for {item.ShownName()}.");
             return;
         }
         if (worn) _assembly?.RefreshEquipment(from);

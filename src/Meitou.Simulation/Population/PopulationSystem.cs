@@ -346,10 +346,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         var ahead = new Vector3(MathF.Sin(hot.Yaw), 0, MathF.Cos(hot.Yaw));
         float yaw = Rng.Float(Rng.Hash(world.Seed, (ulong)slot, RngPurpose.Loot, (ulong)world.Tick)) * MathF.Tau;
 
-        // On the ground under that spot (a drop beside a character on a slope or a step would otherwise hang at its feet's height), as an item
-        // dropped from the inventory.
-        var at = hot.Position + right * (5 * side) + ahead * forward;
-        at.Y = world.Walkability.GroundHeight(at.X, at.Z, hot.Position.Y);
+        var at = LimbSpot(world, hot.Position, right * (5 * side) + ahead * forward);
 
         // The stump: the part of the limb's slot and its bone name 2 (BodyPartTemplate.BoneName2; FUN_14064edc0 reads it for the item's pose).
         string? stump = cold.Medical?.Parts.FirstOrDefault(p => p.Template.LimbSlot == limb)?.Template.BoneName2;
@@ -357,6 +354,21 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
             stump is { Length: > 0 } bone
                 ? new FallSource(world.Characters.IdOf(slot), bone, world.Tick, cold.Appearance?.SkinToneParameter ?? default)
                 : null);
+    }
+
+    /// <summary>
+    /// Where a severed limb lies: on the floor at or next to <paramref name="from"/> + <paramref name="offset"/> within
+    /// <see cref="MovementSystem.FloorSlack"/> of the character's height (a drop beside a character on a slope or a step would otherwise hang at its
+    /// feet's height), else next to the character, else at its own place. The ground under the spot alone was the storey below wherever the spot was
+    /// off the character's floor: past a storey's edge, or in the hole a rack or bed cuts in the floor's navmesh.
+    /// </summary>
+    static Vector3 LimbSpot(World world, Vector3 from, Vector3 offset)
+    {
+        var walk = world.Walkability;
+        var at = from + offset;
+        return walk.FloorNear(at.X, at.Z, from.Y, MovementSystem.FloorSlack)
+            ?? walk.FloorNear(from.X, from.Z, from.Y, MovementSystem.FloorSlack)
+            ?? from;
     }
 
     /// <summary>
@@ -754,8 +766,8 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         Recentres(focus) || world.LoadedZones is { } loaded && loaded.Count < _active.Count;
 
     /// <summary>
-    /// Whether a living member of one of a wild site's squads stands in an active zone (a nest then stays loaded). A town does not use it: its squads
-    /// are platoons that unload by their own place (<see cref="KeepLoaded"/>).
+    /// Whether a living member of one of a wild site's squads stands in an active zone or carries a player-faction character (a nest then stays
+    /// loaded). A town does not use it: its squads are platoons that unload by their own place (<see cref="KeepLoaded"/>).
     /// </summary>
     bool AnyMemberActive(World world, SiteState state)
     {
@@ -763,6 +775,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         foreach (int id in state.Squads)
         {
             if (world.Squads.Find(id) is not { } squad) continue;
+            if (SquadCarriesPlayer(world, squad)) return true;
             foreach (var m in squad.Members)
             {
                 if (table.TryResolveNext(m, out int slot) && table.IsAlive(m)
@@ -1648,6 +1661,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         if (!player && !idle) cold.Bounties = Crime.SpawnBounties.Roll(_data, record, world.Seed, table.PeekNextId(), world.Tick);
         var id = table.Spawn(hot, cold, world.Tick);
         spawned?.Invoke(id);
+        if (cold.Inventory is { } kit) Items.ItemCreatedObservers.ReportAll(world, Items.ItemCreatedKind.SpawnEquipment, kit.Items, id);
 
         // The name's text tokens, once the character exists (FUN_14062b210 end): a mod's "Trader /GENNAME/".
         if (cold.Name.Contains('/') && world.SystemOf<Dialogue.DialogueSystem>() is { } talk) cold.Name = talk.ExpandName(world, id, cold.Name);
@@ -2006,7 +2020,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
                 if (player.Know(site.Index, TownKnowledge.Discovered | TownKnowledge.Explored) && site.Index < _data.SiteFactions.Count) player.Meet(_data.SiteFactions[site.Index]);
             }
             else if (d2 < far * far && player.Know(site.Index, TownKnowledge.Discovered) && site.Town.Type != TownType.Nest)
-                world.Post(owner, Loc.Tr("Discovered {1}", site.Town.UnexploredName is { Length: > 0 } unexplored ? unexplored : site.Town.Name));
+                world.Post(owner, Loc.Tr("Discovered {1}", site.Town.ShownName(unexplored: site.Town.UnexploredName.Length > 0)));
         }
         var wild = WildSites;
         for (int w = 0; w < wild.Count && w < _wildCentres.Length; w++)

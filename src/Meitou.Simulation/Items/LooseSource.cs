@@ -19,21 +19,28 @@ internal static class LooseSource
     /// no contents, not in the character's ignore map (<see cref="Key"/>, asked before the ownership test) and passing the ownership test
     /// (<see cref="ItemOwnership.MayTake"/>, <c>FUN_140997d80</c>); null when none. Engine choice: the nearest, where the original takes the first
     /// its grid query meets. The tests are pure, so their order changes no answer: the record set (<see cref="GroundItems.Holds"/>), the item's own
-    /// fields and the distance come first, so the ignore-map key is made only for a nearer item of the record.
-    /// A construction owner restricts the search to unowned stock or that site's faction, after the order grants were checked.
+    /// fields and the distance come first, so the ignore-map key is made only for a nearer item of the record. With <paramref name="ownOnly"/> an
+    /// item another faction owns is skipped even where the ownership test would let the character take it (a player hauler's pick, so it steals
+    /// nothing: <see cref="Production.ProductionSystem"/> "Hauling to").
     /// </summary>
-    public static GroundItem? Nearest(World world, PopulationData? data, CharacterCold cold, Vector3 at, string record, int? owner = null)
-    {
-        var ground = world.GroundItems;
-        if (!ground.Holds(record)) return null;
+    public static GroundItem? Nearest(World world, PopulationData? data, CharacterCold cold, Vector3 at, string record, int? owner = null, bool ownOnly = false) =>
+        world.GroundItems.Holds(record) ? Nearest(world, data, cold, at, g => g.Item.Record == record, ownOnly, owner) : null;
 
-        var all = ground.All;
+    /// <summary>
+    /// <see cref="Nearest(World, PopulationData?, CharacterCold, Vector3, string, int?, bool)"/> for the items <paramref name="wanted"/> answers yes
+    /// for (a pure test, asked before the distance) in place of one record.
+    /// </summary>
+    public static GroundItem? Nearest(World world, PopulationData? data, CharacterCold cold, Vector3 at, Func<GroundItem, bool> wanted,
+        bool ownOnly = false, int? owner = null)
+    {
+        var all = world.GroundItems.All;
         GroundItem? loose = null;
         float best = Radius * Radius;
         for (int k = 0; k < all.Count; k++)
         {
             var g = all[k];
-            if (g.Item.Record != record || g.Item.Quantity <= 0 || g.Item.Contents is not null) continue;
+            if (g.Item.Quantity <= 0 || g.Item.Contents is not null || !wanted(g)) continue;
+            if (ownOnly && g.OwnedBy >= 0 && g.OwnedBy != cold.Faction) continue;
 
             float d = Vector3.DistanceSquared(g.Position, at);
             if (!(d <= best && (loose is null || d < best))) continue;

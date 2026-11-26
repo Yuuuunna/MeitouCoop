@@ -172,8 +172,11 @@ public sealed class WorldCheckpointCoordinator
                     Meitou.Simulation.Trading.TradeSystem.DropUnownedShops(world, running.Contains, out _);
                     Meitou.Simulation.Factions.SquadManagement.DropUnownedPurses(world, running.Contains);
                     Meitou.Simulation.Factions.SquadManagement.DropUnownedDormant(world, running.Contains);
-                    if (_mods is null) world.TellReady(fromSave: true);
-                    else _mods.TellReady(world, fromSave: true);
+                    Meitou.Simulation.Factions.SquadManagement.DropUnownedOptions(world, running.Contains);
+                    Meitou.Simulation.Population.PopulationSystem.DropUnownedHolds(world, running.Contains);
+                    var start = new WorldStart(WorldStartKind.Load, checkpoint.SaveFolder);
+                    if (_mods is null) world.TellReady(start);
+                    else _mods.TellReady(world, start);
                 });
             }
             catch (Exception e)when (prepared is not null && ReferenceEquals(_runtime.World, prepared))

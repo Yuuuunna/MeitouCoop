@@ -203,8 +203,8 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
     }
 
     /// <summary>
-    /// First aid 25 and Splint 249 need the patient alive (else the order leaves the queue) and an able medic with a kit (a medkit or a robot kit
-    /// anyone of its squad near it carries; its own splint kit) with a working arm (<see cref="HasWorkingArm"/>), Rest an able character; the Medic
+    /// First aid 25 and Splint 249 need the patient alive (else the order leaves the queue) and an able medic with a kit of its own (a medkit or a
+    /// robot kit; a splint kit) with a working arm (<see cref="HasWorkingArm"/>), Rest an able character; the Medic
     /// button's look anyone's (the button's 58 / 57 is a plain order in the queue: <c>FUN_1405d20d0</c> tests the faction only on its permanent path;
     /// the finder decides).
     /// The failure texts are the orders' refusals.
@@ -229,7 +229,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
             return OwnKit(cold, ItemInfo.SplintKitFunction) is null ? OrderCheck.Blocked("I don't have a splint kit.") : OrderCheck.Run;
         }
 
-        return FindKit(world, slot, cold, ItemInfo.FirstAidKitFunction) is null && FindKit(world, slot, cold, ItemInfo.RobotKitFunction) is null
+        return OwnKit(cold, ItemInfo.FirstAidKitFunction) is null && OwnKit(cold, ItemInfo.RobotKitFunction) is null
             ? OrderCheck.Blocked("I don't have a medkit.")   // refused before the medic moves
             : OrderCheck.Run;
     }
@@ -637,12 +637,23 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
     static float Speed2(Vector3 v) => v.X * v.X + v.Z * v.Z;
 
     /// <summary>
-    /// Serial, in (patient, medic) order: the kit, the bandaging, the drain and the medic's XP. Ends the treatment when nothing is left to bandage or
-    /// no kit fits.
+    /// Serial, in (patient, medic) order: one update of a treatment (<see cref="Treat"/>), its changes to the patient told to the code mods' health
+    /// change observers as first aid.
     /// </summary>
     public void Apply(World world, in Effect effect)
     {
         if (effect.Kind != EffectTreat) return;
+
+        HealthObservers.Before(world, effect.Target);
+        Treat(world, effect);
+        HealthObservers.After(world, effect.Target, HealthChangeKind.FirstAid);
+    }
+
+    /// <summary>
+    /// The kit, the bandaging, the drain and the medic's XP. Ends the treatment when nothing is left to bandage or no kit fits.
+    /// </summary>
+    void Treat(World world, in Effect effect)
+    {
         var table = world.Characters;
         int m = effect.Source, p = effect.Target;
         if (!table.Next[m].Alive || table.Next[m].Task != (byte)CharacterTask.Treat) return;
@@ -693,20 +704,20 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         // FUN_1403563a0: a search that finds no first aid kit goes on to the robot phase, #884). Treatment runs until the last bit is bandaged (the
         // start threshold is MedicalState.FirstAidThreshold).
         bool organic = RoomLeft(body, race, false) > Done;
-        bool robot = !organic || KitOf(world, m, medicCold, FunctionOf(false)) is null;
+        bool robot = !organic || KitOf(medicCold, FunctionOf(false)) is null;
         if (robot && RoomLeft(body, race, true) <= Done)
         {
             if (organic) Say(world, m, medicCold.TreatTarget, KitEmpty);   // organic parts left, no first aid kit
-            else Say(world, m, medicCold.TreatTarget, HealingOtherFinished, BeingHealedFinished);
+            else Finish(world, m, p, medicCold, patientCold);
 
             End(world, m);
             return;
         }
 
-        if (KitOf(world, m, medicCold, FunctionOf(robot)) is not { } kit)
+        if (KitOf(medicCold, FunctionOf(robot)) is not { } kit)
         {
             Say(world, m, medicCold.TreatTarget, KitEmpty);   // Task_FirstAidRig's empty kit (FUN_14034ef20)
-            End(world, m);   // no kit of the right kind within reach
+            End(world, m);   // no kit of the right kind of its own
             return;
         }
 
@@ -765,7 +776,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
     void CloseWound(World world, int m, int p, CharacterCold medicCold, CharacterStats stats, RaceData medicRace, MedicalState body, RaceData race,
         float dt, bool kitless)
     {
-        var woundKit = kitless ? null : KitOf(world, m, medicCold, FunctionOf(race.IsRobot));
+        var woundKit = kitless ? null : KitOf(medicCold, FunctionOf(race.IsRobot));
         if (woundKit is null && !kitless)
         {
             Say(world, m, medicCold.TreatTarget, KitEmpty);
@@ -794,7 +805,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         // which would keep the treatment going for ever.
         if (RoomLeft(body, race, false) + RoomLeft(body, race, true) <= Done || body.Bandage(dt, null, race, out _) <= 0)
         {
-            Say(world, m, medicCold.TreatTarget, HealingOtherFinished, BeingHealedFinished);
+            Finish(world, m, p, medicCold, patientCold);
             End(world, m);
             return;
         }
@@ -803,6 +814,28 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         _xp.Medic(stats, race, medicRace, dt, StatsEnumerated.Medic);
         Deeds?.FirstAid(world, m, p, dt);
     }
+
+    /// <summary>
+    /// A finished treatment (<c>Task_FirstAid</c>'s update <c>FUN_1403563a0</c>, once its step reports the patient done, <b>Verified</b>): a medic not
+    /// of the player's faction takes an imprisoned patient other than itself that it regards as friendly, disguise read (slot 126 with 1), out of
+    /// its cage or restraint (<see cref="FixtureRegistry.LetOut"/>); then it says event 20 to the patient, which answers 21 only when no longer held.
+    /// </summary>
+    void Finish(World world, int m, int p, CharacterCold medicCold, CharacterCold patientCold)
+    {
+        if (m != p && !medicCold.IsPlayer && patientCold.IsImprisoned && RegardsDisguised(world, m, p))
+            world.Fixtures.LetOut(world, world.Characters.IdOf(p));
+
+        int answer = patientCold.IsImprisoned ? -1 : BeingHealedFinished;
+        Say(world, m, medicCold.TreatTarget, HealingOtherFinished, answer);
+    }
+
+    /// <summary>
+    /// "A regards B as friendly" with B's working disguise read (slot 126 with 1, <c>FUN_1407923d0</c>); without a dialogue system,
+    /// <see cref="Allied"/>.
+    /// </summary>
+    bool RegardsDisguised(World world, int a, int b) => world.SystemOf<Dialogue.DialogueSystem>() is { } dialogue
+        ? dialogue.RegardsFriendly(world, a, b, disguise: true)
+        : Allied(world, a, b);
 
     /// <summary>
     /// One update of a splint (task "Splinting", <c>FUN_140649d50</c>, docs/game/character-stats.md "Splints"): the medic's <c>medic</c> skill and
@@ -932,41 +965,29 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
     }
 
     /// <summary>
-    /// The medic's own kit of an <c>item function</c> by the original's search (<see cref="OwnKit"/>: main grid, then the worn backpack; fewest
-    /// charges above zero), else a squad mate's within <see cref="FirstAidSettings.KitReach"/> by the same rule (an engine choice: the original
-    /// searches only the medic's own).
+    /// Whether First Aid (25) or Repairs (60) would find a kit for the character now: a first aid or robot kit of its own (<see cref="OwnKit"/>),
+    /// as <see cref="IOrderOwner.CanRun"/> asks before the medic moves. For the context menu's unavailable rows.
     /// </summary>
-    (ItemInstance Item, Inventory Owner)? FindKit(World world, int slot, CharacterCold cold, int function)
-    {
-        if (OwnKit(cold, function) is { } mine) return mine;
-        if (cold.SquadId < 0 || world.Squads.Find(cold.SquadId) is not { } squad) return null;
-        var table = world.Characters;
-        var here = table.Next[slot].Position;
-        float reach2 = Settings.KitReach * Settings.KitReach;
-        foreach (var m in squad.Members)
-        {
-            if (m.Slot == slot || !MayShareKit(world, slot, m) || !table.TryResolveNext(m, out int s) || table.Cold(s) is not { Inventory: { } mates, Medical: { Dead: false } })
-                continue;
+    internal static bool MedkitAtHand(CharacterCold cold) =>
+        OwnKit(cold, ItemInfo.FirstAidKitFunction) is not null || OwnKit(cold, ItemInfo.RobotKitFunction) is not null;
 
-            var d = table.Next[s].Position - here;
-            if (d.X * d.X + d.Z * d.Z > reach2) continue;
-            if (OwnKit(table.Cold(s)!, function) is { } found) return found;
-        }
-
-        return null;
-    }
+    /// <summary>
+    /// Whether Splint Injuries (249) would find the character's own splint kit now (<see cref="OwnKit"/>). For the context menu's unavailable rows.
+    /// </summary>
+    internal static bool SplintKitAtHand(CharacterCold cold) => OwnKit(cold, ItemInfo.SplintKitFunction) is not null;
 
     /// <summary>
     /// The kit a running treatment uses (<c>FUN_14033c7e0</c>, <b>Verified</b>): the one it took last time, until it is used up (no charges left) or
-    /// no longer of the wanted function; only then <see cref="FindKit"/> searches again (the original also drops a kit no longer held; a kit lost
-    /// another way is found again at once). Null: none.
+    /// no longer of the wanted function; only then <see cref="OwnKit"/> searches the medic's own inventory again (the original also drops a kit no
+    /// longer held; a kit lost another way is found again at once). Null: none, and the treatment ends; a squad mate's kit, the patient's too, is
+    /// never used (#1407).
     /// </summary>
-    (ItemInstance Item, Inventory Owner)? KitOf(World world, int slot, CharacterCold cold, int function)
+    static (ItemInstance Item, Inventory Owner)? KitOf(CharacterCold cold, int function)
     {
-        if (cold.TreatKit is { } kept && kept.Item.ItemFunction == function && kept.Item.Charges > 0 && kept.Owner.All().Contains(kept.Item) && KitOwnerAllowed(world, slot, cold, kept.Owner))
+        if (cold.TreatKit is { } kept && kept.Item.ItemFunction == function && kept.Item.Charges > 0 && kept.Owner.All().Contains(kept.Item) && ReferenceEquals(cold.Inventory, kept.Owner))
             return kept;
 
-        return cold.TreatKit = FindKit(world, slot, cold, function);
+        return cold.TreatKit = OwnKit(cold, function);
     }
 
     #endregion
@@ -1233,13 +1254,5 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
 
     #endregion
 
-    static bool KitOwnerAllowed(World world, int slot, CharacterCold cold, Inventory owner)
-    {
-        if (ReferenceEquals(cold.Inventory, owner)) return true;
-        if (world.Squads.Find(cold.SquadId) is not { } squad) return false;
-        foreach (var id in squad.Members)
-            if (world.Characters.TryResolveNext(id, out int donor) && ReferenceEquals(world.Characters.Cold(donor)?.Inventory, owner))
-                return MayShareKit(world, slot, id);
-        return false;
-    }
+
 }

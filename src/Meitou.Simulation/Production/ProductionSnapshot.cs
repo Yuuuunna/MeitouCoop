@@ -8,7 +8,12 @@ namespace Meitou.Simulation.Production;
 /// <summary>
 /// An observed work target before it owns a machine. The server resolves its identity and publishes the current ownership revision.
 /// </summary>
-public readonly record struct WorkSiteView(string Id, Vector3 Position, int Owner, ulong SiteRevision);
+public readonly record struct WorkSiteView(string Id, Vector3 Position, int Owner, ulong SiteRevision)
+{
+    public string Record { get; init; } = "";
+    public string Name { get; init; } = "";
+    public WorkSiteKind Kind { get; init; }
+}
 
 /// <summary>
 /// A recipe slot as the host shows it: the item, how many are held of how many, the level (input) or progress (output) 0..1, the section's size in
@@ -165,7 +170,25 @@ public sealed record CraftView(IReadOnlyList<(string Key, string Name, float Pro
 /// Something a bench can craft, with its hours and inputs per item, and whether research and the bench level allow it now.
 /// </summary>
 public sealed record CraftOptionView(string Key, string Name, CraftKind Kind, int Level, float Hours,
-    IReadOnlyList<(string Name, float PerItem)> Inputs, bool Unlocked);
+    IReadOnlyList<(string Name, float PerItem)> Inputs, bool Unlocked)
+{
+    /// <summary>
+    /// The item a hovered ITEMS row describes (<c>FUN_1402b79b0</c>, <b>Verified</b>, decompile): made by the item factory as the craft would make
+    /// it, armour at the quality of level 40 (Standard), a weapon of the option's model; null when the record is missing.
+    /// </summary>
+    public InventoryItemView? Product { get; init; }
+
+    /// <summary>
+    /// The row's <c>-Materials Cost:</c> (armour: <c>total coverage</c> x 0.01) or <c>-Materials Costs:</c> (a weapon's <c>material cost</c>);
+    /// -1 for the other kinds.
+    /// </summary>
+    public float MaterialCost { get; init; } = -1;
+
+    /// <summary>
+    /// An armour row's <c>-Fabrics Cost:</c>: <see cref="MaterialCost"/> x the record's <c>fabrics amount</c>; -1 for the other kinds.
+    /// </summary>
+    public float FabricsCost { get; init; } = -1;
+}
 
 /// <summary>
 /// What a bench's current smith would make of one queued craft (<c>FUN_1402bcf60</c>): <paramref name="Quality"/> the armour or crossbow quality (5
@@ -179,7 +202,13 @@ public readonly record struct CraftPrediction(int Quality, string? Model, bool M
 /// A crafting bench's current smith (<see cref="Machine.Smith"/>): his name, his effective level of the bench's stat, the stat multiplier's penalty
 /// in percent (0: none) and the prediction per queued craft.
 /// </summary>
-public sealed record CraftSmithView(string Name, int Skill, int Penalty, IReadOnlyList<CraftPrediction> Entries);
+public sealed record CraftSmithView(string Name, int Skill, int Penalty, IReadOnlyList<CraftPrediction> Entries)
+{
+    /// <summary>
+    /// The bench's stat (<see cref="MachineData.Stat"/>), which picks the critical chance's threshold (<see cref="CraftBench.CriticalChance"/>).
+    /// </summary>
+    public int Stat { get; init; }
+}
 
 /// <summary>
 /// What a <see cref="PowerView"/> shows: a consumer's demand and grant, a generator's output and load, a battery's flow and store
@@ -212,6 +241,10 @@ public readonly record struct PowerView(PowerKind Kind, float Demand, float Gran
     /// A battery's town grid: whether it has one and whether its batteries charged or drained this tick (<see cref="Machine.GridCharging"/>).
     /// </summary>
     public bool OnGrid { get; init; }
+    /// <summary>
+    /// <see cref="Machine.NoTown"/>: its building belongs to no town, so it is on no power frame.
+    /// </summary>
+    public bool NoTown { get; init; }
     /// <summary>
     /// Whether the battery's town grid charged its batteries this tick (see <see cref="OnGrid"/>).
     /// </summary>
@@ -286,6 +319,14 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
     /// A storage (a "Hauling to" job can name it).
     /// </summary>
     public bool IsStorage { get; init; }
+    /// <summary>
+    /// A storage's put priority, set on its panel (<see cref="Machine.PutPriority"/>).
+    /// </summary>
+    public Items.StoragePriority PutPriority { get; init; }
+    /// <summary>
+    /// A storage's take priority, set on its panel (<see cref="Machine.TakePriority"/>).
+    /// </summary>
+    public Items.StoragePriority TakePriority { get; init; }
     /// <summary>
     /// Its BUILDING_FUNCTIONALITY <c>function</c> (-1: none; 12 a turret, 14 a furnace).
     /// </summary>
@@ -408,7 +449,7 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
     /// <see cref="StorageSize"/> and <see cref="StorageEmpty"/> are.</param>
     internal static MachineSnapshot Of(Machine m, ItemFactory items, bool storageItems = true)
     {
-        string Name(string record) => items.Info(record)?.Name ?? record;
+        string Name(string record) => items.Info(record) is { } info ? ShownText.Record(record, info.Name) : record;
         var inputs = m.Inputs.Select(i => InputView(m, i, items)).ToArray();
         MachineSlotView? output = m.Output is { } o ? OutputView(o, items) : null;
         InventoryView? storage = storageItems && m.Storage is { } s ? StorageView(s) : null;
@@ -437,6 +478,8 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
             IsAutomatic = m.Data.IsAutomatic,
             InputsEmpty = m.HasEmptyInputs,
             IsStorage = m.Data.IsStorage,
+            PutPriority = m.PutPriority,
+            TakePriority = m.TakePriority,
             Function = m.Data.Function,
             StorageLimitName = m.Data.StorageLimit is [var only] ? Name(only) : null,
             StorageCapacity = m.Data.StorageLimit is [_] ? (int)m.Data.StackBonusMult : 0,
@@ -469,7 +512,8 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
         {
             OnGrid = m.OnGrid,
             GridCharging = m.GridCharging,
-            GridDraining = m.GridDraining
+            GridDraining = m.GridDraining,
+            NoTown = m.NoTown
         }
         : null;
 
@@ -477,8 +521,8 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
     /// The crafting bench's view: its queue with each craft's progress, the repeat flag and the finished items; null when it is not a bench.
     /// </summary>
     static CraftView? Crafting(Machine m, ItemFactory items) => m.Craft is { } c
-        ? new CraftView([.. c.Queue.Select(j => (j.Option.Key, j.Recipe.Name, Math.Clamp(j.Progress, 0, 1), j.Recipe.Hours))], c.Repeat,
-            [.. c.Done.Select((item, index) => InventoryItemView.Of(index, item) with { Section = "out", X = 0, Y = 0 })])
+        ? new CraftView([.. c.Queue.Select(j => (j.Option.Key, j.Recipe.ShownName(items.Db), Math.Clamp(j.Progress, 0, 1), j.Recipe.Hours))],
+            c.Repeat, [.. c.Done.Select((item, index) => InventoryItemView.Of(index, item) with { Section = "out", X = 0, Y = 0 })])
         {
             OutputWidth = m.Data.Craft?.OutputWidth ?? 1,
             OutputHeight = m.Data.Craft?.OutputHeight ?? 1,
@@ -528,7 +572,8 @@ public readonly record struct ResearchOption(string Id, string Name, string Cate
 /// <summary>
 /// The research state as the host shows it (docs/simulation.md "Production", Research).
 /// </summary>
-public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyList<(string Id, string Name, float Progress)> Queue, float Rate,
+public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyList<(string Id, string Name, float Progress, float Hours)> Queue,
+    float Rate,
     IReadOnlyList<ResearchOption> Available)
 {
     /// <summary>
@@ -548,6 +593,9 @@ public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyLi
     /// The state before any research: tech level 1, no bench, nothing queued or available.
     /// </summary>
     public static ResearchSnapshot Empty { get; } = new(1, 0, [], 0, []);
+
+    /// <summary>Queue membership and order revision for displayed research commands.</summary>
+    public ulong QueueRevision { get; init; }
 }
 
 /// <summary>

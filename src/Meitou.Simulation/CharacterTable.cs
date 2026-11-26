@@ -118,6 +118,11 @@ public sealed class CharacterCold
     /// </summary>
     public LastingId LastingId { get; internal set; }
     /// <summary>
+    /// The code mods' fields for its records in the vanilla save, by record and key (a null value removes the key); null until one is set
+    /// (<see cref="Saving.CharacterSaveFields"/>).
+    /// </summary>
+    internal Dictionary<(Saving.CharacterSaveRecord Record, string Key), object?>? SaveFields { get; set; }
+    /// <summary>
     /// The character's id while it is in the table (set when it enters, none once it leaves): for code that holds the character's state but not its
     /// slot.
     /// </summary>
@@ -314,8 +319,9 @@ public sealed class CharacterCold
     public OrderQueue OrderQueue { get; } = new();
 
     /// <summary>
-    /// The height a move order was given at (the clicked ground), for the goal <see cref="GoalHeightAt"/>: it picks the floor where floors are
-    /// stacked. Other goals use the character's own height. Derived from orders and not hashed.
+    /// The height a walk's goal was given at (a move order's clicked ground, a site's or fixture's floor, the character walked to), for the goal
+    /// <see cref="GoalHeightAt"/>: it picks the floor where floors are stacked. Other goals use the character's own height. Derived from orders and
+    /// not hashed.
     /// </summary>
     public float GoalHeight { get; set; } = float.NaN;
     /// <summary>
@@ -423,6 +429,16 @@ public sealed class CharacterCold
     /// The character's medical state (null: none).
     /// </summary>
     public MedicalState? Medical { get; set; }
+    /// <summary>
+    /// The health values the code mods' health change observers last saw of the character (<see cref="Bodies.HealthObservers"/>); null until one
+    /// is registered and the character's health is first looked at, and again once it leaves the world. Never saved or hashed.
+    /// </summary>
+    internal Bodies.HealthWatch? HealthWatch { get; set; }
+    /// <summary>
+    /// The state snapshot last seen by the code mods' character state observers (<see cref="CharacterStateObservers"/>); null until one is
+    /// registered and the character is first looked at, and again once it leaves the world. Never saved or hashed.
+    /// </summary>
+    internal CharacterStateWatch? StateWatch { get; set; }
 
     /// <summary>
     /// Sandbox only (the animation sandbox of the game host): replaces the movement mode of every order, and the speed the character walks at (0: the
@@ -1306,6 +1322,19 @@ public sealed class CharacterCold
     public float BashTime { get; set; }
 
     /// <summary>
+    /// The tick of the basher's last update swinging at <see cref="Bashing"/> (Task_BashDoor <c>FUN_140348c10</c> plays its clip every update in
+    /// reach): the animation plays the swing while it is current. Not hashed: it follows from <see cref="Bashing"/>.
+    /// </summary>
+    public long BashSwing { get; set; } = -1;
+
+    /// <summary>
+    /// The tick of this character's last update working a door's lock (Task_LockDoor / Task_UnlockDoor, docs/game/locks.md "Lock and unlock"), the
+    /// bar's fill and whether it locks: the bar the original's <c>ProgressBarTask</c> draws over a player's character. Not hashed: it follows from
+    /// the work.
+    /// </summary>
+    public (long Tick, float Fill, bool Locking) LockWork { get; set; } = (-1, 0, false);
+
+    /// <summary>
     /// The shackles this character is working on (<see cref="Locks.LockSystem"/>: picking, cutting; null: none). Hashed only while set.
     /// </summary>
     public Locks.ShackleJob? Shackles { get; set; }
@@ -1414,6 +1443,12 @@ public sealed class CharacterCold
     /// <see cref="HaulSite"/>.
     /// </summary>
     public string? HaulTo { get; set; }
+
+    /// <summary>
+    /// The ground item (<see cref="Items.GroundItems"/> id) a "Hauling to" trip picks up before it makes for <see cref="HaulTo"/> (null: none).
+    /// Hashed with <see cref="HaulTo"/>.
+    /// </summary>
+    public int? HaulItem { get; set; }
 
     /// <summary>
     /// The clip the operator plays while it works (the functionality's <c>animation</c>).
@@ -2396,6 +2431,7 @@ public sealed class CharacterTable
         }
 
         if (k.HaulTo is { } haulTo) hasher.Add(Rng.StableHash(haulTo));
+        if (k.HaulItem is { } haulItem) hasher.Add(haulItem);
     }
 
     /// <summary>

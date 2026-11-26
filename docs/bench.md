@@ -102,8 +102,8 @@ numbers from untraced runs.
 ## Play benchmark
 
 `MeitouClient --load <save> --play-bench <dir>` plays a scripted session in the real game (frame limit and VSync off) and quits
-(`PlayBench`). Segments: settle, idle, orbit, zoom to the farthest, pan, a 30 s travel at 3000 units/s, return, time x2
-and x5, talk, trade, container, doors, pick-up, paths (a squad or each member sent 20-200 m in a random direction every 0.5 s), walk,
+(`PlayBench`), the fps counter shown from the start (Shift+F9 hides it).
+Segments: settle, idle, orbit, zoom to the farthest, pan, a 30 s travel at 3000 units/s, return, time x2 and x5, talk, trade, container, doors, pick-up, paths (a squad or each member sent 20-200 m in a random direction every 0.5 s), walk,
 fight (six spawned enemies, `--scene-npc`), loot, the panels opened cold then warm (with limbs and build), a grazing horizon view, the overview, flights (each player character in turn, twice, 6 s each, as a double click on its portrait: a character flight when they are on).
 Each interaction targets the nearest candidate within 150 m and retries every 3 s; a modal message box is closed and logged.
 `MEITOU_BENCH_ONLY=settle,zoom` keeps only the named segments (the run is deterministic from the save, so a hitch comes back at its tick).
@@ -216,6 +216,54 @@ slices, render-thread medians idle / orbit: terrain 0.17-0.18 -> 0.08 ms, foliag
 that differ run to run on master itself (hub: master against master 0.6-1.4, the branch against three master runs 0.2-1.6; forest at
 night: GI noise, 0.15 either way); named views, TAA, DLSS and Faithful within 0.11. Pass `--upscaler` (or `MEITOU_STREAMLINE_PATH`) to
 both sides: a build with the Streamline DLLs beside it takes the configured DLSS, one without falls back to TAA.
+
+## Launcher benchmark
+
+`MeitouClient --benchmark <tier> --benchmark-out <dir> [--benchmark-scenario <id>] [--load <save>]` (`src/Meitou.Game/DevTools/Benchmark/`)
+is the launcher's benchmark: the play bench machinery with a fixed workload, comparable across machines and builds.
+
+- Tiers `low`..`extreme` (`QualityTiers`), applied from a default `UserConfig` with tutorials off: `meitou.user.json` and the look presets
+  are neither read nor written, no autosave. No mods: the base data and core mods only, no code mods, whatever `data/mods.cfg`, `--mods-cfg` or
+  `MEITOU_MODS_CFG` list (`ModList.NoMods`). The install's `settings.cfg` defaults (language, edge scroll, markers, camera) still apply. Before the device: a 1920x1080 window, the tier's texture quality, no GI and no ray queries unless the tier
+  has traced switches (Ultra, Extreme), anti-aliasing Low's own (none at 0.83) or TAA at render scale 1. After the settings panel exists:
+  the Meitou look, the tier, its traced switches, an upscaler (FSR, DLSS) turned TAA and render scale 1 (not Low). Frame limit, vsync and
+  HDR off, Vulkan only, default `--scene-npc`, `MEITOU_BENCH_ONLY` ignored. Later options do not override these.
+- Scenarios (`BenchmarkSpec.Scenarios`; `--benchmark-list <file>` writes them with their groups and measured seconds):
+  - `bases` (default): the whole play bench script on save `bench-bases-2026-10-27` (`--load` required). Groups: camera (idle, orbit,
+    zoom, pan), streaming (travel, return), simulation (speed-x2 to loot), ui (panels, panels-warm), views (horizon, overview, flights: the first 6 player characters, twice each, 72 s).
+  - `shark-flyby`: a new game at the default start and seed 0 (`--load` refused); the settle teleports the squad to Shark, puts the
+    camera over it and lasts 15 s, held (120 s at most) while fewer than 50 residents are within 5000 units or their count rose by 5 in
+    the last 5 s (a cold navmesh cache fills the town a minute or more late); then `circle-high` (30 s, one turn, boom 2000, pitch 0.7 rad), `circle-low` (25 s, boom 900, pitch 0.3), `pass`
+    (20 s, 4000 units along +x through the centre, boom 300, pitch 0.15). Group `flight`.
+  - Every scenario has `all` (every segment but settle); settle is never counted.
+  - **Observed** (2026-11-23, RTX 4070, Linux, `--headless`, Medium and High): `bases` with all 62 player characters' flights measured
+    about 1005 s (flights 744 s), hence the cap; `shark-flyby` measures 75 s, 108 s with loading, 198 s on a cold navmesh cache
+    (the settle held to 63 s; its circles then ran within 3 fps of the warm run's). Runs of one scenario and tier gave the same fingerprint
+    and applied hash; the applied hash differed between tiers.
+- Save hash: SHA-256 of the manifest `<sha256>  ./<relative path>\n` per file, sorted by path (ordinal), as `sha256sum` prints it;
+  `bench-bases-2026-10-27` is `ceb2fb18…dac4ff` (**Observed**: the release zip's 1448 files with `find | sort | sha256sum` and the game's check agree).
+- Exit codes: 0 done, 1 the script did not finish (no result.json), 2 bad options (`--renderer metal`, a missing `--benchmark-out`
+  or `--load`), 5 a tier that needs ray queries on a device without them (checked on the made device, before loading), 6 the save's hash
+  is not the scenario's (checked before the window), 7 an unknown scenario.
+- `--benchmark-probe <file>` writes the hardware record alone (`HardwareRecord`): cpu, threads, ramGb, gpu, driver, vramMb, rayQueries
+  (the device offers the three ray query extensions, whatever the run enabled), os, kernel, osFamily.
+
+`result.json` beside `frames.csv` and `summary.md` (`BenchmarkResult`): `schema` 1, `benchmarkVersion`, `fingerprint`, `applied`,
+`tier`, `scenario`, `game` (`version`: the tag without `v`; `commit`: 8 characters), `save` (null without one), `resolution`, `startedAt`
+(the script's start, UTC), `hardware`, and `groups`: per group `frames`, `seconds`, `avgFps`, `p50Ms`, `p99Ms`, `maxMs`, `over33Pct`,
+`over100`, `slowWorldP99Ms`, `slowWorldMaxMs`, `vramPeakMb`, `sysmemPeakMb` and `stages` (p50 and p99 of every `cpu_*`/`gpu_*` column,
+keys with `_` for `-` and no `_ms`). Read back from frames.csv: percentile = sorted value at index round(p/100·(n-1)), avgFps =
+1000 / mean `frame_ms`, non-finite cells skipped.
+
+Version and fingerprint: `BenchmarkSpec.Version` is bumped by hand when the workload changes (tiers, fixed settings, default settings,
+a scenario's start, segments, groups or save, metrics), never for faster code. The fingerprint is SHA-256 of `BenchmarkSpec.CanonicalText`:
+the version, metric text, the scenario (start, save and hash, segments with seconds,
+groups), fixed settings, the benchmark's `UserConfig` as compact JSON without the `[BenchmarkNeutral]` settings (ones the benchmark overrides,
+Metal's, and ones no run reads: file bookkeeping, menus the script never opens, key bindings) and each tier's table values and switches;
+nothing from the machine. So it is per scenario, and a version with two fingerprints is a missed bump. A fingerprint that changed without the
+workload is retired in the service's `BenchFingerprints`, which maps submissions and stored sessions to its replacement: version 1 builds up to
+0.23.1 hashed every setting, so each release that added one had its own (**Verified**: all six recomputed from the 0.23.1 text minus the added keys). `applied` is SHA-256 of the settings panel's sliders and
+switches after the tier (`key=value\n`, sorted), which differs by device (ray queries, DLSS).
 
 Detailed logs/screenshots belong outside the repository. Evidence for original-game claims
 belongs with the corresponding research and its Verified/Observed/Unknown label.

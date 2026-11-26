@@ -50,7 +50,11 @@ internal static class GameComponentSchema
         F(1065, "InspectedTownMachine", (WorldSnapshot x) => x.InspectedTownMachine, (x, v) => x with { InspectedTownMachine = v }),
         F(1066, "InspectedOwnMachine", (WorldSnapshot x) => x.InspectedOwnMachine, (x, v) => x with { InspectedOwnMachine = v }),
         F(1067, "ModJobOffers", (WorldSnapshot x) => x.ModJobOffers, (x, v) => x with { ModJobOffers = v }),
-        F(1068, "ModVisuals", (WorldSnapshot x) => x.ModVisuals, (x, v) => x with { ModVisuals = v }), ];
+        F(1068, "ModVisuals", (WorldSnapshot x) => x.ModVisuals, (x, v) => x with { ModVisuals = v }),
+        F(1069, "ItemTags", (WorldSnapshot x) => x.ItemTags, (x, v) => x with { ItemTags = v }),
+        F(1070, "MaxFactionSize", (WorldSnapshot x) => x.MaxFactionSize, (x, v) => x with { MaxFactionSize = v }),
+        F(1071, "MaxSquadSize", (WorldSnapshot x) => x.MaxSquadSize, (x, v) => x with { MaxSquadSize = v }),
+        F(1072, "MaxSquads", (WorldSnapshot x) => x.MaxSquads, (x, v) => x with { MaxSquads = v }), ];
     /// <summary>
     /// Independently replicated character values; binary codecs retain their own uncompressed format.
     /// </summary>
@@ -130,7 +134,7 @@ internal static class GameComponentSchema
         F(2068, "SkillXpMultipliers", (CharacterSnapshot x) => x.SkillXpMultipliers, (x, v) => x with { SkillXpMultipliers = v }),
         F(2069, "ClosedSlots", (CharacterSnapshot x) => x.ClosedSlots, (x, v) => x with { ClosedSlots = v }),
         F(2070, "Hud", (CharacterSnapshot x) => x.Hud, (x, v) => x with { Hud = v }),
-        F(2071, "ItemGrid", (CharacterSnapshot x) => x.ItemGrid, (x, v) => x with { ItemGrid = v }),
+        F(2071, "ItemGrid", (CharacterSnapshot x) => x.ItemGrid, (x, v) => x with { ItemGrid = v }, compress: false),
         F(2072, "FightsPlayer", (CharacterSnapshot x) => x.FightsPlayer, (x, v) => x with { FightsPlayer = v }),
         F(2073, "NoLootGuilt", (CharacterSnapshot x) => x.NoLootGuilt, (x, v) => x with { NoLootGuilt = v }),
         F(2075, "CanBeShackled", (CharacterSnapshot x) => x.CanBeShackled, (x, v) => x with { CanBeShackled = v }),
@@ -170,6 +174,10 @@ internal static class GameComponentSchema
             (_, x, bytes) => x with { LastingId = CharacterIdentityCodec.DecodeLastingId(bytes) }),
         new(2105, "TagHeight", (_, x) => CharacterIdentityCodec.EncodeTagHeight(x.TagHeight),
             (_, x, bytes) => x with { TagHeight = CharacterIdentityCodec.DecodeTagHeight(bytes) }),
+        F(2107, "Engineering", (CharacterSnapshot x) => x.Engineering, (x, v) => x with { Engineering = v }),
+        F(2108, "Attacking", (CharacterSnapshot x) => x.Attacking, (x, v) => x with { Attacking = v }),
+        F(2109, "HasMedkit", (CharacterSnapshot x) => x.HasMedkit, (x, v) => x with { HasMedkit = v }),
+        F(2110, "HasSplintKit", (CharacterSnapshot x) => x.HasSplintKit, (x, v) => x with { HasSplintKit = v }),
     ];
 
 
@@ -241,9 +249,9 @@ internal static class GameComponentSchema
     /// <summary>
     /// A nullable absolute field: its presence byte stays outside the optional stateless JSON compression envelope.
     /// </summary>
-    static Field<T> F<T, V>(ushort id, string name, Func<T, V> get, Func<T, V, T> set) => new(id, name,
+    static Field<T> F<T, V>(ushort id, string name, Func<T, V> get, Func<T, V, T> set, bool compress = true) => new(id, name,
         (codec, source) => get(source) is { } value
-            ? [1, .. JsonComponentCompression.Encode(codec, value)] : [0],
+            ? [1, .. (compress ? JsonComponentCompression.Encode(codec, value) : codec.EncodeComponent(value))] : [0],
         (codec, target, bytes) => bytes.Length == 1 && bytes[0] == 0 ? set(target, default!)
             : bytes.Length > 1 && bytes[0] == 1 ? set(target, JsonComponentCompression.Decode<V>(codec, bytes.AsSpan(1)))
             : throw new InvalidDataException("Invalid component value."), CompressedJson: true);

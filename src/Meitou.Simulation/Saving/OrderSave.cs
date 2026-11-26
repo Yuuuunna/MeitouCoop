@@ -16,7 +16,13 @@ namespace Meitou.Simulation.Saving;
 /// null handle), Meitou's own site id and detail code when it wrote them, and what a read could settle at once (<see cref="InstanceKey"/>, the
 /// building a handle names; <see cref="Lost"/>, a handle that names nothing this save holds).
 /// </summary>
-public sealed record SavedOrder(TaskType Row, Vector3 Point, Hand Hand, string? Site, string? InstanceKey, int Kind, bool Lost, string? Authorization = null, bool Trusted = false);
+public sealed record SavedOrder(TaskType Row, Vector3 Point, Hand Hand, string? Site, string? InstanceKey, int Kind, bool Lost, string? Authorization = null, bool Trusted = false)
+{
+    /// <summary>
+    /// The order's own reach (<see cref="OrderEntry.Reach"/>) when Meitou wrote one; null: none.
+    /// </summary>
+    public float? Reach { get; init; }
+}
 
 /// <summary>
 /// A player character's order queue in its GAMESTATE_AI record <c>ai</c>, next to the perma-jobs (<see cref="PermaJobSave"/>; <b>Verified</b>,
@@ -24,13 +30,15 @@ public sealed record SavedOrder(TaskType Row, Vector3 Point, Hand Hand, string? 
 /// docs/simulation.md "Order queue"): per order i from 0 the int <c>tjob&lt;i&gt;</c> (task type), the vec3 <c>tjobP&lt;i&gt;</c> (point) and the
 /// handle <c>tjobT&lt;i&gt;</c> (target: a character or a building). The queue is written front first, started or not; nothing is saved of it
 /// running. Meitou's own keys carry what the keys above cannot: the string <c>meitou tjob&lt;i&gt;</c> (the <see cref="OrderEntry.Site"/> id, which
-/// wins on load) and the int <c>meitou tjobK&lt;i&gt;</c> (the owner's detail code, <see cref="IOrderOwner.SaveKind"/>; absent: 0). A load reads the
+/// wins on load), the int <c>meitou tjobK&lt;i&gt;</c> (the owner's detail code, <see cref="IOrderOwner.SaveKind"/>; absent: 0) and the float
+/// <c>meitou tjobR&lt;i&gt;</c> (the order's own reach, <see cref="OrderEntry.Reach"/>; absent: none). A load reads the
 /// orders into <see cref="CharacterCold.SavedOrders"/>; the decision step puts them in the second list (<see cref="Restore"/>, as the loader adds
 /// each through <c>FUN_1405086d0</c> without the permanent flag), where the chooser scores them once the world they name exists. Only the queue is
 /// written, so a save after the load writes the loaded orders no more.
 /// </summary>
 public static partial class OrderSave
 {
+    const string MeitouReach = "meitou tjobR";
 
     /// <summary>
     /// Writes the queue over the old keys (<c>FUN_1405090b0</c> writes the deque alone: neither the second list nor orders loaded and not restored
@@ -52,6 +60,8 @@ public static partial class OrderSave
             ai.Vector3S.Remove(key);
 
         foreach (var key in ai.Bools.Keys.Where(k => k.StartsWith(TrustedKey, StringComparison.Ordinal)).ToList()) ai.Bools.Remove(key);
+        foreach (var key in ai.Floats.Keys.Where(k => k.StartsWith(MeitouReach, StringComparison.Ordinal)).ToList())
+            ai.Floats.Remove(key);
 
         int i = 0;
         foreach (var e in cold.OrderQueue)
@@ -65,9 +75,16 @@ public static partial class OrderSave
             if (!e.Target.IsNone) target(ai, Target + i, e.Target);
             if (CaptureAuthorization(e, world) is { } authorization) ai.Strings[AuthorizationKey + i] = authorization;
             else if (e.Trusted) ai.Bools[TrustedKey + i] = true;
+            if (e.Reach is { } reach) ai.Floats[MeitouReach + i] = reach;
             i++;
         }
     }
+
+    /// <summary>
+    /// The saved reach of order <paramref name="i"/>: a finite number of 0 or more under <c>meitou tjobR&lt;i&gt;</c>, else null.
+    /// </summary>
+    static float? SavedReach(FcsRecord ai, int i) =>
+        ai.Floats.TryGetValue(MeitouReach + i, out float reach) && float.IsFinite(reach) && reach >= 0 ? reach : null;
 
     /// <summary>
     /// Writes order <paramref name="i"/> into the AI record; Meitou's site and detail keys only when set.
@@ -135,7 +152,10 @@ public static partial class OrderSave
             }
 
             (orders ??= []).Add(new SavedOrder(
-                (TaskType)row, point, hand, site, key, ai.Ints.GetValueOrDefault(MeitouKind + i), lost, ai.Strings.GetValueOrDefault(AuthorizationKey + i), ai.Bools.GetValueOrDefault(TrustedKey + i)));
+                (TaskType)row, point, hand, site, key, ai.Ints.GetValueOrDefault(MeitouKind + i), lost, ai.Strings.GetValueOrDefault(AuthorizationKey + i), ai.Bools.GetValueOrDefault(TrustedKey + i))
+            {
+                Reach = SavedReach(ai, i),
+            });
         }
 
         cold.SavedOrders = orders;
@@ -305,6 +325,7 @@ public static partial class OrderSave
             Point = o.Point,
             TaskPoint = ObjectRow(row) ? default : o.Point,
             Detail = owner.LoadDetail(world, world.Characters.IdOf(slot), row, o.Kind, target),
+            Reach = o.Reach,
         };
     }
 

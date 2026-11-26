@@ -265,7 +265,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
             case Items.ArrangeInventory arrange:
                 if (world.MayOrder(arrange, arrange.Character) && table.TryResolveNext(arrange.Character, out int character)
                     && table.Cold(character) is { IsPlayer: true, Inventory: { } carried } && world.InventoryMatches(arrange, carried)
-                    && !Items.InventoryCommands.Arrange(carried, arrange.Bag)) world.Post(arrange.Issuer ?? PlayerId.Local, "Cannot arrange inventory: the items do not fit.");
+                    && !Items.InventoryCommands.Arrange(world, carried, Items.ItemOwner.Of(arrange.Character), Items.InventoryArrangeReason.Button, arrange.Bag)) world.Post(arrange.Issuer ?? PlayerId.Local, "Cannot arrange inventory: the items do not fit.");
                 break;
         }
     }
@@ -314,10 +314,8 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         var table = world.Characters;
         foreach (var id in world.CommandCharacters(stop, stop.Characters))
         {
-            if (!table.TryResolveNext(id, out int slot) || !table.Cold(slot)!.IsPlayer) continue;
-            PlayerOrders.Wipe(table.Cold(slot)!);
-            TaskStart.End(world, slot, TaskEnd.Stopped);
-            table.Cold(slot)!.FollowOrder = CharacterId.None;
+            if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) continue;
+            PlayerOrders.Stop(world, slot, cold);
         }
     }
 

@@ -220,7 +220,7 @@ public sealed partial class PopulationSystem
     /// </summary>
     void ValidatePreparedCapacity(World world, PreparedPlayerSquad prepared)
     {
-        var constants = _data.Bodies.Constants;
+        var constants = _data.Bodies;
         int made = 0;
         foreach (var group in prepared.Groups)
         {

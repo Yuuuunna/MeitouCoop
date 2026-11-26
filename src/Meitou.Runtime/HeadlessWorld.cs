@@ -124,6 +124,9 @@ public sealed class HeadlessWorld : IDisposable
                     SquadXp = gameplay.SquadXp,
                     SquadSkillXp = [.. gameplay.SquadSkillXp],
                     OthersXp = gameplay.OthersXp,
+                    MaxFactionSize = gameplay.MaxFactionSize,
+                    MaxSquadSize = gameplay.MaxSquadSize,
+                    MaxSquads = gameplay.MaxSquads,
                 });
             var (enabled, disabled) = dataPhase.CodeMods();
             BuiltInMods.SkipCovered(enabled, disabled);
@@ -160,7 +163,7 @@ public sealed class HeadlessWorld : IDisposable
             runtime = new WorldRuntime(worldSettings, content.Walkability, WithModFeeds(systems.Systems, mods));
             if (gameplay is not null)
                 ApplyWorldRules(runtime.World, gameplay);
-            if (notifyReady) mods.TellReady(runtime.World, fromSave: false);
+            if (notifyReady) mods.TellReady(runtime.World, new WorldStart(WorldStartKind.NewGame));
             return new HeadlessWorld(terrain, content, runtime, order, configured, mods, install, trustedCodeMods, modSettings, gameplay);
         }
         catch
@@ -239,12 +242,14 @@ public sealed class HeadlessWorld : IDisposable
             EdgeGap = siteEdgeGap,
         },
         Captives = new Meitou.Simulation.Kidnap.CaptiveSettings { SpareOwnFaction = rules.CagesSpareOwn },
-        Arrest = new Meitou.Simulation.Crime.ArrestSettings { LiftFix = rules.ArrestLiftFix },
+        Arrest = new Meitou.Simulation.Crime.ArrestSettings { LiftFix = rules.ArrestLiftFix, LostFix = rules.ArrestLostFix },
         AnimalsPickUp = rules.AnimalsPickUp,
     };
     static void ApplyWorldRules(World world, GameplayRules rules)
     {
         world.BenchFacingFix = rules.BenchFacingFix;
+        world.SeatBedFix = rules.SeatBedFix;
+        world.PickUpTheftFix = rules.PickUpTheftFix;
         world.PrisonPoseFix = rules.PrisonPoseFix;
         world.CagedAnimalFix = rules.CagedAnimalFix;
         world.GroundRepair = rules.GroundRepair;
@@ -256,7 +261,8 @@ public sealed class HeadlessWorld : IDisposable
         world.AuthorityAutoSaveSeconds = rules.AutoSaveSeconds;
     }
 
-    static IEnumerable<ITickSystem> WithModFeeds(IEnumerable<ITickSystem> systems, ModHost? mods) => mods is { WantsCombatHits: true } ? systems.Append(new ModHitFeedService(mods)) : systems;
+    static IEnumerable<ITickSystem> WithModFeeds(IEnumerable<ITickSystem> systems, ModHost? mods) =>
+        mods is not null && (mods.WantsCombatHits || mods.WantsProjectiles) ? systems.Append(new ModHitFeedService(mods)) : systems;
     static SimulationExtensions? MergeExtensions(SimulationExtensions? configured, SimulationExtensions? mods)
     {
         if (configured is null)

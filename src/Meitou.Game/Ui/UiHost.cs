@@ -1,4 +1,6 @@
+using System.Numerics;
 using Meitou.Data.Ui;
+using Meitou.Localisation;
 
 namespace Meitou.Game.Ui;
 
@@ -127,7 +129,13 @@ public sealed record UiSelectedBuilding(string Instance, string? Record, string?
 /// when the line has a <paramref name="Press"/>; a line with a press and no value is one button across the line, captioned with the label.
 /// <paramref name="Tooltip"/> (null: none) shows over the line. A press runs on the host's thread and changes the world only by queueing commands.
 /// </summary>
-public sealed record UiTownLine(string Label, string? Value = null, string? Tooltip = null, Action? Press = null);
+public sealed record UiTownLine(string Label, string? Value = null, string? Tooltip = null, Action? Press = null)
+{
+    /// <summary>
+    /// The line's colours and icon (<see cref="UiLineStyle"/>); null: the panel's own look.
+    /// </summary>
+    public UiLineStyle? Style { get; init; }
+}
 
 /// <summary>
 /// What an extension's town panel lines get: the outpost the panel shows, whether the player's faction owns it, the snapshot the panel is laid out
@@ -174,6 +182,47 @@ public sealed record UiActionContext(UiFrameContext Frame, string Argument)
     /// A text box's text after the change that ran the action (<see cref="UiNodeKind.TextBox"/>); empty for a click.
     /// </summary>
     public string Text { get; init; } = "";
+
+    /// <summary>
+    /// What ran the action: the press (as every action has always been run), a text change, or one of the pointer events the node asks for
+    /// (<see cref="UiNode.Pointer"/>).
+    /// </summary>
+    public UiEventKind Kind { get; init; }
+
+    /// <summary>
+    /// The id of the node the event is for (the one that asked for it); empty for a control the host made.
+    /// </summary>
+    public string Node { get; init; } = "";
+
+    /// <summary>
+    /// The pointer, screen pixels, for a pointer event.
+    /// </summary>
+    public System.Numerics.Vector2 Position { get; init; }
+
+    /// <summary>
+    /// Where the left button was pressed, for a press, a drag and a release.
+    /// </summary>
+    public System.Numerics.Vector2 Start { get; init; }
+
+    /// <summary>
+    /// How far the pointer moved since the last drag event (the press for the first), for a drag.
+    /// </summary>
+    public System.Numerics.Vector2 Delta { get; init; }
+
+    /// <summary>
+    /// The wheel's steps, for a wheel event: above 0 away from the player (up), below 0 towards.
+    /// </summary>
+    public float Wheel { get; init; }
+
+    /// <summary>
+    /// For a drag or a release: the id of the topmost overlay node under the pointer (empty: none), the drop target of a drag and drop.
+    /// </summary>
+    public string Over { get; init; } = "";
+
+    /// <summary>
+    /// The button of a press: the left for every press but those <see cref="UiPointerEvents.Buttons"/> asks for.
+    /// </summary>
+    public Host.Input.MouseButton Button { get; init; }
 }
 
 /// <summary>
@@ -218,7 +267,20 @@ public sealed class UiMenuContext(Simulation.CharacterSnapshot target, IReadOnly
 /// <summary>
 /// A row an extension adds to a character's right-click menu: its caption and what choosing it does (on the host's thread).
 /// </summary>
-public sealed record UiMenuVerb(string Caption, Action Choose);
+public sealed record UiMenuVerb(string Caption, Action Choose)
+{
+    /// <summary>
+    /// The selection cannot carry it out now (for example it lacks the item it needs). With the Interface setting "Unavailable menu rows" on
+    /// Greyed (the default) the row is drawn greyed, a plain click does nothing and a Shift click still chooses it (a mod row reads Shift itself,
+    /// so it can set up a job for later); on Faithful the row is drawn and chosen as any other.
+    /// </summary>
+    public bool Unavailable { get; init; }
+
+    /// <summary>
+    /// The caption's colour (RGB, 0 to 1 each, clamped; alpha not used); null: the menu's own. An unavailable row stays greyed.
+    /// </summary>
+    public Vector4? Colour { get; init; }
+}
 
 /// <summary>
 /// Read-only presentation data. UI extensions cannot mutate UiBindings or receive the simulation world.
@@ -281,12 +343,27 @@ public sealed class UiFrameContext
     /// A registered control <paramref name="id"/> as its owner made it, without overrides.
     /// </summary>
     public UiNode CreateBaseControl(string id) => _host.CreateControl(id, this, useOverrides: false);
+
+    /// <summary>
+    /// The size in pixels <paramref name="text"/> takes as a node's caption in font resource <paramref name="font"/> at text scale
+    /// <paramref name="scale"/> (a node's <see cref="UiNode.TextScale"/>, finite and above 0; 1 is a style's default): its widest line and its lines'
+    /// height, line breaks kept, colour tags measured as drawn. Zero without an interface that draws text (a headless host). Host thread.
+    /// </summary>
+    public Vector2 Measure(string text, string font = "Kenshi_StandardFont_Medium", float scale = 1)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentException.ThrowIfNullOrWhiteSpace(font);
+        if (!float.IsFinite(scale) || scale <= 0 || scale > UiHost.MaxTextScale)
+            throw new ArgumentOutOfRangeException(nameof(scale));
+
+        return text.Length == 0 || _host.Measurer is not { } measure ? Vector2.Zero : measure(font, text, scale);
+    }
 }
 
 /// <summary>
 /// Platform-independent native UI extension host. Access on the UI thread only; no DLL discovery/loading.
 /// </summary>
-public sealed class UiHost
+public sealed partial class UiHost
 {
     #region State
 
@@ -306,6 +383,37 @@ public sealed class UiHost
     internal const string FileImagePrefix = "file:";
 
     /// <summary>
+    /// A live character portrait chosen by the graphical presentation host.
+    /// </summary>
+    internal const string LivePortraitProperty = "PortraitOf";
+
+    /// <summary>
+    /// Requests text-box focus from the graphical screen host.
+    /// </summary>
+    internal const string FocusRequestProperty = "FocusRequest";
+
+    /// <summary>
+    /// The screen host's submitted text action.
+    /// </summary>
+    internal const string SubmitAction = "submit";
+
+    /// <summary>
+    /// The graphical host's fallback-font registrar; absent on headless hosts.
+    /// </summary>
+    public static Func<string, bool>? FontFallbackRegistrar { get; set; }
+
+    /// <summary>
+    /// The property that puts an overlay control on another layer than the HUD's (<see cref="UiNode.Layer"/>): <c>Back</c> or <c>Popup</c>.
+    /// </summary>
+    public const string LayerProperty = "ModLayer";
+
+    /// <summary>
+    /// Measures a caption (font resource, text, text scale) as the interface's painter draws it (<see cref="UiFrameContext.Measure"/>); null
+    /// without one.
+    /// </summary>
+    internal Func<string, string, float, Vector2>? Measurer { get; set; }
+
+    /// <summary>
     /// The styles by id, with their owners.
     /// </summary>
     readonly Dictionary<string, (string Owner, UiStyle Style)> _styles = new(StringComparer.Ordinal);
@@ -319,11 +427,6 @@ public sealed class UiHost
     /// The action handlers by id, with their owners.
     /// </summary>
     readonly Dictionary<string, (string Owner, Action<UiActionContext> Handler)> _actions = new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// The text boxes the last <see cref="Arrange"/> laid out, by name (<see cref="DispatchText"/>).
-    /// </summary>
-    readonly Dictionary<string, UiControl> _textBoxes = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The style overrides in registration order (the last wins).
@@ -366,6 +469,11 @@ public sealed class UiHost
     internal ItemTooltipLines ItemTips { get; } = new();
 
     /// <summary>
+    /// The extensions' building panel bar sources (<see cref="UiRegistration.AddBuildingRows"/>).
+    /// </summary>
+    internal BuildingPanelRows BuildingBars { get; } = new();
+
+    /// <summary>
     /// The town panel line sources, with their owners, in registration order.
     /// </summary>
     readonly List<(string Owner, Func<UiTownContext, IEnumerable<UiTownLine>> Lines)> _townLines = [];
@@ -380,6 +488,46 @@ public sealed class UiHost
     /// <see cref="UiRegistration.AddJobPanelButtons"/>).
     /// </summary>
     internal CharacterPanelHooks CharacterPanel { get; } = new();
+
+    /// <summary>
+    /// The extensions' controls in the faithful screens and the HUD (<see cref="UiRegistration.AddScreenControls"/>).
+    /// </summary>
+    internal ScreenControls Screens { get; } = new();
+
+    /// <summary>
+    /// The extensions' changes to the faithful screens' and the HUD's own widgets (<see cref="UiRegistration.AddScreenOverrides"/>).
+    /// </summary>
+    internal ScreenOverrides ScreenOverrides { get; } = new();
+
+    /// <summary>
+    /// The extensions' player replies in conversations (<see cref="UiRegistration.AddDialogueReplies"/>).
+    /// </summary>
+    internal DialogueReplies Replies { get; } = new();
+
+    /// <summary>
+    /// The extensions' right-click menu rows for any target (<see cref="UiRegistration.AddMenuVerbs"/>).
+    /// </summary>
+    internal MenuTargetVerbs TargetVerbs { get; } = new();
+
+    /// <summary>
+    /// The extensions' changes to right-click menu rows (<see cref="UiRegistration.AddMenuRowOverrides"/>).
+    /// </summary>
+    internal MenuRowOverrides MenuRows { get; } = new();
+
+    /// <summary>
+    /// The extensions' world map input handlers (<see cref="UiRegistration.AddMapInput"/>).
+    /// </summary>
+    internal MapInputs Map { get; } = new();
+
+    /// <summary>
+    /// The extensions' interface key handlers (<see cref="UiRegistration.AddKeyInput"/>).
+    /// </summary>
+    internal KeyInputs KeyInput { get; } = new();
+
+    /// <summary>
+    /// The translations of each extension's code mod (<see cref="Register(IUiExtension, string?, Localisation.ModTranslations?)"/>), by extension id.
+    /// </summary>
+    readonly Dictionary<string, Localisation.ModTranslations> _texts = [];
 
     /// <summary>
     /// The contributions: owner, slot, mode (null: every mode), order and factory.
@@ -418,6 +566,17 @@ public sealed class UiHost
     /// </summary>
     public event Action<UiDiagnostic>? Diagnostic;
 
+    /// <summary>
+    /// Routes the text sources' failures to the interface that added them.
+    /// </summary>
+    static UiHost() => ShownText.Dropped += ReportDroppedSource;
+
+    /// <summary>
+    /// Reports a text source that threw (<see cref="ShownText.Dropped"/>) as its interface's <see cref="Diagnostic"/>.
+    /// </summary>
+    static void ReportDroppedSource(object host, string owner, ShownTextContext context, Exception error) =>
+        (host as UiHost)?.Diagnostic?.Invoke(new UiDiagnostic(owner, $"shown text ({context.Kind} {context.Key}, dropped)", error));
+
     #endregion
 
     #region Registration
@@ -432,7 +591,13 @@ public sealed class UiHost
     /// Registers <paramref name="extension"/> as <see cref="Register(IUiExtension)"/> does, with the folder of the code mod it belongs to (null:
     /// none), under which its map marker images lie.
     /// </summary>
-    public IDisposable Register(IUiExtension extension, string? folder)
+    public IDisposable Register(IUiExtension extension, string? folder) => Register(extension, folder, null);
+
+    /// <summary>
+    /// Registers <paramref name="extension"/> as <see cref="Register(IUiExtension, string?)"/> does, with its code mod's translations (null: none),
+    /// through which its node texts, menu rows, squad AI options and building panel buttons are shown (docs/modding.md "Translations").
+    /// </summary>
+    public IDisposable Register(IUiExtension extension, string? folder, Localisation.ModTranslations? texts)
     {
         ArgumentNullException.ThrowIfNull(extension);
 
@@ -442,8 +607,9 @@ public sealed class UiHost
             throw new NotSupportedException($"UI extension {id} requires API {extension.ApiVersion}; host provides {ApiVersion}.");
         if (!_extensions.Add(id)) throw new InvalidOperationException($"UI extension already registered: {id}");
         if (folder is not null) _markerImages.SetFolder(id, folder);
+        if (texts is not null) _texts[id] = texts;
 
-        var scope = new UiRegistration(this, id);
+        var scope = new UiRegistration(this, id, folder);
         try
         {
             extension.Register(scope);
@@ -548,7 +714,17 @@ public sealed class UiHost
         _buildingActions.RemoveAll(a => a.Owner == owner);
         _townLines.RemoveAll(l => l.Owner == owner);
         ItemTips.Remove(owner);
+        ShownText.Remove(this, owner);
+        BuildingBars.Remove(owner);
         CharacterPanel.Remove(owner);
+        Screens.Remove(owner);
+        ScreenOverrides.Remove(owner);
+        Replies.Remove(owner);
+        TargetVerbs.Remove(owner);
+        MenuRows.Remove(owner);
+        Map.Remove(owner);
+        KeyInput.Remove(owner);
+        _texts.Remove(owner);
         foreach (string id in _styles.Where(p => p.Value.Owner == owner).Select(p => p.Key).ToArray()) _styles.Remove(id);
         foreach (string id in _controls.Where(p => p.Value.Owner == owner).Select(p => p.Key).ToArray()) _controls.Remove(id);
         foreach (string id in _actions.Where(p => p.Value.Owner == owner).Select(p => p.Key).ToArray()) _actions.Remove(id);
@@ -558,6 +734,7 @@ public sealed class UiHost
         _mapMarkers.RemoveAll(m => m.Owner == owner);
         _markerImages.Remove(owner);
         _menuVerbs.RemoveAll(v => v.Owner == owner);
+        RemovePointerState(owner);
         _extensions.Remove(owner);
     }
 
@@ -586,7 +763,7 @@ public sealed class UiHost
                 if (added.Any(v => v is null || string.IsNullOrWhiteSpace(v.Caption) || v.Choose is null))
                     throw new InvalidOperationException("A menu row needs a caption and an action.");
 
-                rows.AddRange(added.Select(v => v with { Choose = Guarded(entry.Owner, v) }));
+                rows.AddRange(added.Select(v => v with { Caption = ModText(entry.Owner, v.Caption), Choose = Guarded(entry.Owner, v) }));
             }
             catch (Exception e)
             {
@@ -597,6 +774,57 @@ public sealed class UiHost
 
         return rows;
     }
+
+    /// <summary>
+    /// Whether any extension adds rows to the right-click menus of any target (<see cref="MenuVerbs"/>).
+    /// </summary>
+    public bool HasTargetMenuVerbs => TargetVerbs.Any;
+
+    /// <summary>
+    /// The rows the extensions add to the right-click menu of <paramref name="context"/>'s target (<see cref="MenuTargetVerbs.For"/>), with the
+    /// character rows' rules: a failing source reported once and dropped, a row's action that throws reported each time.
+    /// </summary>
+    public IReadOnlyList<UiMenuVerb> MenuVerbs(UiMenuTargetContext context) => TargetVerbs.For(context, Guarded, Diagnostic, ModText);
+
+    /// <summary>
+    /// Whether any extension changes right-click menu rows (<see cref="MenuRowOverride"/>).
+    /// </summary>
+    public bool HasMenuRowOverrides => MenuRows.Any;
+
+    /// <summary>
+    /// The extensions' changes to <paramref name="row"/> (<see cref="MenuRowOverrides.For"/>); null for none.
+    /// </summary>
+    public UiMenuRowOverride? MenuRowOverride(UiMenuRowContext row) => MenuRows.For(row, Diagnostic);
+
+    /// <summary>
+    /// Whether any extension handles world map input (<see cref="MapInput"/>).
+    /// </summary>
+    public bool HasMapInput => Map.Any;
+
+    /// <summary>
+    /// Hands a world map input to the extensions (<see cref="MapInputs.Handle"/>); true when one took it.
+    /// </summary>
+    public bool MapInput(UiMapInput input) => Map.Handle(input, Diagnostic);
+
+    /// <summary>
+    /// Whether any extension handles interface keys (<see cref="KeyInputTaken"/>).
+    /// </summary>
+    public bool HasKeyInput => KeyInput.Any;
+
+    /// <summary>
+    /// Hands a key going down to the extensions (<see cref="KeyInputs.Handle"/>); true when one took it.
+    /// </summary>
+    public bool KeyInputTaken(UiKeyInput input) => KeyInput.Handle(input, Diagnostic);
+
+    /// <summary>
+    /// A text extension <paramref name="owner"/> shows (a node's, a menu row's, an option's): in its code mod's translation, else as written.
+    /// </summary>
+    internal string ModText(string owner, string text) => _texts.TryGetValue(owner, out var texts) ? texts.Text(text) : text;
+
+    /// <summary>
+    /// <see cref="ModText"/> of a text that may be null.
+    /// </summary>
+    string? ModTextOrNull(string owner, string? text) => text is null ? null : ModText(owner, text);
 
     /// <summary>
     /// A menu row's action that reports a throw as a <see cref="Diagnostic"/> instead of passing it on to the input, and does nothing once its
@@ -738,7 +966,8 @@ public sealed class UiHost
 
                 options.AddRange(added.Select(o => o with
                 {
-                    Tooltip = o.Tooltip ?? "",
+                    Caption = ModText(entry.Owner, o.Caption),
+                    Tooltip = ModText(entry.Owner, o.Tooltip ?? ""),
                     Press = GuardedPress(entry.Owner, $"squad AI option {o.Caption}", o.Press),
                 }));
             }
@@ -773,7 +1002,12 @@ public sealed class UiHost
                 if (added.Any(a => a is null || string.IsNullOrWhiteSpace(a.Caption) || a.Press is null))
                     throw new InvalidOperationException("A building panel button needs a caption and a press.");
 
-                actions.AddRange(added.Select(a => a with { Press = GuardedPress(entry.Owner, $"building panel button {a.Caption}", a.Press) }));
+                actions.AddRange(added.Select(a => a with
+                {
+                    Caption = ModText(entry.Owner, a.Caption),
+                    Tooltip = ModTextOrNull(entry.Owner, a.Tooltip),
+                    Press = GuardedPress(entry.Owner, $"building panel button {a.Caption}", a.Press),
+                }));
             }
             catch (Exception e)
             {
@@ -790,6 +1024,24 @@ public sealed class UiHost
     /// <see cref="Diagnostic"/> and dropped.
     /// </summary>
     public IReadOnlyList<UiItemTooltipLine> ItemTooltipLines(UiItemTooltipContext item) => ItemTips.For(item, Diagnostic);
+
+    /// <summary>
+    /// The name the interface shows for an item of <paramref name="record"/> named <paramref name="name"/> with tag <paramref name="modTag"/>: the
+    /// extensions' text sources' (<see cref="ShownText.Record"/>, the item record's name), else <paramref name="name"/>.
+    /// </summary>
+    public string ItemName(string record, string name, string modTag = "") =>
+        ShownText.Record(record, name, ShownText.RecordName, modTag);
+
+    /// <summary>
+    /// Whether any extension adds building panel bars (<see cref="BuildingRows"/>).
+    /// </summary>
+    public bool HasBuildingRows => BuildingBars.Any;
+
+    /// <summary>
+    /// The bars the extensions add under the selected building's Condition (<see cref="BuildingPanelRows.For"/>); a failing source is reported as a
+    /// <see cref="Diagnostic"/> and dropped.
+    /// </summary>
+    public IReadOnlyList<UiBuildingRow> BuildingRows(UiBuildingContext context) => BuildingBars.For(context, Diagnostic);
 
     /// <summary>
     /// Whether any extension adds character panel lines (<see cref="CharacterPanelLines"/>).
@@ -813,6 +1065,45 @@ public sealed class UiHost
     /// <see cref="CharacterPanelHooks.MaxButtons"/>, captions cut, a failing source reported as a <see cref="Diagnostic"/> once and dropped.
     /// </summary>
     public IReadOnlyList<UiJobButton> JobPanelButtons(UiCharacterContext context) => CharacterPanel.Buttons(context, GuardedPress, Diagnostic);
+
+    /// <summary>
+    /// Whether any extension adds controls to a screen (<see cref="ArrangeScreenControls"/>).
+    /// </summary>
+    public bool HasScreenControls => Screens.Any;
+
+    /// <summary>
+    /// Whether any extension changes a screen's own widgets (<see cref="ArrangeScreenControls"/>).
+    /// </summary>
+    public bool HasScreenOverrides => ScreenOverrides.Any;
+
+    /// <summary>
+    /// Changes <paramref name="view"/>'s screen's own widgets in its arranged <paramref name="controls"/> (<see cref="ScreenOverrides.Apply"/>), then
+    /// adds the extensions' controls (<see cref="ScreenControls.Arrange"/>); a failing source is reported as a <see cref="Diagnostic"/> and dropped.
+    /// </summary>
+    internal void ArrangeScreenControls(ScreenView view, List<UiControl> controls, UiMode mode, int width, int height)
+    {
+        var frame = new UiFrameContext(this, mode, width, height, new UiBindings());
+        _frame ??= frame;
+        if (ScreenOverrides.Any) ScreenOverrides.Apply(view, controls, frame, Diagnostic);
+        Screens.Arrange(this, view, controls, frame, Diagnostic);
+    }
+
+    /// <summary>
+    /// A press on a screen's extension control: runs its action (<see cref="Dispatch(UiControl)"/>); false for any other control.
+    /// </summary>
+    public bool DispatchScreen(string screen, string widget) => Screens.Shown(screen, widget) is { } control && Dispatch(control);
+
+    /// <summary>
+    /// Whether any extension adds dialogue replies (<see cref="DialogueReplies"/>).
+    /// </summary>
+    public bool HasDialogueReplies => Replies.Any;
+
+    /// <summary>
+    /// The replies the extensions add to a conversation's choices (<see cref="Ui.DialogueReplies.For"/>): at most
+    /// <see cref="Ui.DialogueReplies.MaxReplies"/>, texts cut, a failing source reported as a <see cref="Diagnostic"/> once and dropped, a press
+    /// that throws reported each time.
+    /// </summary>
+    public IReadOnlyList<UiDialogueReply> DialogueReplies(UiDialogueContext context) => Replies.For(context, GuardedPress, Diagnostic);
 
     /// <summary>
     /// Whether any extension adds town panel lines (<see cref="TownLines"/>).
@@ -865,7 +1156,7 @@ public sealed class UiHost
         string? value = string.IsNullOrWhiteSpace(line.Value) ? null : OneLine(line.Value);
         string? tooltip = line.Tooltip is null ? null : Cut(line.Tooltip, MaxTownLineTooltip);
         var press = line.Press is null ? null : GuardedPress(owner, "town panel line " + label, line.Press);
-        return new UiTownLine(label, value, tooltip, press);
+        return new UiTownLine(label, value, tooltip, press) { Style = UiLineStyle.Shown(line.Style) };
     }
 
     /// <summary>
@@ -942,34 +1233,103 @@ public sealed class UiHost
     public IReadOnlyList<UiControl> Arrange(UiMode mode, int width, int height, UiBindings bindings, IReadOnlyDictionary<string, UiRect> slots)
     {
         _frame = new(this, mode, width, height, bindings);
-        _textBoxes.Clear();
+        _last = new UiArrangement();
         var result = new List<UiControl>();
         if (width <= 0 || height <= 0) return result;
 
+        ArrangeContributions(mode, slots, _frame, _last, result, hudHidden: false);
+        return result;
+    }
+
+    /// <summary>
+    /// The overlay drawn while the interface is hidden (F7): the overlay contributions whose root asks for it (<see cref="UiNode.ShowWithHudHidden"/>),
+    /// laid out over the whole screen with no bindings. They take no input: the last <see cref="Arrange"/> keeps its controls for that.
+    /// </summary>
+    public IReadOnlyList<UiControl> ArrangeHudHidden(UiMode mode, int width, int height)
+    {
+        var result = new List<UiControl>();
+        if (width <= 0 || height <= 0 || !_contributions.Any(c => c.Slot == UiSlots.Overlay)) return result;
+
+        var frame = new UiFrameContext(this, mode, width, height, new UiBindings());
+        var slots = new Dictionary<string, UiRect> { [UiSlots.Overlay] = new(0, 0, width, height) };
+        ArrangeContributions(mode, slots, frame, new UiArrangement(), result, hudHidden: true);
+        return result;
+    }
+
+    /// <summary>
+    /// Lays out each contribution of <paramref name="mode"/> whose slot is in <paramref name="slots"/> (with <paramref name="hudHidden"/>, only
+    /// those asking to be shown with the interface hidden) into <paramref name="result"/>, recorded in <paramref name="into"/>; one that fails is
+    /// left out whole and reported.
+    /// </summary>
+    void ArrangeContributions(UiMode mode, IReadOnlyDictionary<string, UiRect> slots, UiFrameContext frame, UiArrangement into,
+        List<UiControl> result, bool hudHidden)
+    {
         foreach (var contribution in _contributions.OrderBy(c => c.Order).ToArray())
         {
             if (contribution.Mode is { } only && only != mode || !slots.TryGetValue(contribution.Slot, out var parent)) continue;
 
+            int kept = into.Nodes.Count;
             try
             {
+                var root = contribution.Factory(frame);
+                if (hudHidden && root?.ShowWithHudHidden != true) continue;
+
+                into.Owner = contribution.Owner;
                 var local = new List<UiControl>();
-                ArrangeNode(contribution.Factory(_frame), parent, parent, true, local);
-                result.AddRange(local);
+                ArrangeNode(root!, parent, new NodeScope(parent, true, 1, -1), into, local);
+                result.AddRange(contribution.Slot == UiSlots.Overlay ? OnLayer(local, root!.Layer) : local);
             }
             catch (Exception e)
             {
+                into.Truncate(kept);
                 Diagnostic?.Invoke(new(contribution.Owner, $"build {contribution.Slot}", e));
             }
         }
+    }
 
-        return result;
+    /// <summary>
+    /// <paramref name="controls"/> marked for <paramref name="layer"/>; as they are on the HUD's layer.
+    /// </summary>
+    static IEnumerable<UiControl> OnLayer(List<UiControl> controls, UiOverlayLayer layer)
+    {
+        if (layer == UiOverlayLayer.Hud) return controls;
+
+        string name = layer.ToString();
+        return controls.Select(c =>
+            c with { Properties = new Dictionary<string, string>(c.Properties, StringComparer.Ordinal) { [LayerProperty] = name } });
+    }
+
+    /// <summary>
+    /// The layer an arranged overlay control is drawn on (<see cref="LayerProperty"/>).
+    /// </summary>
+    public static UiOverlayLayer LayerOf(UiControl c) =>
+        c.Properties.TryGetValue(LayerProperty, out string? name) && Enum.TryParse(name, out UiOverlayLayer layer) ? layer : UiOverlayLayer.Hud;
+
+    /// <summary>
+    /// What a node is laid out within: the clip its parent leaves, whether its parent takes clicks, the opacity it inherits and its parent's index
+    /// in the arrangement (-1: a root).
+    /// </summary>
+    readonly record struct NodeScope(UiRect Clip, bool Enabled, float Opacity, int Parent);
+
+    /// Lays out <paramref name="node"/> in <paramref name="parent"/>, clipped to <paramref name="clip"/>, into <paramref name="result"/> (a screen
+    /// control's tree, by the overlay's rules).
+    /// </summary>
+    internal void ArrangeInto(UiNode node, UiRect parent, UiRect clip, List<UiControl> result, List<ScreenNode>? nodes = null, string owner = "")
+    {
+        var into = new UiArrangement { Owner = owner };
+        ArrangeNode(node, parent, new NodeScope(clip, true, 1, -1), into, result);
+        if (nodes is null) return;
+
+        foreach (var e in into.Nodes)
+            nodes.Add(new(owner, e.Node.Id, e.Control.Action, e.Control.Argument, e.Part == ScrollPart.None ? e.Node.Pointer : 0, e.Control.Enabled,
+                e.Parent));
     }
 
     /// <summary>
     /// Lays out <paramref name="node"/> in <paramref name="parent"/> (or at <paramref name="placed"/>), clipped, and its children by its flow;
     /// nothing for a hidden or clipped-out node.
     /// </summary>
-    void ArrangeNode(UiNode node, UiRect parent, UiRect clip, bool parentEnabled, List<UiControl> result, UiRect? placed = null)
+    void ArrangeNode(UiNode node, UiRect parent, NodeScope scope, UiArrangement into, List<UiControl> result, UiRect? placed = null)
     {
         if (!node.Visible) return;
 
@@ -977,18 +1337,40 @@ public sealed class UiHost
         if (!float.IsFinite(b.X) || !float.IsFinite(b.Y) || !float.IsFinite(b.Width) || !float.IsFinite(b.Height))
             throw new InvalidOperationException($"Non-finite UI layout: {node.Id}");
 
+        var clip = scope.Clip;
         float x = Math.Max(b.X, clip.X), y = Math.Max(b.Y, clip.Y);
         var visible = new UiRect(x, y, Math.Max(0, Math.Min(b.X + b.Width, clip.X + clip.Width) - x),
             Math.Max(0, Math.Min(b.Y + b.Height, clip.Y + clip.Height) - y));
         if (visible.Width <= 0 || visible.Height <= 0) return;
 
-        bool enabled = parentEnabled && node.Enabled;
-        var control = Control(node, b, visible, enabled);
+        ValidateLooks(node);
+        bool enabled = scope.Enabled && node.Enabled;
+        float opacity = scope.Opacity * Math.Clamp(node.Opacity, 0, 1);
+        var control = Control(node, b, visible, enabled, opacity, into.Owner);
         result.Add(control);
-        if (node.Kind == UiNodeKind.TextBox) _textBoxes[node.Id] = control;
+        int index = into.Add(node, control, scope.Parent);
 
         var content = new UiRect(
             b.X + node.Padding, b.Y + node.Padding, Math.Max(0, b.Width - node.Padding * 2), Math.Max(0, b.Height - node.Padding * 2));
+        var inner = new NodeScope(visible, enabled, opacity, index);
+        if (node.Kind == UiNodeKind.ScrollView) ArrangeScrollView(node, content, inner, into, result);
+        else ArrangeChildren(node, content, inner, into, result);
+    }
+
+    /// <summary>
+    /// Lays out <paramref name="node"/>'s children in <paramref name="content"/> by its flow.
+    /// </summary>
+    void ArrangeChildren(UiNode node, UiRect content, NodeScope scope, UiArrangement into, List<UiControl> result)
+    {
+        foreach (var (child, rect) in ChildRects(node, content)) ArrangeNode(child, content, scope, into, result, rect);
+    }
+
+    /// <summary>
+    /// <paramref name="node"/>'s shown children, each with its rectangle in <paramref name="content"/> when the node's flow places it (null: its
+    /// own placement).
+    /// </summary>
+    static IEnumerable<(UiNode Child, UiRect? Rect)> ChildRects(UiNode node, UiRect content)
+    {
         float cursor = 0;
         foreach (var child in node.Children)
         {
@@ -1006,15 +1388,16 @@ public sealed class UiHost
                 cursor += (node.Flow == UiFlow.Row ? size.Width : size.Height) + node.Gap;
             }
 
-            ArrangeNode(child, content, visible, enabled, result, childRect);
+            yield return (child, childRect);
         }
     }
 
     /// <summary>
     /// <paramref name="node"/>'s control: its <paramref name="visible"/> part, or for an image the whole of <paramref name="bounds"/> clipped to
-    /// it (a picture is cut off, not squeezed).
+    /// it (a picture is cut off, not squeezed); the node's own looks (<see cref="AddLooks"/>) over the style's; its text (not a text box's) in the
+    /// translation of <paramref name="owner"/>'s mod.
     /// </summary>
-    UiControl Control(UiNode node, UiRect bounds, UiRect visible, bool enabled)
+    UiControl Control(UiNode node, UiRect bounds, UiRect visible, bool enabled, float opacity, string owner)
     {
         var style = Style(node.Style);
         bool image = node.Kind == UiNodeKind.Image;
@@ -1024,16 +1407,19 @@ public sealed class UiHost
             ["FontName"] = style.FontName,
             ["TextPadding"] = style.TextPadding.ToString(),
         };
-        if (image && node.Portrait.Length > 0) properties[PortraitProperty] = node.Portrait;
+        if (image && node.PortraitOf is { } live) properties[LivePortraitProperty] = live.ToString();
+        else if (image && node.Portrait.Length > 0) properties[PortraitProperty] = node.Portrait;
         else if (image && node.Image.Length > 0) properties["ImageTexture"] = FileImagePrefix + node.Image;
 
         bool textBox = node.Kind == UiNodeKind.TextBox;
         if (textBox) AddTextBoxProperties(node, properties);
+        AddLooks(node, opacity, properties);
 
         string skin = textBox && style.Skin.Length == 0 ? TextBoxSkin : style.Skin;
-        return new(node.Id, ControlType(node.Kind), image ? bounds : visible, node.Text, node.Action, skin, enabled, properties,
-            style.Background, style.Text, style.Hover, style.Active, style.Disabled, node.Pickable, node.Argument, style.TextScale,
-            image ? visible : null);
+        string text = textBox ? node.Text : ModText(owner, node.Text);
+        return new(node.Id, ControlType(node.Kind), image ? bounds : visible, text, node.Action, skin, enabled, properties,
+            style.Background, node.TextColour ?? style.Text, style.Hover, style.Active, style.Disabled, node.Pickable, node.Argument,
+            node.TextScale ?? style.TextScale, image ? visible : null);
     }
 
     /// <summary>
@@ -1043,6 +1429,7 @@ public sealed class UiHost
     static void AddTextBoxProperties(UiNode node, Dictionary<string, string> properties)
     {
         properties[UiTextInput.EditProperty] = "true";
+        if (node.Focus) properties[FocusRequestProperty] = "true";
         if (node.MaxLength > 0) properties["MaxTextLength"] = node.MaxLength.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
@@ -1065,7 +1452,7 @@ public sealed class UiHost
     /// <summary>
     /// Returns false for an unregistered action; disabled controls consume clicks without invoking handlers.
     /// </summary>
-    public bool Dispatch(UiControl control) => Dispatch(control, "");
+    public bool Dispatch(UiControl control) => Dispatch(control, "", UiEventKind.Press);
 
     /// <summary>
     /// A text event of the screens' edit focus: a text box's text changed, so its action runs with the text (disabled or actionless: nothing). False
@@ -1075,25 +1462,40 @@ public sealed class UiHost
     {
         if (e.Screen != UiTextInput.Screen) return false;
 
-        if (e.Action == "text" && _textBoxes.TryGetValue(e.Widget, out var box)) Dispatch(box, e.Text);
+        var kind = e.Action switch
+        {
+            "text" => UiEventKind.Text,
+            SubmitAction => UiEventKind.Submit,
+            _ => (UiEventKind?)null,
+        };
+        if (kind is null) return true;
+
+        if ((_last.TextBoxes.GetValueOrDefault(e.Widget) ?? Screens.TextBox(e.Widget)) is { } box) Dispatch(box, e.Text, kind.Value);
         return true;
     }
 
     /// <summary>
-    /// Runs <paramref name="control"/>'s action with <paramref name="text"/> (<see cref="UiActionContext.Text"/>).
+    /// Runs <paramref name="control"/>'s action with <paramref name="text"/> (<see cref="UiActionContext.Text"/>) as <paramref name="kind"/>.
     /// </summary>
-    bool Dispatch(UiControl control, string text)
+    bool Dispatch(UiControl control, string text, UiEventKind kind) =>
+        Run(control.Enabled, control.Action, frame => new(frame, control.Argument) { Text = text, Kind = kind });
+
+    /// <summary>
+    /// Runs action <paramref name="id"/> with the context <paramref name="context"/> makes from the last frame; a throw is reported as a
+    /// <see cref="Diagnostic"/>. Not <paramref name="enabled"/>: consumed without running; false for an unregistered action or before a frame.
+    /// </summary>
+    bool Run(bool enabled, string id, Func<UiFrameContext, UiActionContext> context)
     {
-        if (!control.Enabled) return true;
-        if (_frame is null || !_actions.TryGetValue(control.Action, out var action)) return false;
+        if (!enabled) return true;
+        if (_frame is null || !_actions.TryGetValue(id, out var action)) return false;
 
         try
         {
-            action.Handler(new(_frame, control.Argument) { Text = text });
+            action.Handler(context(_frame));
         }
         catch (Exception e)
         {
-            Diagnostic?.Invoke(new(action.Owner, $"action {control.Action}", e));
+            Diagnostic?.Invoke(new(action.Owner, $"action {id}", e));
         }
 
         return true;
@@ -1118,12 +1520,18 @@ public sealed class UiRegistration : IDisposable
     bool _disposed;
 
     /// <summary>
-    /// A scope for extension <paramref name="id"/>.
+    /// The folder of the code mod the extension belongs to; null for none.
     /// </summary>
-    internal UiRegistration(UiHost host, string id)
+    readonly string? _folder;
+
+    /// <summary>
+    /// A scope for extension <paramref name="id"/> of the code mod in <paramref name="folder"/> (null: none).
+    /// </summary>
+    internal UiRegistration(UiHost host, string id, string? folder = null)
     {
         this._host = host;
         Id = id;
+        _folder = folder;
     }
 
     /// <summary>
@@ -1156,6 +1564,25 @@ public sealed class UiRegistration : IDisposable
         string key = Key(name);
         _host.AddStyle(Id, key, style);
         return key;
+    }
+
+    /// <summary>
+    /// Adds font file <paramref name="path"/> (a TrueType or OpenType font with outlines; a relative path is in the mod's folder) to the fonts
+    /// every interface text draws a character from when its own font lacks it, after those added before (docs/modding.md, "Fallback fonts").
+    /// False when the file does not exist or was added already. For the life of the process: disposing the scope does not remove it.
+    /// </summary>
+    public bool AddFallbackFont(string path)
+    {
+        Check();
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        if (!Path.IsPathRooted(path))
+        {
+            if (_folder is null) return false;
+            path = Path.Combine(_folder, path);
+        }
+
+        return File.Exists(path) && UiHost.FontFallbackRegistrar?.Invoke(path) == true;
     }
 
     /// <summary>
@@ -1255,6 +1682,44 @@ public sealed class UiRegistration : IDisposable
     }
 
     /// <summary>
+    /// Changes the text the game shows (docs/modding.md "Shown text"): the interface's and the notices' messages, items' names and dialogue lines.
+    /// <paramref name="source"/> gets the kind of text, its key (a message's English source text, an item's record, a dialogue line's record), the
+    /// text so far (the game's, or an earlier extension's) and a tag, and returns the text to show (null or blank: keep it). Display only: records,
+    /// saves and the game's decisions keep the game's text. It runs the first time a text is shown, the answer kept until
+    /// <see cref="RefreshText"/>; it may be asked on any thread (the simulation's messages and dialogue), one call at a time, so it must read only
+    /// its context and the mod's own state, safely across threads.
+    /// </summary>
+    public void AddText(Func<ShownTextContext, string?> source)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(source);
+        ShownText.Add(_host, Id, source);
+    }
+
+    /// <summary>
+    /// Asks every text source again (<see cref="AddText"/>): call it when the mod's answers change, e.g. a word it teaches was learned. Text
+    /// already handed out (a dialogue line said, a notice posted) keeps what it was given.
+    /// </summary>
+    public void RefreshText()
+    {
+        Check();
+        ShownText.Refresh();
+    }
+
+    /// <summary>
+    /// Adds bars under the Condition bar of a selected building, placed piece or piece of furniture (docs/modding.md "Building panel bars"):
+    /// <paramref name="rows"/> runs on the host's thread whenever the panel's bars are bound, which can be every frame, so it must be cheap, and
+    /// while a tick may be in flight, so it must not touch the world; it reads the context. Bars show state only; buttons go through
+    /// <see cref="AddBuildingActions"/>.
+    /// </summary>
+    public void AddBuildingRows(Func<UiBuildingContext, IEnumerable<UiBuildingRow>> rows)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(rows);
+        _host.BuildingBars.Add(Id, rows);
+    }
+
+    /// <summary>
     /// Adds lines to the HUD's character panel, under its stats lines (docs/modding.md "Character panel lines and job panel buttons"):
     /// <paramref name="lines"/> runs on the host's thread whenever the panel is arranged, which can be every frame, so it must be cheap, and while a
     /// tick may be in flight, so it must not touch the world; it reads the context, and a pressed line changes the world through commands
@@ -1277,6 +1742,133 @@ public sealed class UiRegistration : IDisposable
         Check();
         ArgumentNullException.ThrowIfNull(buttons);
         _host.CharacterPanel.AddButtons(Id, buttons);
+    }
+
+    /// <summary>
+    /// Adds buttons beside the HUD's jobs list as <see cref="AddJobPanelButtons(Func{UiCharacterContext, IEnumerable{UiJobButton}})"/> does, placed
+    /// by <paramref name="layout"/> (rows above the list or columns beside it): the first registered source with a layout sets it for all.
+    /// </summary>
+    public void AddJobPanelButtons(Func<UiCharacterContext, IEnumerable<UiJobButton>> buttons, UiJobButtonLayout layout)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(buttons);
+        ArgumentNullException.ThrowIfNull(layout);
+        _host.CharacterPanel.AddButtons(Id, buttons, layout);
+    }
+
+    /// <summary>
+    /// Adds controls to a faithful screen or the HUD (docs/modding.md "Screen controls"): <paramref name="build"/> makes a node tree (null: nothing)
+    /// laid out against the widget <paramref name="anchorWidget"/> of <paramref name="screen"/> (a screen id or kind, or <see cref="UiScreens.Hud"/>;
+    /// <see cref="UiScreens.ItemCells"/> builds once per item cell) by <paramref name="placement"/>, drawn over the screen; a node's
+    /// <see cref="UiNode.Action"/> names an action registered with <see cref="RegisterAction"/>. Nothing shows while the screen is closed or its
+    /// layout lacks the widget (a UI mod's). It runs on the host's thread each time the screen is arranged, which can be every frame, so it must be
+    /// cheap, and while a tick may be in flight, so it must not touch the world; an action changes the world through commands
+    /// (<see cref="UiScreenContext.Enqueue"/>).
+    /// </summary>
+    public void AddScreenControls(string screen, string anchorWidget, UiAnchorPlacement placement, Func<UiScreenContext, UiNode?> build)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(build);
+        _host.Screens.Add(Id, screen, anchorWidget, placement, build);
+    }
+
+    /// <summary>
+    /// The offset of the extension's overlay scroll view <paramref name="node"/> (its node id), pixels from the top of its content, as last laid
+    /// out or set (docs/modding.md "Interface"); 0 for one never scrolled. Host thread.
+    /// </summary>
+    public float ScrollOffset(string node)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(node);
+        return _host.ScrollOffset(Id, node);
+    }
+
+    /// <summary>
+    /// Scrolls the extension's overlay scroll view <paramref name="node"/> to <paramref name="offset"/> pixels from the top of its content (finite;
+    /// below 0 is 0); the next layout clamps it to the content, as the wheel's. Host thread.
+    /// </summary>
+    public void ScrollTo(string node, float offset)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(node);
+        if (!float.IsFinite(offset)) throw new ArgumentOutOfRangeException(nameof(offset), "A scroll offset is finite.");
+        _host.ScrollTo(Id, node, offset);
+    }
+
+    /// <summary>
+    /// Changes the own widgets of a faithful screen or the HUD (docs/modding.md "Screen overrides"): <paramref name="over"/> is asked for each
+    /// arranged widget of <paramref name="screen"/> (a screen id or kind, or <see cref="UiScreens.Hud"/>) whose name matches
+    /// <paramref name="widgetPattern"/> (a name, or <c>*</c> and <c>?</c> wildcards), with the widget and the screen's state
+    /// (<see cref="UiScreenContext.Widget"/>, <see cref="UiScreenContext.State"/>), and answers its caption, text colour or visibility (null: keep it).
+    /// It runs on the host's thread each time the screen is arranged, so it must be cheap and must not touch the world.
+    /// </summary>
+    public void AddScreenOverrides(string screen, string widgetPattern, Func<UiScreenContext, UiWidgetOverride?> over)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(over);
+        _host.ScreenOverrides.Add(Id, screen, widgetPattern, over);
+    }
+
+    /// <summary>
+    /// Adds rows to the right-click menu of any target (docs/modding.md "Right-click menu rows"): <paramref name="verbs"/> gets the target
+    /// (<see cref="UiMenuTarget"/>: a character, ground item, container, door, building or the ground) whenever the game builds a menu for one with a
+    /// selection, which can be each frame the target is under the cursor, so it must be cheap and must not touch the world; a chosen row queues
+    /// commands (<see cref="UiMenuTargetContext.Enqueue"/>).
+    /// </summary>
+    public void AddMenuVerbs(Func<UiMenuTargetContext, IEnumerable<UiMenuVerb>> verbs)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(verbs);
+        _host.TargetVerbs.Add(Id, verbs);
+    }
+
+    /// <summary>
+    /// Changes the rows of right-click menus, the game's own and the mods' (docs/modding.md "Right-click menu rows"): <paramref name="over"/> is
+    /// asked for each row of a menu as it is built (<see cref="UiMenuRowContext"/>: the title, the row's own label, the target), which can be
+    /// each frame a target is under the cursor, so it must be cheap and must not touch the world; it answers the row's caption, colour or
+    /// visibility (null: keep).
+    /// </summary>
+    public void AddMenuRowOverrides(Func<UiMenuRowContext, UiMenuRowOverride?> over)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(over);
+        _host.MenuRows.Add(Id, over);
+    }
+
+    /// <summary>
+    /// Handles input on the world map (docs/modding.md "World map input"): <paramref name="input"/> gets presses over the map, keys while it shows
+    /// and its closing, with the map as drawn (<see cref="UiWorldMapView"/>), on the host's thread; true takes the press or key from the game (no
+    /// pan, no move order). It must not touch the world; it queues commands.
+    /// </summary>
+    public void AddMapInput(Func<UiMapInput, bool> input)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(input);
+        _host.Map.Add(Id, input);
+    }
+
+    /// <summary>
+    /// Handles interface keys (docs/modding.md "Interface keys"): <paramref name="input"/> gets each key going down to the game's interface, Esc
+    /// included, before the interface and the game's bindings use it, on the host's thread; true takes it from them (no window closes, no hotkey,
+    /// no binding). It must not touch the world; it queues commands.
+    /// </summary>
+    public void AddKeyInput(Func<UiKeyInput, bool> input)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(input);
+        _host.KeyInput.Add(Id, input);
+    }
+
+    /// <summary>
+    /// Adds player replies to conversations, after the game's own choices (docs/modding.md "Dialogue replies"): <paramref name="replies"/> gets the
+    /// conversation (the NPC's and the player's snapshots: record, faction) whenever its line or choices change and answers the replies to offer
+    /// (none: the conversation is as the game's); a chosen reply runs on the host's thread and changes the world only by queueing commands.
+    /// </summary>
+    public void AddDialogueReplies(Func<UiDialogueContext, IEnumerable<UiDialogueReply>> replies)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(replies);
+        _host.Replies.Add(Id, replies);
     }
 
     /// <summary>

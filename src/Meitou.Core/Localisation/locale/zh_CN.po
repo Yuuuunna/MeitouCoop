@@ -20,6 +20,9 @@ msgstr "最大化"
 msgid "Close"
 msgstr "关闭"
 
+msgid "Pick-up thefts from the owner"
+msgstr "拾取盗窃算物主的"
+
 msgid "Play"
 msgstr "开始游戏"
 
@@ -40,6 +43,9 @@ msgstr "每日构建"
 
 msgid "HOME"
 msgstr "主页"
+
+msgid "Taking someone else's item from the floor of a building is a theft from the item's owner. The game counts it as stolen from whoever owns the building you stand in, even when the item belongs to someone else."
+msgstr "在建筑内从地上拾取别人的物品，算作偷窃物品的主人。原版游戏则算作偷窃你所在建筑的主人，即使物品属于别人。"
 
 msgid "VERSIONS"
 msgstr "版本"
@@ -2060,8 +2066,6 @@ msgstr "每日构建每天用最新代码生成两次，而且未经过测试。
 msgid "No"
 msgstr "否"
 
-# ---- the launcher's texts built at run time, its tooltips and the 1.5.0 page ----
-
 msgid "latest nightly"
 msgstr "最新的每日构建"
 
@@ -2827,8 +2831,6 @@ msgstr "{1}因{3}被{2}悬赏：赏金{4}开币"
 msgid "{1} has been caught committing {2}!"
 msgstr "{1}被抓住正在{2}！"
 
-# ---- the launcher's 1.6.0 texts: Continue, mods from a save, code mods, the update rows ----
-
 msgid "Continue"
 msgstr "继续"
 
@@ -2946,8 +2948,6 @@ msgstr "Vulkan（MoltenVK）"
 msgid "How to get Kenshi on this Mac"
 msgstr "如何在这台 Mac 上获取 Kenshi"
 
-# ---- the status lines the launcher writes while it reads and moves the versions ----
-
 msgid "Wait for the download to finish first."
 msgstr "请先等下载完成。"
 
@@ -2956,8 +2956,6 @@ msgstr "正在移动已安装的版本…"
 
 msgid "Choose a full path for the install folder."
 msgstr "请为安装目录选择完整路径。"
-
-# ---- render scale modes, and launcher status lines that had no entry ----
 
 msgid "Ultra performance"
 msgstr "超级性能"
@@ -2997,8 +2995,6 @@ msgstr "启动参数中包含 --benchmark-baseline：只要它生效，游戏就
 
 msgid "The Vulkan loader is already installed. Select Vulkan to use it."
 msgstr "Vulkan 加载器已安装。选择 Vulkan 即可使用。"
-
-# ---- messages the code builds at run time (saves, crime, arrests, locks, trade): {1} holes, the game's terms and spacing ----
 
 msgid "Saved"
 msgstr "已保存"
@@ -3071,270 +3067,6 @@ msgstr "{1}花{3}开币买下了{2}"
 msgid "{1} sold {2} for c.{3}"
 msgstr "{1}以{3}开币卖出了{2}"
 
-msgid "PLAY"
-msgstr "开始游戏"
-
-msgid "Client source"
-msgstr "客户端来源"
-
-msgid "Installed release"
-msgstr "已安装的发布版"
-
-msgid "Local client"
-msgstr "本地客户端"
-
-msgid "Choose an installed version with the arrow beside Play, or select a local client below."
-msgstr "使用开始按钮旁的箭头选择已安装版本，或在下方选择本地客户端。"
-
-msgid "Client folder or executable"
-msgstr "客户端文件夹或可执行文件"
-
-msgid "Use local client"
-msgstr "使用本地客户端"
-
-msgid "Find checkout build"
-msgstr "查找仓库构建"
-
-msgid "Refresh client"
-msgstr "刷新客户端"
-
-msgid "Open client folder"
-msgstr "打开客户端文件夹"
-
-msgid "Open log"
-msgstr "打开日志"
-
-msgid "Join a server"
-msgstr "连接服务器"
-
-msgid "Enter host:port. The game remembers your existing player identity and checks server compatibility."
-msgstr "输入服务器地址和端口。游戏会保留已有玩家身份，并检查与服务器的兼容性。"
-
-msgid "Connect"
-msgstr "连接"
-
-msgid "Recent servers"
-msgstr "最近连接"
-
-msgid "Connect starts the selected client. Admission, character creation and reconnection take place in the game."
-msgstr "连接会启动当前选择的客户端。入场、角色创建和重连由游戏处理。"
-
-msgid "Choose a valid local client on the Play page."
-msgstr "请在开始游戏页面选择有效的本地客户端。"
-
-msgid "Install a version first (Versions), or choose a local client on the Play page."
-msgstr "请先在版本页面安装客户端，或在开始游戏页面选择本地客户端。"
-
-msgid "Build the game first, or browse to an exported client."
-msgstr "请先构建游戏，或浏览选择已导出的客户端。"
-
-msgid "No Meitou client was found at this path."
-msgstr "此路径下没有找到 Meitou 客户端。"
-
-msgid "Use Refresh client on the Play page to obtain this client's settings."
-msgstr "请在开始游戏页面点击刷新客户端，获取此客户端的设置。"
-
-msgid "Close the running game or wait for hardware detection before starting another client."
-msgstr "请先关闭正在运行的游戏，或等待硬件检测完成，再启动客户端。"
-
-msgid " Connecting to {1}."
-msgstr " 正在连接 {1}。"
-
-msgid "Meitou stopped with an error (exit code {1}); its log is {2}"
-msgstr "Meitou 异常退出（退出码 {1}），日志位于 {2}"
-
-msgid "Could not open the selected client path."
-msgstr "无法打开所选客户端路径。"
-
-msgid "Enter a server as host:port (IPv6: [address]:port)."
-msgstr "请输入服务器地址和端口（IPv6 格式为 [地址]:端口）。"
-
-msgid "Invalid server port."
-msgstr "服务器端口无效。"
-
-msgid "Launch arguments contain an unclosed double quote."
-msgstr "启动参数中有未闭合的双引号。"
-
-msgid "Experimental builds"
-msgstr "实验版本"
-
-msgid "experimental"
-msgstr "实验版本"
-
-msgid "Experimental builds have not completed live game validation. They may be unstable, crash, and corrupt your save files: back up your saves before playing one.\n\nContinue with experimental builds?"
-msgstr "实验版本尚未完成实机验收，可能不稳定、崩溃或损坏存档。游玩前请备份存档。\n\n是否启用实验版本？"
-
-msgid "Only experimental builds so far: tick Experimental builds beside Play to list them."
-msgstr "目前只有实验版本：勾选开始按钮旁的实验版本即可查看。"
-
-msgid "Build information unavailable (build-info.json is missing)."
-msgstr "此客户端未附带构建信息（缺少 build-info.json）。"
-
-msgid " (uncommitted changes)"
-msgstr " （包含未提交修改）"
-
-msgid "Version: {1}\nCommit: {2}{3}\nProtocol: {4}\nEngine: {5}"
-msgstr "版本：{1}\n源码提交：{2}{3}\n联机协议：{4}\n引擎标识：{5}"
-
-msgid "Close this game before removing its installed version."
-msgstr "请先关闭游戏，再移除此安装版本。"
-
-msgid "Checking for releases..."
-msgstr "正在检查发布版本…"
-
-msgid "Could not load release information. Check your connection and try again."
-msgstr "无法获取版本信息，请检查网络后重试。"
-
-msgid "Cannot check for updates; showing the bundled release list."
-msgstr "暂时无法检查更新，正在显示程序附带的版本清单。"
-
-msgid "Cannot check for updates; showing the saved release list."
-msgstr "暂时无法检查更新，正在显示已保存的版本清单。"
-
-msgid "Host a headless server"
-msgstr "启动无头服务端"
-
-msgid "Console command (e.g. speed 2)"
-msgstr "控制台命令（例如 speed 2）"
-
-msgid "Send command"
-msgstr "发送命令"
-
-msgid "Game speed: speed 0 pauses; speed 1, speed 2 or speed 5. Enter speed to check, or help for all commands."
-msgstr "游戏倍速：speed 0 暂停；speed 1、speed 2、speed 5 切换倍速。输入 speed 查询，help 查看全部命令。"
-
-msgid "Enter one console command."
-msgstr "请输入一行控制台命令。"
-
-msgid "The hosted server is not running."
-msgstr "服务端未在运行。"
-
-msgid "Choose an extracted dedicated server package or checkout build. The server needs Kenshi content, but no GPU or Steam client."
-msgstr "请选择已解压的独立服务端或本地编译目录。服务端需要 Kenshi 资源，无需 GPU 或 Steam 客户端。"
-
-msgid "Dedicated server folder or executable"
-msgstr "独立服务端目录或可执行文件"
-
-msgid "Find server checkout build"
-msgstr "查找本地服务端构建"
-
-msgid "Server configuration"
-msgstr "服务端配置"
-
-msgid "A missing configuration is created on first start. World saves stay beside it in server-data by default. Stop the server before editing; set BindAddress and AdvertisedHost for LAN access (TCP and UDP 27800 by default)."
-msgstr "首次启动会创建缺失的配置，世界存档默认位于配置旁的 server-data 目录。编辑前请停服；局域网访问需设置 BindAddress 和 AdvertisedHost（默认使用 TCP 和 UDP 27800 端口）。"
-
-msgid "Start server"
-msgstr "启动服务端"
-
-msgid "Save world"
-msgstr "保存世界"
-
-msgid "Save and stop"
-msgstr "保存并停服"
-
-msgid "Open configuration"
-msgstr "打开配置"
-
-msgid "Open server log"
-msgstr "打开服务端日志"
-
-msgid "Choose a dedicated server folder or executable."
-msgstr "请选择独立服务端目录或可执行文件。"
-
-msgid "Choose a server configuration file."
-msgstr "请选择服务端配置文件。"
-
-msgid "No Meitou.Server executable was found at this path."
-msgstr "所选路径中没有 Meitou.Server 可执行文件。"
-
-msgid "Build Meitou.Server first, or browse to an extracted server package."
-msgstr "请先编译 Meitou.Server，或选择已解压的服务端目录。"
-
-msgid "The hosted server is already running."
-msgstr "服务端已在运行。"
-
-msgid "The dedicated server did not start."
-msgstr "独立服务端未能启动。"
-
-msgid "Starting headless server; loading content…"
-msgstr "正在启动无头服务端并加载资源…"
-
-msgid "Server is listening. See console for endpoints."
-msgstr "服务端已开始监听，连接地址见下方控制台。"
-
-msgid "Stopping server; waiting for world save…"
-msgstr "正在停服，等待世界保存完成…"
-
-msgid "Server exited with code {1}."
-msgstr "服务端已退出，退出码为 {1}。"
-
-msgid "Start the server first to create its configuration."
-msgstr "请先启动服务端以生成配置文件。"
-
-msgid "Start the server first to create its console log."
-msgstr "请先启动服务端以生成控制台日志。"
-
-msgid "Could not open the selected server path."
-msgstr "无法打开所选服务端路径。"
-
-msgid "Use Save and stop in Meitou Coop before closing the launcher."
-msgstr "请先在 Meitou Coop 页面点击“保存并停服”，再关闭启动器。"
-
-msgid "Synchronize server mods before connecting"
-msgstr "连接前自动同步服务端模组"
-
-msgid "Downloads the server's exact mod set into an isolated profile. Your local mod list stays unchanged; code mods require approval."
-msgstr "下载并使用与服务端完全一致的独立模组配置，保留本地模组列表。代码模组需要确认后才能运行。"
-
-msgid "Cancel mod sync"
-msgstr "取消模组同步"
-
-msgid "Reading the server mod list…"
-msgstr "正在读取服务端模组列表…"
-
-msgid "Checking {1} server mods…"
-msgstr "正在校验 {1} 个服务端模组…"
-
-msgid "Downloading server mods: {1} / {2} MiB"
-msgstr "正在下载服务端模组：{1} / {2} MiB"
-
-msgid "Server code mods"
-msgstr "服务端代码模组"
-
-msgid "{1} requires executable code mods: {2}.\n\nThey run with your account's permissions. Allow this exact mod set?"
-msgstr "{1} 需要运行以下代码模组：{2}。\n\n它们将以你的账户权限运行。是否允许使用这套模组？"
-
-msgid "Allow and connect"
-msgstr "允许并连接"
-
-msgid "Could not synchronize server mods: {1}"
-msgstr "无法同步服务端模组：{1}"
-
-msgid "Update the selected client to support isolated server mod synchronization."
-msgstr "请更新所选客户端，以支持独立的服务端模组同步。"
-
-msgid "This server has disabled mod downloads (ShareMods)."
-msgstr "此服务端已关闭模组下载（ShareMods）。"
-
-msgid "This server does not offer mod synchronization. Update the server and enable ShareMods."
-msgstr "此服务端不支持模组同步，请更新服务端并启用 ShareMods。"
-
-msgid "Server mod synchronization was cancelled or timed out. The client was not started."
-msgstr "模组同步已取消或超时，未启动客户端。"
-
-msgid "Cancelling mod synchronization; close again when it finishes."
-msgstr "正在取消模组同步，请在完成后再次关闭启动器。"
-
-msgid "Server mod archive failed SHA-256 verification."
-msgstr "服务端模组压缩包未通过 SHA-256 校验。"
-
-msgid "Server mods changed during synchronization. Reconnect to refresh them."
-msgstr "服务端模组在同步期间发生变化，请重新连接以刷新。"
-
-msgid "Server mod download was interrupted. Reconnect to retry."
-msgstr "服务端模组下载中断，请重新连接以重试。"
-
 msgid "RE_Kenshi mod"
 msgstr "RE_Kenshi 模组"
 
@@ -3355,8 +3087,6 @@ msgstr "勾选搜索显示的所有模组"
 
 msgid "Untick every mod the search shows"
 msgstr "取消勾选搜索显示的所有模组"
-
-# Added by the first full pass (machine-translated, awaiting review by a native speaker).
 
 msgid "(started with Play), and a change here creates it. Until then the game uses its defaults."
 msgstr "（点击“开始游戏”时创建），在此处更改也会创建它。在此之前游戏使用默认值。"
@@ -5956,6 +5686,120 @@ msgstr "保存当前预设"
 msgid "Sort by"
 msgstr "排序方式"
 
+msgid "Beds used as seats"
+msgstr "当作座位的床"
+
+msgid "A character sleeping on furniture that works as a seat, such as Bed (job), lies along the mattress as in a real bed. The game seats it on the furniture's middle, so it lies across the foot of the bed."
+msgstr "在作为座位使用的家具（如 Bed (job)）上睡觉的角色会像在真正的床上一样顺着床垫躺下。原版游戏让角色坐在家具正中，于是会横躺在床尾。"
+
+#. machine-translated
+msgid "Outpost:"
+msgstr "前哨:"
+
+#. machine-translated
+msgid "This building stands outside every outpost's build limit, so no generator can power it. Dismantle it and build it again inside the red ring."
+msgstr "该建筑位于所有前哨的建造范围之外，因此任何发电机都无法为其供电。请拆除它，并在红圈内重新建造。"
+
+#. machine-translated
+msgid "A tall two-story building shell with stairs inside."
+msgstr "一座内有楼梯的高大两层建筑外壳。"
+
+#. machine-translated
+msgid "Makes basic first aid kits and sleeping bags from fabrics. Needs power."
+msgstr "用布料制作基础急救包和睡袋。需要电力。"
+
+#. machine-translated
+msgid "Makes first aid kits and splint kits from fabrics and hemp. Needs power."
+msgstr "用布料和大麻制作急救包和夹板包。需要电力。"
+
+#. machine-translated
+msgid "Grows hemp indoors, safe from the weather. Needs power and water."
+msgstr "在室内种植大麻，不受天气影响。需要电力和水。"
+
+#. machine-translated
+msgid "Grows riceweed indoors, safe from the weather. Needs power and water."
+msgstr "在室内种植水稻，不受天气影响。需要电力和水。"
+
+#. machine-translated
+msgid "Grows greenfruit indoors, safe from the weather. Needs power and water."
+msgstr "在室内种植绿果，不受天气影响。需要电力和水。"
+
+#. machine-translated
+msgid "Collects water when it rains."
+msgstr "下雨时收集雨水。"
+
+#. machine-translated
+msgid "A sturdy metal table."
+msgstr "一张结实的金属桌子。"
+
+#. machine-translated
+msgid "A simple round table."
+msgstr "一张简单的圆桌。"
+
+#. machine-translated
+msgid "A wooden shelf, for decoration."
+msgstr "一个木架子，用于装饰。"
+
+#. machine-translated
+msgid "A simple stool to sit on."
+msgstr "一张可以坐的简单凳子。"
+
+#. machine-translated
+msgid "Stores power for when your generators fall short."
+msgstr "储存电力，以备发电机供电不足时使用。"
+
+#. machine-translated
+msgid "A larger wind generator with twice the power of the first when the wind is up. Keep batteries as a backup."
+msgstr "更大的风力发电机，有风时发电量是第一种的两倍。记得备好蓄电池。"
+
+#. machine-translated
+msgid "A large storage tank for fuel."
+msgstr "一个大型燃料储存罐。"
+
+#. machine-translated
+msgid "A stack of boxes you can store anything in."
+msgstr "一堆箱子，可以存放任何东西。"
+
+#. machine-translated
+msgid "A storage barrel for cactus."
+msgstr "仙人掌储存桶。"
+
+#. machine-translated
+msgid "A storage barrel for greenfruit."
+msgstr "绿果储存桶。"
+
+#. machine-translated
+msgid "A storage barrel for riceweed."
+msgstr "水稻储存桶。"
+
+#. machine-translated
+msgid "A low, crude wall that won't keep enemies out for long."
+msgstr "一道低矮粗糙的墙，挡不住敌人多久。"
+
+#. machine-translated
+msgid "A proper defensive wall, taller than a makeshift one."
+msgstr "一道真正的防御墙，比简易墙更高。"
+
+#. machine-translated
+msgid "A taller, heavier defensive wall."
+msgstr "一道更高、更厚重的防御墙。"
+
+#. machine-translated
+msgid "A towering fortified wall."
+msgstr "一道高耸的防御城墙。"
+
+#. machine-translated
+msgid "The gate for Defensive Wall II."
+msgstr "2级防御墙的大门。"
+
+#. machine-translated
+msgid "The gate for Defensive Wall III."
+msgstr "3级防御墙的大门。"
+
+#. machine-translated
+msgid "The gate for Defensive Wall IV."
+msgstr "4级防御墙的大门。"
+
 #. machine-translated
 msgid "Simple terrain shading"
 msgstr "简易地形着色"
@@ -5963,6 +5807,1095 @@ msgstr "简易地形着色"
 #. machine-translated
 msgid "Faster ground for weak graphics: one biome and two texture layers a pixel, no bump detail. Blends between biomes show harder edges."
 msgstr "为性能较弱的显卡加快地面渲染：每个像素只用一个生物群系和两层纹理，没有凹凸细节。生物群系之间的过渡边缘会更硬。"
+
+#. machine-translated
+msgid "Loading the target builds..."
+msgstr "正在加载目标版本..."
+
+#. machine-translated
+msgid "{1} target builds"
+msgstr "{1} 个目标版本"
+
+#. machine-translated
+msgid "Benchmark"
+msgstr "基准测试"
+
+#. machine-translated
+msgid "Target builds unknown: {1}"
+msgstr "目标版本未知：{1}"
+
+#. machine-translated
+msgid "Download the build into the benchmark's own folder and list its benchmarks"
+msgstr "将该版本下载到基准测试专用文件夹并列出其基准测试"
+
+#. machine-translated
+msgid "Target builds (full releases and the daily nightlies) count for comparisons; others can be run but not submitted."
+msgstr "目标版本（正式版和每日 nightly）用于比较；其他版本可以运行，但不能提交。"
+
+#. machine-translated
+msgid "Build"
+msgstr "版本"
+
+#. machine-translated
+msgid "target"
+msgstr "目标"
+
+#. machine-translated
+msgid "not a target"
+msgstr "非目标"
+
+#. machine-translated
+msgid "installed"
+msgstr "已安装"
+
+#. machine-translated
+msgid "Proton runs the Windows build, with its own prefix in the launcher's folder."
+msgstr "Proton 以启动器文件夹中的独立前缀运行 Windows 版本。"
+
+#. machine-translated
+msgid "Platform"
+msgstr "平台"
+
+#. machine-translated
+msgid "Install the build to see all the benchmarks it has."
+msgstr "安装该版本即可查看其全部基准测试。"
+
+#. machine-translated
+msgid "Each ticked benchmark is run at each ticked tier."
+msgstr "每个勾选的基准测试都会在每个勾选的档位下运行。"
+
+#. machine-translated
+msgid "Benchmarks"
+msgstr "基准测试"
+
+#. machine-translated
+msgid "Needs ray tracing"
+msgstr "需要光线追踪"
+
+#. machine-translated
+msgid "Medium and {1}, recommended for this computer, are ticked first."
+msgstr "已预先勾选“中”和为本机推荐的 {1}。"
+
+#. machine-translated
+msgid "The game's quality presets."
+msgstr "游戏的画质预设。"
+
+#. machine-translated
+msgid "Tiers"
+msgstr "档位"
+
+#. machine-translated
+msgid "Start"
+msgstr "开始"
+
+#. machine-translated
+msgid "Do not use the computer while it runs."
+msgstr "运行期间请勿使用电脑。"
+
+#. machine-translated
+msgid "Sessions: {1}, two runs each, about {2} minutes."
+msgstr "会话：{1} 个，每个运行两次，约 {2} 分钟。"
+
+#. machine-translated
+msgid "{1} ({2} elapsed)"
+msgstr "{1}（已用 {2}）"
+
+#. machine-translated
+msgid "Benchmark finished."
+msgstr "基准测试已完成。"
+
+#. machine-translated
+msgid "The build is installed."
+msgstr "该版本已安装。"
+
+#. machine-translated
+msgid "A benchmark is already running."
+msgstr "已有基准测试正在运行。"
+
+#. machine-translated
+msgid "Meitou is running: close it before benchmarking."
+msgstr "Meitou 正在运行：请先关闭它再进行基准测试。"
+
+#. machine-translated
+msgid "Choose a build first."
+msgstr "请先选择一个版本。"
+
+#. machine-translated
+msgid "Tick at least one benchmark and one tier."
+msgstr "请至少勾选一个基准测试和一个档位。"
+
+#. machine-translated
+msgid "Cancelled."
+msgstr "已取消。"
+
+#. machine-translated
+msgid "The benchmark stopped: {1}"
+msgstr "基准测试已停止：{1}"
+
+#. machine-translated
+msgid "Benchmarking: the game window opens and closes by itself."
+msgstr "基准测试中：游戏窗口会自动打开和关闭。"
+
+#. machine-translated
+msgid "{1} at {2}: run {3} of {4}, launch {5} of {6}"
+msgstr "{1}（{2}）：第 {3}/{4} 次运行，第 {5}/{6} 次启动"
+
+#. machine-translated
+msgid "Proton: {1}"
+msgstr "Proton：{1}"
+
+#. machine-translated
+msgid "Native Linux build"
+msgstr "原生 Linux 版本"
+
+#. machine-translated
+msgid "This computer's build"
+msgstr "适用于本机的版本"
+
+#. machine-translated
+msgid "Results"
+msgstr "结果"
+
+#. machine-translated
+msgid "No results for this build and platform yet."
+msgstr "此版本和平台尚无结果。"
+
+#. machine-translated
+msgid "Machine id (letters, digits, dashes)"
+msgstr "机器 ID（字母、数字、连字符）"
+
+#. machine-translated
+msgid "Machine name (optional)"
+msgstr "机器名称（可选）"
+
+#. machine-translated
+msgid "Notes (cooling, power plan, ...)"
+msgstr "备注（散热、电源计划……）"
+
+#. machine-translated
+msgid "Kept as it was first submitted, so the site keeps your results together."
+msgstr "保持首次提交时的内容，以便网站将你的结果归在一起。"
+
+#. machine-translated
+msgid "Can be edited until the first session is submitted; then it is kept, so the site keeps your results together."
+msgstr "在提交第一个会话前可以编辑；之后将保持不变，以便网站将你的结果归在一起。"
+
+#. machine-translated
+msgid "Machine"
+msgstr "机器"
+
+#. machine-translated
+msgid "Your name on the benchmarks site (optional)"
+msgstr "你在基准测试网站上的名字（可选）"
+
+#. machine-translated
+msgid "Submitted by"
+msgstr "提交者"
+
+#. machine-translated
+msgid "Shown beside your results."
+msgstr "显示在你的结果旁边。"
+
+#. machine-translated
+msgid "The hardware is probed when a benchmark starts."
+msgstr "开始基准测试时会检测硬件。"
+
+#. machine-translated
+msgid "{1}, {2}, {3} GB, {4}"
+msgstr "{1}，{2}，{3} GB，{4}"
+
+#. machine-translated
+msgid "{1} at {2}"
+msgstr "{1}（{2}）"
+
+#. machine-translated
+msgid "Run {1}: FPS"
+msgstr "第 {1} 次：FPS"
+
+#. machine-translated
+msgid "Run {1}: 99% ms"
+msgstr "第 {1} 次：99% ms"
+
+#. machine-translated
+msgid "Run {1}: over 33 ms"
+msgstr "第 {1} 次：超过 33 ms"
+
+#. machine-translated
+msgid "Submitted (#{1})."
+msgstr "已提交（#{1}）。"
+
+#. machine-translated
+msgid "Submitting..."
+msgstr "正在提交..."
+
+#. machine-translated
+msgid "Submit"
+msgstr "提交"
+
+#. machine-translated
+msgid "Submit again"
+msgstr "再次提交"
+
+#. machine-translated
+msgid "Incomplete: both runs are needed to submit."
+msgstr "不完整：提交需要两次运行都完成。"
+
+#. machine-translated
+msgid "Not a target build: its results can be seen here but not submitted."
+msgstr "非目标版本：结果可在此查看，但不能提交。"
+
+#. machine-translated
+msgid "The runs were made by {1}, not {2}: they cannot be submitted."
+msgstr "这些运行由 {1} 而非 {2} 完成：无法提交。"
+
+#. machine-translated
+msgid "Fill in the machine's id to submit."
+msgstr "请填写机器 ID 后再提交。"
+
+#. machine-translated
+msgid "The service refused it: {1}"
+msgstr "服务拒绝了：{1}"
+
+#. machine-translated
+msgid "Could not reach the reports service: {1}"
+msgstr "无法连接报告服务：{1}"
+
+#. machine-translated
+msgid "{1} skipped: it needs ray tracing, which this graphics card does not have."
+msgstr "已跳过 {1}：需要光线追踪，而此显卡不支持。"
+
+#. machine-translated
+msgid "{1} has no download for {2}."
+msgstr "{1} 没有适用于 {2} 的下载。"
+
+#. machine-translated
+msgid "{1} has no game in its download."
+msgstr "{1} 的下载中没有游戏。"
+
+#. machine-translated
+msgid "Asking the build for its benchmarks..."
+msgstr "正在向该版本查询基准测试..."
+
+#. machine-translated
+msgid "This build did not list its benchmarks (exit code {1}): it may be older than launcher benchmarks."
+msgstr "该版本未列出其基准测试（退出代码 {1}）：它可能早于启动器基准测试。"
+
+#. machine-translated
+msgid "{1} skipped: this build has no such benchmark."
+msgstr "已跳过 {1}：该版本没有此基准测试。"
+
+#. machine-translated
+msgid "{1} skipped: it needs the save {2}, which this launcher cannot download."
+msgstr "已跳过 {1}：需要存档 {2}，而此启动器无法下载它。"
+
+#. machine-translated
+msgid "Checking the benchmark save..."
+msgstr "正在检查基准测试存档..."
+
+#. machine-translated
+msgid "The benchmark save is damaged: its download does not match the expected hash."
+msgstr "基准测试存档已损坏：下载内容与预期哈希不符。"
+
+#. machine-translated
+msgid "Probing the hardware..."
+msgstr "正在检测硬件..."
+
+#. machine-translated
+msgid "This build did not report the hardware (exit code {1}): it may be older than launcher benchmarks."
+msgstr "该版本未报告硬件信息（退出代码 {1}）：它可能早于启动器基准测试。"
+
+#. machine-translated
+msgid "Copying the save..."
+msgstr "正在复制存档..."
+
+#. machine-translated
+msgid "{1} skipped: the game says it needs ray tracing, which this graphics card does not have."
+msgstr "已跳过 {1}：游戏表示需要光线追踪，而此显卡不支持。"
+
+#. machine-translated
+msgid "{1} skipped: the game does not know this benchmark (exit code 7)."
+msgstr "已跳过 {1}：游戏不认识此基准测试（退出代码 7）。"
+
+#. machine-translated
+msgid "The game refused the save: its hash is not the benchmark's (exit code 6)."
+msgstr "游戏拒绝了存档：其哈希与基准测试的不符（退出代码 6）。"
+
+#. machine-translated
+msgid "The game stopped with exit code {1} in {2}, run {3}; its log is {4}"
+msgstr "游戏在 {2} 第 {3} 次运行时以退出代码 {1} 停止；日志为 {4}"
+
+#. machine-translated
+msgid "The game wrote no result.json into {1}; its log is {2}"
+msgstr "游戏未向 {1} 写入 result.json；日志为 {2}"
+
+#. machine-translated
+msgid "The Vulkan loader is not installed: run 'brew install molten-vk vulkan-loader' in a terminal, then try again."
+msgstr "未安装 Vulkan 加载器：请在终端运行 'brew install molten-vk vulkan-loader'，然后重试。"
+
+#. machine-translated
+msgid "The game did not start."
+msgstr "游戏未能启动。"
+
+#. machine-translated
+msgid "The game ran over {1} minutes and was stopped."
+msgstr "游戏运行超过 {1} 分钟，已被停止。"
+
+#. machine-translated
+msgid "Bases: the play bench on a save"
+msgstr "据点：基于存档的游玩测试"
+
+#. machine-translated
+msgid "Shark fly-by: a new game, flying round Shark"
+msgstr "Shark 飞越：新游戏，绕 Shark 飞行"
+
+#. machine-translated
+msgid "Whole run"
+msgstr "完整运行"
+
+#. machine-translated
+msgid "Streaming"
+msgstr "流式加载"
+
+#. machine-translated
+msgid "Views"
+msgstr "视野"
+
+#. machine-translated
+msgid "Flight"
+msgstr "飞行"
+
+#. machine-translated
+msgid "BENCHMARK"
+msgstr "基准测试"
+
+#. machine-translated
+msgid "A benchmark is running: cancel it on the Benchmark page first."
+msgstr "基准测试正在运行：请先在基准测试页面取消它。"
+
+#. machine-translated
+msgid "The benchmark stopped."
+msgstr "基准测试已停止。"
+
+#. machine-translated
+msgid "{1} squad(s) given their own squad AI options by a mod that is not loaded follow yours again."
+msgstr "{1} 个由未加载的模组设置了独立小队 AI 选项的小队重新遵循你的选项。"
+msgid "Unavailable menu rows"
+msgstr "不可用的菜单项"
+
+msgid "Greyed: a menu row your selection can't do now, such as First Aid without a medkit, is greyed; Shift-click it to set up the job anyway. Faithful: every row as in the game."
+msgstr "灰显：所选角色当前无法执行的菜单项（例如没有急救包时的急救）会灰显；按住 Shift 点击仍可设为工作。原版：所有菜单项与游戏一致。"
+
+#. machine-translated
+msgid "Lockpick chance on the pointer"
+msgstr "指针上的撬锁几率"
+
+#. machine-translated
+msgid "Pointing at a lock too hard to pick shows 0%, as its Pick Lock menu entry does, since the character cannot pick it. The game shows the chance before that limit there, such as 3% for a lock the menu gives 0%."
+msgstr "指向难度过高、无法撬开的锁时显示 0%，与其菜单中的“撬锁”一项一致，因为角色撬不开它。游戏在那里显示的是应用该下限之前的几率，例如菜单给出 0% 的锁会显示 3%。"
+
+#. machine-translated
+msgid "Mute corpse flies"
+msgstr "尸体苍蝇静音"
+
+#. machine-translated
+msgid "Mute corpse flies in the Audio settings"
+msgstr "音频设置中的尸体苍蝇静音"
+
+#. machine-translated
+msgid "Mute corpse flies in the Audio settings is on"
+msgstr "音频设置中的尸体苍蝇静音已开启"
+
+#. machine-translated
+msgid "Silences the buzzing of the flies over corpses; the flies are still shown (the game: off)."
+msgstr "消除尸体上方苍蝇的嗡嗡声；苍蝇仍会显示（游戏：关）。"
+
+#. machine-translated
+msgid "Quiet corpse flies"
+msgstr "尸体苍蝇减弱"
+
+#. machine-translated
+msgid "Quiet corpse flies in the Audio settings"
+msgstr "音频设置中的尸体苍蝇减弱"
+
+#. machine-translated
+msgid "Quiet corpse flies in the Audio settings is on"
+msgstr "音频设置中的尸体苍蝇减弱已开启"
+
+#. machine-translated
+msgid "Corpse flies range"
+msgstr "尸体苍蝇声音范围"
+
+#. machine-translated
+msgid "The flies over corpses are heard only close to them, not from across the base (the game: off)."
+msgstr "尸体上方的苍蝇只有在近处才能听到，不会传遍整个基地（游戏：关）。"
+
+#. machine-translated
+msgid "How far the corpse flies are heard, of the game's distance: lower to hear them less, higher for more."
+msgstr "尸体苍蝇能被听到的距离，相对于游戏中的距离：调低则听到得更少，调高则更多。"
+
+#. machine-translated
+msgid "Guards give up lost suspects"
+msgstr "守卫放弃跟丢的嫌疑人"
+
+#. machine-translated
+msgid "A guard who loses sight of the character he was arresting gives up and goes back to his duties. The game has him take the fight up again wherever the character is, so he can run straight to someone hiding out of sight."
+msgstr "跟丢了正在逮捕的角色的守卫会放弃并回到自己的职责。原版游戏会让他无论角色在哪里都重新开始战斗，因此他可能径直跑向躲在视线之外的人。"
+
+#. machine-translated
+msgid "Max faction size"
+msgstr "派系人数上限"
+
+#. machine-translated
+msgid "Max squad size"
+msgstr "小队人数上限"
+
+#. machine-translated
+msgid "Max squads"
+msgstr "小队数量上限"
+
+#. machine-translated
+msgid "Max faction size, Max squad size and Max squads in the Advanced settings"
+msgstr "高级设置中的派系人数上限、小队人数上限和小队数量上限"
+
+#. machine-translated
+msgid "its limits are now Max faction size, Max squad size and Max squads in the Advanced settings"
+msgstr "其上限现已移至高级设置中的派系人数上限、小队人数上限和小队数量上限"
+
+#. machine-translated
+msgid "The faction's recruitment limit: how many characters and animals your faction may hold (the game: 30). Existing members stay if you lower it. Click the number to type an exact value."
+msgstr "派系的招募上限：你的派系最多可容纳的角色和动物数量（游戏：30）。调低上限不会移除现有成员。点击数字可输入精确值。"
+
+#. machine-translated
+msgid "How many members one of your squads may hold (the game: 20). Full squads put new recruits into a new squad."
+msgstr "单个小队最多可容纳的成员数量（游戏：20）。小队满员时，新招募的成员会进入一个新小队。"
+
+#. machine-translated
+msgid "How many squads your faction may create (the game: 10)."
+msgstr "你的派系最多可创建的小队数量（游戏：10）。"
+
+#. machine-translated
+msgid "App menu"
+msgstr "应用菜单"
+
+#. machine-translated
+msgid "Could not change the app menu entry: {1}"
+msgstr "无法更改应用菜单项：{1}"
+
+#. machine-translated
+msgid "Meitou Launcher was added to the app menu."
+msgstr "已将 Meitou Launcher 添加到应用菜单。"
+
+#. machine-translated
+msgid "Meitou Launcher was removed from the app menu."
+msgstr "已将 Meitou Launcher 从应用菜单中移除。"
+
+#. machine-translated
+msgid "Remove"
+msgstr "移除"
+
+#. machine-translated
+msgid "Add"
+msgstr "添加"
+
+#. machine-translated
+msgid "Meitou Launcher is in your desktop's app launcher."
+msgstr "Meitou Launcher 已在桌面的应用启动器中。"
+
+#. machine-translated
+msgid "Add Meitou Launcher, with its icon, to your desktop's app launcher."
+msgstr "将 Meitou Launcher 及其图标添加到桌面的应用启动器。"
+
+#. machine-translated
+msgid "Add to the app menu"
+msgstr "添加到应用菜单"
+
+#. machine-translated
+msgid "Meitou Launcher, with its icon, in your desktop's app launcher."
+msgstr "在桌面的应用启动器中显示 Meitou Launcher 及其图标。"
+
+#. machine-translated
+msgid "Benchmarks site"
+msgstr "基准测试网站"
+
+#. machine-translated
+msgid "~{1} min per tier"
+msgstr "每档约 {1} 分钟"
+
+#. machine-translated
+msgid "Recommended for this computer"
+msgstr "推荐用于此电脑"
+
+#. machine-translated
+msgid "Recommended"
+msgstr "推荐"
+
+#. machine-translated
+msgid "Submit results automatically when done"
+msgstr "完成后自动提交结果"
+
+#. machine-translated
+msgid "Applies to target builds only."
+msgstr "仅适用于目标构建。"
+
+#. machine-translated
+msgid "Submit your results to the Meitou benchmarks site automatically when the benchmark finishes? Hardware specs, timings and your optional handle are sent; your computer name is not."
+msgstr "基准测试完成后是否自动将结果提交到 Meitou 基准测试网站？仅发送硬件配置、耗时数据和可选署名，不会发送您的计算机名称。"
+
+#. machine-translated
+msgid "You can change this anytime on the Benchmark page."
+msgstr "您可以随时在基准测试页面更改此设置。"
+
+#. machine-translated
+msgid "Don't submit"
+msgstr "不提交"
+
+#. machine-translated
+msgid "Submit benchmark results?"
+msgstr "提交基准测试结果？"
+
+#. machine-translated
+msgid "Wait for the current submission to finish."
+msgstr "请等待当前提交完成。"
+
+#. machine-translated
+msgid "Open this build's benchmark results folder"
+msgstr "打开此构建的基准测试结果文件夹"
+
+#. machine-translated
+msgid "1 session"
+msgstr "1 组结果"
+
+#. machine-translated
+msgid "{1} sessions"
+msgstr "{1} 组结果"
+
+#. machine-translated
+msgid "1 session · submitted"
+msgstr "1 组结果 · 已提交"
+
+#. machine-translated
+msgid "{1} sessions · all submitted"
+msgstr "{1} 组结果 · 全部已提交"
+
+#. machine-translated
+msgid "{1} of {2} submitted"
+msgstr "已提交 {1}/{2}"
+
+#. machine-translated
+msgid "All tiers"
+msgstr "全部档位"
+
+#. machine-translated
+msgid "Submitted (#{1})"
+msgstr "已提交（#{1}）"
+
+#. machine-translated
+msgid "Incomplete ({1} of {2} runs)"
+msgstr "未完成（{1}/{2} 次运行）"
+
+#. machine-translated
+msgid "Built by {1}, not {2}"
+msgstr "由 {1} 生成，而非 {2}"
+
+#. machine-translated
+msgid "Not a target build"
+msgstr "非目标构建"
+
+#. machine-translated
+msgid "Ready to submit"
+msgstr "可提交"
+
+#. machine-translated
+msgid "Submit results"
+msgstr "提交结果"
+
+#. machine-translated
+msgid "Submit all ({1})"
+msgstr "全部提交（{1}）"
+
+#. machine-translated
+msgid "Submit all again"
+msgstr "全部重新提交"
+
+#. machine-translated
+msgid "All {1} sessions submitted."
+msgstr "全部 {1} 组结果已提交。"
+
+#. machine-translated
+msgid "1 session ready to submit ({1} incomplete skipped)."
+msgstr "1 组结果可提交（已跳过 {1} 组未完成）。"
+
+#. machine-translated
+msgid "{1} sessions ready to submit ({2} incomplete skipped)."
+msgstr "{1} 组结果可提交（已跳过 {2} 组未完成）。"
+
+#. machine-translated
+msgid "{1} of {2} sessions not yet submitted."
+msgstr "{2} 组结果中有 {1} 组尚未提交。"
+
+#. machine-translated
+msgid "1 session ready to submit."
+msgstr "1 组结果可提交。"
+
+#. machine-translated
+msgid "{1} sessions ready to submit."
+msgstr "{1} 组结果可提交。"
+
+#. machine-translated
+msgid "Submitting {1} of {2}..."
+msgstr "正在提交第 {1}/{2} 组..."
+
+#. machine-translated
+msgid "Submitted 1 session."
+msgstr "已提交 1 组结果。"
+
+#. machine-translated
+msgid "Submitted {1} sessions."
+msgstr "已提交 {1} 组结果。"
+
+#. machine-translated
+msgid "Submission failed."
+msgstr "提交失败。"
+
+#. machine-translated
+msgid "Submitted {1} of {2} sessions; {3} failed: {4}"
+msgstr "已提交 {1}/{2} 组结果；{3} 组失败：{4}"
+
+#. machine-translated
+msgid "Bases"
+msgstr "据点"
+
+#. machine-translated
+msgid "Shark fly-by"
+msgstr "Shark 飞越"
+
+#. machine-translated
+msgid "The play bench on a save"
+msgstr "基于存档的游玩测试"
+
+#. machine-translated
+msgid "A new game, flying round Shark"
+msgstr "新游戏，绕 Shark 飞行"
+
+#. machine-translated
+msgid "Tier"
+msgstr "档位"
+
+#. machine-translated
+msgid "Run {1} · Whole run"
+msgstr "第 {1} 次 · 完整运行"
+
+#. machine-translated
+msgid "Run {1}"
+msgstr "第 {1} 次"
+
+#. machine-translated
+msgid "FPS"
+msgstr "FPS"
+
+#. machine-translated
+msgid "99% ms"
+msgstr "99% ms"
+
+#. machine-translated
+msgid "Over 33 ms"
+msgstr "超过 33 ms"
+
+#. machine-translated
+msgid "Status"
+msgstr "状态"
+
+#. machine-translated
+msgid "Click to view groups for {1}"
+msgstr "点击查看 {1} 的分组详情"
+
+#. machine-translated
+msgid "Hardware must be probed before submitting."
+msgstr "提交前必须先检测硬件。"
+
+#. machine-translated
+msgid "Generated when hardware is probed."
+msgstr "检测硬件时自动生成。"
+
+#. machine-translated
+msgid "Generated for this computer so the site keeps your results together."
+msgstr "为此电脑自动生成，以便网站将您的结果归集在一起。"
+
+#. machine-translated
+msgid "Benchmark settings"
+msgstr "基准测试设置"
+
+#. machine-translated
+msgid "Benchmarks always use fixed settings so results stay comparable:"
+msgstr "基准测试始终使用固定设置，以保证结果具有可比性："
+
+#. machine-translated
+msgid "• Windowed 1920×1080, Vulkan, VSync & frame limit off, HDR off"
+msgstr "• 窗口化 1920×1080，Vulkan，关闭垂直同步与帧率上限，关闭 HDR"
+
+#. machine-translated
+msgid "• Chosen quality tier (Meitou look), TAA at 100% scale (Low: no AA at 83%), no upscaler"
+msgstr "• 所选画质档位（Meitou 风格），TAA 100% 缩放（低档：83% 无抗锯齿），不使用超分"
+
+#. machine-translated
+msgid "• Ray tracing only on Ultra and Extreme"
+msgstr "• 仅在超高和极致档位启用光线追踪"
+
+#. machine-translated
+msgid "• Your saved graphics settings and mods are ignored and never modified"
+msgstr "• 您保存的图形设置与模组将被忽略，且绝不会被修改"
+
+msgid "Settings window opacity"
+msgstr "设置窗口不透明度"
+
+msgid "How opaque the in-game settings window is (lower to see the world behind it while adjusting settings)."
+msgstr "游戏内设置窗口的不透明度（调低后可在调整设置时看到背后的游戏画面）。"
+
+msgid "No mod matches the filter."
+msgstr "没有符合筛选条件的模组。"
+
+msgid "Issues"
+msgstr "问题"
+
+msgid "Name A-Z"
+msgstr "名称 A-Z"
+
+msgid "Filter mods"
+msgstr "筛选模组"
+
+msgid "Show"
+msgstr "显示"
+
+msgid "Opacity"
+msgstr "不透明度"
+
+msgid "Restore"
+msgstr "还原"
+
+msgid "{1} of {2}"
+msgstr "{1} / {2}"
+
+msgid "{1} mod"
+msgid_plural "{1} mods"
+msgstr[0] "{1} 个模组"
+
+#. machine-translated
+msgid "Monitor"
+msgstr "显示器"
+
+#. machine-translated
+msgid "Monitor {1}: {2}"
+msgstr "显示器 {1}：{2}"
+
+#. machine-translated
+msgid "The monitor the game starts and goes full screen on. Automatic: the one its window is on (on Wayland, the first monitor)."
+msgstr "游戏启动并进入全屏的显示器。自动：窗口所在的显示器（在 Wayland 上为第一个显示器）。"
+msgid "Put priority:"
+msgstr "存放优先级："
+
+#. machine-translated
+msgid "Take priority:"
+msgstr "取用优先级："
+
+#. machine-translated
+msgid "Haulers and workers put things into the storage of the highest put priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower."
+msgstr "搬运工和工人会先把物品放进存放优先级最高的储物处，优先级相同时放进最近的。禁止：从不使用。单击提高，右键单击或Shift+单击降低。"
+
+#. machine-translated
+msgid "Workers and builders take things from the storage of the highest take priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower."
+msgstr "工人和建造者会先从取用优先级最高的储物处取物品，优先级相同时从最近的取。禁止：从不使用。单击提高，右键单击或Shift+单击降低。"
+
+#. machine-translated
+msgid "Forbidden"
+msgstr "禁止"
+
+#. machine-translated
+msgid "Deferred"
+msgstr "延后"
+
+#. machine-translated
+msgid "Preferred"
+msgstr "优先"
+
+#. machine-translated
+msgid "Important"
+msgstr "重要"
+
+#. machine-translated
+msgid "Rename"
+msgstr "重命名"
+
+#. machine-translated
+msgid "Give the building a name of your own, shown on its panel, its inventory and the jobs that use it."
+msgstr "给建筑起一个自己的名字，显示在它的面板、库存以及使用它的工作中。"
+
+#. machine-translated
+msgid "Leave it empty for the building's own name."
+msgstr "留空则使用建筑原本的名字。"
+
+msgid "PLAY"
+msgstr "开始游戏"
+
+msgid "Client source"
+msgstr "客户端来源"
+
+msgid "Installed release"
+msgstr "已安装的发布版"
+
+msgid "Local client"
+msgstr "本地客户端"
+
+msgid "Choose an installed version with the arrow beside Play, or select a local client below."
+msgstr "使用开始按钮旁的箭头选择已安装版本，或在下方选择本地客户端。"
+
+msgid "Client folder or executable"
+msgstr "客户端文件夹或可执行文件"
+
+msgid "Use local client"
+msgstr "使用本地客户端"
+
+msgid "Find checkout build"
+msgstr "查找仓库构建"
+
+msgid "Refresh client"
+msgstr "刷新客户端"
+
+msgid "Open client folder"
+msgstr "打开客户端文件夹"
+
+msgid "Open log"
+msgstr "打开日志"
+
+msgid "Join a server"
+msgstr "连接服务器"
+
+msgid "Enter host:port. The game remembers your existing player identity and checks server compatibility."
+msgstr "输入服务器地址和端口。游戏会保留已有玩家身份，并检查与服务器的兼容性。"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Recent servers"
+msgstr "最近连接"
+
+msgid "Connect starts the selected client. Admission, character creation and reconnection take place in the game."
+msgstr "连接会启动当前选择的客户端。入场、角色创建和重连由游戏处理。"
+
+msgid "Choose a valid local client on the Play page."
+msgstr "请在开始游戏页面选择有效的本地客户端。"
+
+msgid "Install a version first (Versions), or choose a local client on the Play page."
+msgstr "请先在版本页面安装客户端，或在开始游戏页面选择本地客户端。"
+
+msgid "Build the game first, or browse to an exported client."
+msgstr "请先构建游戏，或浏览选择已导出的客户端。"
+
+msgid "No Meitou client was found at this path."
+msgstr "此路径下没有找到 Meitou 客户端。"
+
+msgid "Use Refresh client on the Play page to obtain this client's settings."
+msgstr "请在开始游戏页面点击刷新客户端，获取此客户端的设置。"
+
+msgid "Close the running game or wait for hardware detection before starting another client."
+msgstr "请先关闭正在运行的游戏，或等待硬件检测完成，再启动客户端。"
+
+msgid " Connecting to {1}."
+msgstr " 正在连接 {1}。"
+
+msgid "Meitou stopped with an error (exit code {1}); its log is {2}"
+msgstr "Meitou 异常退出（退出码 {1}），日志位于 {2}"
+
+msgid "Could not open the selected client path."
+msgstr "无法打开所选客户端路径。"
+
+msgid "Enter a server as host:port (IPv6: [address]:port)."
+msgstr "请输入服务器地址和端口（IPv6 格式为 [地址]:端口）。"
+
+msgid "Invalid server port."
+msgstr "服务器端口无效。"
+
+msgid "Launch arguments contain an unclosed double quote."
+msgstr "启动参数中有未闭合的双引号。"
+
+msgid "Experimental builds"
+msgstr "实验版本"
+
+msgid "experimental"
+msgstr "实验版本"
+
+msgid "Experimental builds have not completed live game validation. They may be unstable, crash, and corrupt your save files: back up your saves before playing one.\n\nContinue with experimental builds?"
+msgstr "实验版本尚未完成实机验收，可能不稳定、崩溃或损坏存档。游玩前请备份存档。\n\n是否启用实验版本？"
+
+msgid "Only experimental builds so far: tick Experimental builds beside Play to list them."
+msgstr "目前只有实验版本：勾选开始按钮旁的实验版本即可查看。"
+
+msgid "Build information unavailable (build-info.json is missing)."
+msgstr "此客户端未附带构建信息（缺少 build-info.json）。"
+
+msgid " (uncommitted changes)"
+msgstr " （包含未提交修改）"
+
+msgid "Version: {1}\nCommit: {2}{3}\nProtocol: {4}\nEngine: {5}"
+msgstr "版本：{1}\n源码提交：{2}{3}\n联机协议：{4}\n引擎标识：{5}"
+
+msgid "Close this game before removing its installed version."
+msgstr "请先关闭游戏，再移除此安装版本。"
+
+msgid "Checking for releases..."
+msgstr "正在检查发布版本…"
+
+msgid "Could not load release information. Check your connection and try again."
+msgstr "无法获取版本信息，请检查网络后重试。"
+
+msgid "Cannot check for updates; showing the bundled release list."
+msgstr "暂时无法检查更新，正在显示程序附带的版本清单。"
+
+msgid "Cannot check for updates; showing the saved release list."
+msgstr "暂时无法检查更新，正在显示已保存的版本清单。"
+
+msgid "Host a headless server"
+msgstr "启动无头服务端"
+
+msgid "Console command (e.g. speed 2)"
+msgstr "控制台命令（例如 speed 2）"
+
+msgid "Send command"
+msgstr "发送命令"
+
+msgid "Game speed: speed 0 pauses; speed 1, speed 2 or speed 5. Enter speed to check, or help for all commands."
+msgstr "游戏倍速：speed 0 暂停；speed 1、speed 2、speed 5 切换倍速。输入 speed 查询，help 查看全部命令。"
+
+msgid "Enter one console command."
+msgstr "请输入一行控制台命令。"
+
+msgid "The hosted server is not running."
+msgstr "服务端未在运行。"
+
+msgid "Choose an extracted dedicated server package or checkout build. The server needs Kenshi content, but no GPU or Steam client."
+msgstr "请选择已解压的独立服务端或本地编译目录。服务端需要 Kenshi 资源，无需 GPU 或 Steam 客户端。"
+
+msgid "Dedicated server folder or executable"
+msgstr "独立服务端目录或可执行文件"
+
+msgid "Find server checkout build"
+msgstr "查找本地服务端构建"
+
+msgid "Server configuration"
+msgstr "服务端配置"
+
+msgid "A missing configuration is created on first start. World saves stay beside it in server-data by default. Stop the server before editing; set BindAddress and AdvertisedHost for LAN access (TCP and UDP 27800 by default)."
+msgstr "首次启动会创建缺失的配置，世界存档默认位于配置旁的 server-data 目录。编辑前请停服；局域网访问需设置 BindAddress 和 AdvertisedHost（默认使用 TCP 和 UDP 27800 端口）。"
+
+msgid "Start server"
+msgstr "启动服务端"
+
+msgid "Save world"
+msgstr "保存世界"
+
+msgid "Save and stop"
+msgstr "保存并停服"
+
+msgid "Open configuration"
+msgstr "打开配置"
+
+msgid "Open server log"
+msgstr "打开服务端日志"
+
+msgid "Choose a dedicated server folder or executable."
+msgstr "请选择独立服务端目录或可执行文件。"
+
+msgid "Choose a server configuration file."
+msgstr "请选择服务端配置文件。"
+
+msgid "No Meitou.Server executable was found at this path."
+msgstr "所选路径中没有 Meitou.Server 可执行文件。"
+
+msgid "Build Meitou.Server first, or browse to an extracted server package."
+msgstr "请先编译 Meitou.Server，或选择已解压的服务端目录。"
+
+msgid "The hosted server is already running."
+msgstr "服务端已在运行。"
+
+msgid "The dedicated server did not start."
+msgstr "独立服务端未能启动。"
+
+msgid "Starting headless server; loading content…"
+msgstr "正在启动无头服务端并加载资源…"
+
+msgid "Server is listening. See console for endpoints."
+msgstr "服务端已开始监听，连接地址见下方控制台。"
+
+msgid "Stopping server; waiting for world save…"
+msgstr "正在停服，等待世界保存完成…"
+
+msgid "Server exited with code {1}."
+msgstr "服务端已退出，退出码为 {1}。"
+
+msgid "Start the server first to create its configuration."
+msgstr "请先启动服务端以生成配置文件。"
+
+msgid "Start the server first to create its console log."
+msgstr "请先启动服务端以生成控制台日志。"
+
+msgid "Could not open the selected server path."
+msgstr "无法打开所选服务端路径。"
+
+msgid "Use Save and stop in Meitou Coop before closing the launcher."
+msgstr "请先在 Meitou Coop 页面点击“保存并停服”，再关闭启动器。"
+
+msgid "Synchronize server mods before connecting"
+msgstr "连接前自动同步服务端模组"
+
+msgid "Downloads the server's exact mod set into an isolated profile. Your local mod list stays unchanged; code mods require approval."
+msgstr "下载并使用与服务端完全一致的独立模组配置，保留本地模组列表。代码模组需要确认后才能运行。"
+
+msgid "Cancel mod sync"
+msgstr "取消模组同步"
+
+msgid "Reading the server mod list…"
+msgstr "正在读取服务端模组列表…"
+
+msgid "Checking {1} server mods…"
+msgstr "正在校验 {1} 个服务端模组…"
+
+msgid "Downloading server mods: {1} / {2} MiB"
+msgstr "正在下载服务端模组：{1} / {2} MiB"
+
+msgid "Server code mods"
+msgstr "服务端代码模组"
+
+msgid "{1} requires executable code mods: {2}.\n\nThey run with your account's permissions. Allow this exact mod set?"
+msgstr "{1} 需要运行以下代码模组：{2}。\n\n它们将以你的账户权限运行。是否允许使用这套模组？"
+
+msgid "Allow and connect"
+msgstr "允许并连接"
+
+msgid "Could not synchronize server mods: {1}"
+msgstr "无法同步服务端模组：{1}"
+
+msgid "Update the selected client to support isolated server mod synchronization."
+msgstr "请更新所选客户端，以支持独立的服务端模组同步。"
+
+msgid "This server has disabled mod downloads (ShareMods)."
+msgstr "此服务端已关闭模组下载（ShareMods）。"
+
+msgid "This server does not offer mod synchronization. Update the server and enable ShareMods."
+msgstr "此服务端不支持模组同步，请更新服务端并启用 ShareMods。"
+
+msgid "Server mod synchronization was cancelled or timed out. The client was not started."
+msgstr "模组同步已取消或超时，未启动客户端。"
+
+msgid "Cancelling mod synchronization; close again when it finishes."
+msgstr "正在取消模组同步，请在完成后再次关闭启动器。"
+
+msgid "Server mod archive failed SHA-256 verification."
+msgstr "服务端模组压缩包未通过 SHA-256 校验。"
+
+msgid "Server mods changed during synchronization. Reconnect to refresh them."
+msgstr "服务端模组在同步期间发生变化，请重新连接以刷新。"
+
+msgid "Server mod download was interrupted. Reconnect to retry."
+msgstr "服务端模组下载中断，请重新连接以重试。"
 
 #. machine-translated
 msgid "Select a self-contained client or an installed compatible runtime."

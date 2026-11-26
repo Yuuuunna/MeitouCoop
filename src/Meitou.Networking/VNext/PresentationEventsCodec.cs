@@ -18,9 +18,9 @@ internal static class PresentationEventsCodec
     static ReadOnlySpan<byte> Magic => "\0MPE"u8;
 
     /// <summary>
-    /// Versions three and four preserve the turret switch in the kind byte; four packs XORed cores in byte planes.
+    /// Versions five and six preserve portable mod paths, gain and playback stops; six packs XORed cores in byte planes.
     /// </summary>
-    const byte Version = 3, PlaneVersion = 4;
+    const byte Version = 5, PlaneVersion = 6;
 
     /// <summary>
     /// Envelope bytes and the plain body's marker, JSON length, sound count and name count.
@@ -29,9 +29,9 @@ internal static class PresentationEventsCodec
 
     /// <summary>
     /// An ID, packed kind/turret switch, packed flags/armour, two character IDs, three float32 coordinates and an optional item name reference.
-    /// Posted sounds additionally carry event, switch group and switch value name references (six bytes).
+    /// Posted sounds add four name references, volume, playback identity, stop flag and fade (25 bytes).
     /// </summary>
-    const int SoundBytes = 40, PostedBytes = 6;
+    const int SoundBytes = 40, PostedBytes = 25;
 
     /// <summary>
     /// Items allow 4096 UTF-16 code units, requiring at most three UTF-8 bytes each; posted names retain their stricter 4096-byte validation.
@@ -138,6 +138,7 @@ internal static class PresentationEventsCodec
             Add(posted.Event);
             Add(posted.SwitchGroup);
             Add(posted.SwitchValue);
+            Add(posted.ModId);
         }
         return names;
 
@@ -242,6 +243,11 @@ internal static class PresentationEventsCodec
         writer.Write(names[posted.Event]);
         writer.Write(posted.SwitchGroup is { } group ? names[group] : (ushort)0);
         writer.Write(posted.SwitchValue is { } name ? names[name] : (ushort)0);
+        writer.Write(posted.ModId is { } mod ? names[mod] : (ushort)0);
+        writer.Write(posted.Volume);
+        writer.Write(posted.PlaybackId);
+        writer.Write(posted.Stop);
+        writer.Write(posted.FadeSeconds);
     }
 
     /// <summary>
@@ -253,7 +259,7 @@ internal static class PresentationEventsCodec
         if (reader.Byte() != 0) throw new InvalidDataException("Invalid presentation event body marker.");
         int jsonLength = reader.Int32();
         int count = reader.UInt16(), nameCount = reader.UInt16();
-        if (jsonLength <= 0 || jsonLength > retained || count > PresentationEventValidation.MaximumCount || nameCount > count * 4
+        if (jsonLength <= 0 || jsonLength > retained || count > PresentationEventValidation.MaximumCount || nameCount > count * 5
             || (long)jsonLength + SoundBytes * count + sizeof(ushort) * nameCount > reader.Remaining)
             throw new InvalidDataException("Invalid presentation event body counts.");
 
@@ -272,7 +278,7 @@ internal static class PresentationEventsCodec
     }
 
     /// <summary>
-    /// Version three's interleaved cores and optional posted references remain independently decodable.
+    /// The current interleaved cores and optional posted references remain independently decodable.
     /// </summary>
     static SoundEventEntry[] ReadSounds(ref Reader reader, int count, string[] names, ref int used)
     {
@@ -343,7 +349,7 @@ internal static class PresentationEventsCodec
     }
 
     /// <summary>
-    /// Consumes the three optional posted references from their row (version three) or separate suffix (version four).
+    /// Consumes a complete posted descriptor from its row or the byte-plane packet's separate suffix.
     /// </summary>
     static SoundEvent ReadPosted(ref Reader reader, SoundEvent value, string[] names, ref int used)
     {
@@ -351,7 +357,15 @@ internal static class PresentationEventsCodec
         string name = ReadName(ref reader, names, ref used) ?? throw new InvalidDataException("Missing presentation sound event name.");
         string? group = ReadName(ref reader, names, ref used);
         string? switchValue = ReadName(ref reader, names, ref used);
-        return value with { Posted = new(name, group, switchValue) };
+        string? mod = ReadName(ref reader, names, ref used);
+        float volume = reader.Single();
+        ulong playback = reader.UInt64();
+        byte stop = reader.Byte();
+        if (stop > 1) throw new InvalidDataException("Invalid posted sound stop flag.");
+        return value with { Posted = new(name, group, switchValue)
+        {
+            ModId = mod, Volume = volume, PlaybackId = playback, Stop = stop != 0, FadeSeconds = reader.Single(),
+        } };
     }
 
     /// <summary>

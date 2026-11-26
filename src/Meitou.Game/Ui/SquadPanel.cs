@@ -37,6 +37,11 @@ sealed class SquadPanel(PlayerInterface player)
     const float SquadCellWidth = 0.0416667f, SquadCellHeight = 0.0740741f;
 
     /// <summary>
+    /// The property of a squad box's root control naming its squad (the code mods' <see cref="UiScreens.SquadCells"/> anchor).
+    /// </summary>
+    const string SquadCellProperty = "SquadCell";
+
+    /// <summary>
     /// The prefix of a squad box's scroll id (<see cref="SquadScrollKey"/>), which names its scroll bar's parts too.
     /// </summary>
     const string SquadScrollPrefix = "squads-rows-";
@@ -67,9 +72,9 @@ sealed class SquadPanel(PlayerInterface player)
     (int Squad, Vector2 From)? _squadBoxDrag;
 
     /// <summary>
-    /// The CONSTANTS limits (max squads, squad size, faction size); null before a world with game data.
+    /// The player squad and faction limits (max squads, squad size, faction size) and game constants; null before a world with game data.
     /// </summary>
-    public Func<Data.Gameplay.GameConstants?>? SquadLimits { get; set; }
+    public Func<Simulation.Bodies.BodyFactory?>? SquadLimits { get; set; }
 
     /// <summary>
     /// The overview is open on its Squads tab.
@@ -90,7 +95,7 @@ sealed class SquadPanel(PlayerInterface player)
             return;
         }
 
-        b.TabCaptions["SquadPanel"] = [.. tabs.Select(s => s.Name)];
+        b.TabCaptions["SquadPanel"] = [.. tabs.Select(s => player.ShownName("squad", s.TemplateId, s.Name))];
         b.SelectedTabs["SquadPanel"] = Math.Max(0, tabs.FindIndex(s => s.Id == player.Session.CurrentSnapshot.ActiveSquad));
     }
 
@@ -125,7 +130,8 @@ sealed class SquadPanel(PlayerInterface player)
     internal void BindSquadsTab(UiBindings b)
     {
         var limits = SquadLimits?.Invoke();
-        b.Text["FactionSizeText"] = $"{player.Session.CurrentSnapshot.CappedHeads}/{limits?.MaxFactionSize ?? 30}";
+        int maxFactionSize = player.IsRemoteSession ? player.Session.CurrentSnapshot.MaxFactionSize : limits?.MaxFactionSize ?? 30;
+        b.Text["FactionSizeText"] = $"{player.Session.CurrentSnapshot.CappedHeads}/{maxFactionSize}";
         b.Text["NewSquadButton"] = "ADD SQUAD";
         b.Text["lbSquadsDismiss"] = "DISMISS";
         b.Actions["NewSquadButton"] = "squad-new";
@@ -145,7 +151,7 @@ sealed class SquadPanel(PlayerInterface player)
         var snapshot = player.Session.CurrentSnapshot;
         var squads = snapshot.PlayerSquads;
         var limits = SquadLimits?.Invoke();
-        int maxSize = limits?.MaxSquadSize ?? 20;
+        int maxSize = player.IsRemoteSession ? snapshot.MaxSquadSize : limits?.MaxSquadSize ?? 20;
         var cells = new Dictionary<CharacterId, int>();
         var portraits = player.PortraitBar.PortraitMembers();
         for (int i = 0; i < portraits.Count; i++) cells[portraits[i].Id] = i;
@@ -217,6 +223,15 @@ sealed class SquadPanel(PlayerInterface player)
     }
 
     /// <summary>
+    /// The squad whose box <paramref name="c"/> is the root of (<see cref="UiScreens.SquadCells"/>); null for any other control.
+    /// </summary>
+    internal static int? SquadOfCell(UiControl c) =>
+        c.Properties.TryGetValue(SquadCellProperty, out string? id)
+            && int.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out int squad)
+            ? squad
+            : null;
+
+    /// <summary>
     /// The squad box's name box or a part of its skin.
     /// </summary>
     static bool IsSquadNameWidget(MyGuiWidget w) => w.Name == "SquadNameText" || w.Properties.GetValueOrDefault("CaptionOwner") == "SquadNameText";
@@ -227,6 +242,7 @@ sealed class SquadPanel(PlayerInterface player)
     UiRect? AddSquadBox(List<UiControl> controls, UiBindings b, UiRect box, UiRect clip, string squadId, string nameBox)
     {
         UiRect? portraitsArea = null;
+        bool root = true;
 
         foreach (var c in MyGuiPresentation.Arrange(SquadBoxLayout!, (int)MathF.Round(box.Width), (int)MathF.Round(box.Height), b,
             player.UiResources.Layers))
@@ -234,6 +250,8 @@ sealed class SquadPanel(PlayerInterface player)
             var bounds = c.Bounds with { X = c.Bounds.X + box.X, Y = c.Bounds.Y + box.Y };
             var own = c.Clip is { } inner ? (inner with { X = inner.X + box.X, Y = inner.Y + box.Y }).Intersect(clip) : clip;
             var properties = new Dictionary<string, string>(c.Properties, StringComparer.Ordinal) { ["SquadOf"] = squadId };
+            if (root) properties[SquadCellProperty] = squadId;
+            root = false;
 
             // The box is dragged by its frame and panels: anything but the name box, DELETE and their skins' parts.
             if (c.Type is not ("EditBox" or "Button") && c.Action.Length == 0
@@ -509,7 +527,7 @@ sealed class SquadPanel(PlayerInterface player)
             return;
         }
 
-        string name = player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id)?.Name ?? "";
+        string name = player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { } who ? player.ShownName(who) : "";
         int faction = player.Session.ActiveFaction;
         player.Confirm("Dismiss character", Loc.Tr("Dismiss character '{1}'?", name),
             () => player.Say(new DismissCommand(id) { Faction = faction, Tick = player.Session.CommandTick }));

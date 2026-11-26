@@ -27,19 +27,20 @@ namespace Meitou.Simulation.Production;
 /// <summary>
 /// Hauling (docs/simulation.md "Production"; the original's Task_EmptyMachine / Task_FillMachine in docs/game/buildings-production.md "Hauling"):
 /// with Settings.AutoHaul an operator at its machine fills empty inputs with what it carries, takes a full output, carries the output to the nearest
-/// storage that takes it and fetches an empty input's item from the nearest storage or producer output holding it (NearestSource). The trip is
+/// storage or machine that takes it (StorageFor) and fetches an empty input's item from the nearest storage or producer output holding it (NearestSource). The trip is
 /// CharacterCold.HaulSite / HaulFetch; Schedule walks there, and the operator walks back to its machine once the items have moved.
 /// </summary>
 public sealed partial class ProductionSystem
 {
     /// <summary>
-    /// The storage (or, fetching, the producer) a hauling operator walks to; one that is gone ends the trip.
+    /// The storage or machine with inputs a hauling operator takes its output to (or, fetching, the storage or producer); one that is gone ends the
+    /// trip.
     /// </summary>
     (BuildSite Site, Machine Machine)? Hauling(World world, CharacterCold cold)
     {
-        if (cold.HaulSite is not { } id)
-            return null;
-        if (Site(world, id)is { Complete: true } site && MayWork(world, cold, site) && world.Machines.Find(id)is { } m && (m.Storage is not null || cold.HaulFetch is not null && m.Output is not null))
+        if (cold.HaulSite is not { } id) return null;
+        if (Site(world, id) is { Complete: true } site && MayWork(world, cold, site) && world.Machines.Find(id) is { } m
+            && (m.Storage is not null || (cold.HaulFetch is not null ? m.Output is not null : m.Inputs.Length > 0)))
             return (site, m);
         cold.HaulSite = null;
         cold.HaulFetch = null;
@@ -47,18 +48,63 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// What an operator at its machine does before working; true when it set off for a storage.
+    /// What an operator standing at <paramref name="at"/> by its machine does before working; true when it set off for a storage or a machine that
+    /// takes its output. <paramref name="autoHaul"/> (row 152, whose plan is 93 at a storage, docs/game/ai-tasks.md "Finished tests") takes an output
+    /// that holds any, not only a full one, takes any carried output there and fetches no input (its 124 companion's work).
     /// </summary>
-    bool StartHaul(World world, CharacterCold cold, BuildSite site, Machine m)
+    bool StartHaul(World world, CharacterCold cold, Vector3 at, BuildSite site, Machine m, bool autoHaul = false)
     {
-        if (!MayWork(world, cold, site) || cold.Inventory is not { } inv)
-            return false;
+        if (!MayWork(world, cold, site) || cold.Inventory is not { } inv) return false;
+        bool changed = PutCarried(inv, m);
+
+        // A full output is taken only when some storage takes it; without one the machine stays full.
+        bool took = false;
+        if (m.Output is { Count: > 0 } output && (output.Full || autoHaul) && _items.Create(output.Recipe.Item, output.Count) is { } made
+            && StorageFor(world, site, made, cold, at) is not null)
+        {
+            int moved = Placed(inv, made);
+            if (moved > 0) { output.Count -= moved; changed = took = true; }
+        }
+
+        // A bench full on its first craft: its finished items a storage takes (#762).
+        if (m.Craft is { } craft && CraftFull(craft) && TakeDone(craft, inv, i => StorageFor(world, site, i, cold, at) is not null))
+            changed = took = true;
+
+        if (changed) world.Machines.Touch();
+
+        // The carried output goes to the storage once a full output was taken, or while the output stays full (no room to take it): not for a
+        // stray unit, which sent a miner on a trip for every piece of ore it carried (#388). The 152 order takes any carried output there.
+        bool full = m.Output is { Full: true } || m.Craft is { } c && CraftFull(c);
+        string? into = took || full || autoHaul
+            ? CarriedMade(inv, m)
+                .Select(i => StorageFor(world, site, i, cold, at))
+                .FirstOrDefault(s => s is not null)
+            : null;
+        if (into is not null) return Go(cold, into, null);
+
+        if (autoHaul || m.Craft is { Queue.Count: 0 }) return false;
+
+        // The fill finder's walk with an empty input (Machine.FillOrder): the empty inputs in list order, the first with a source decides.
+        foreach (var input in m.Inputs)
+        {
+            if (input.Rate > 0 && input.Count == 0 && NearestSource(world, site, input.Item, cold) is { } from)
+                return Go(cold, from, input.Item);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Puts the carried items the machine's inputs take into them, up to each input's room; with <paramref name="madeBy"/> only what that machine
+    /// makes (a haul trip's delivery). True when something moved.
+    /// </summary>
+    static bool PutCarried(Inventory inv, Machine m, Machine? madeBy = null)
+    {
         bool changed = false;
         foreach (var input in m.Inputs)
         {
-            int room = input.Recipe.Capacity - input.Count;
-            if (input.Rate <= 0 || room <= 0)
-                continue;
+            int room = input.FillRoom;
+            if (room <= 0 || madeBy is not null && !Makes(madeBy, input.Item)) continue;
             foreach (var item in Carried(inv, input.Item).ToList())
             {
                 int n = Math.Min(room, item.Quantity);
@@ -73,44 +119,33 @@ public sealed partial class ProductionSystem
             }
         }
 
-        bool took = false;
-        if (m.Output is { Full: true } output && _items.Create(output.Recipe.Item, output.Count) is { } made
-            && StorageFor(world, site, made, cold) is not null)
-        {
-            int moved = Placed(inv, made);
-            if (moved > 0)
-            {
-                output.Count -= moved;
-                changed = took = true;
-            }
-        }
+        return changed;
+    }
 
-        // A bench full on its first craft: its finished items a storage takes (#762).
-        if (m.Craft is { } craft && CraftFull(craft) && TakeDone(craft, inv, i => StorageFor(world, site, i, cold) is not null))
-            changed = took = true;
+    /// <summary>
+    /// Row 152's desire x finder (<c>FUN_14060fd80</c>, <b>Verified</b>): AI slot 21's desire (<see cref="Ai.RowDesires"/>; 1 in a world without the AI
+    /// system), when above 0, times <see cref="AutoHaulFinder"/>. The order step pops a 152 order and the job pass skips a 152 job at 0 or less
+    /// (docs/game/ai-tasks.md "Finished tests", "Perma-jobs").
+    /// </summary>
+    internal float AutoHaulScore(World world, int slot, CharacterCold cold, string site)
+    {
+        float desire = world.SystemOf<Ai.AiSystem>() is { } ai ? ai.Rows.ForSite(world, slot, TaskType.OperateAutomaticMachinery, site) : 1;
 
-        if (changed) world.Machines.Touch();
+        return desire > 0 ? desire * AutoHaulFinder(world, cold, site) : desire;
+    }
 
-        // The carried output goes to the storage once a full output was taken, or while the output stays full (no room to take it): not for a
-        // stray unit, which sent a miner on a trip for every piece of ore it carried (#388).
-        bool full = m.Output is { Full: true } || m.Craft is { } c && CraftFull(c);
-        string? into = took || full
-            ? CarriedMade(inv, m)
-                .Select(i => StorageFor(world, site, i, cold))
-                .FirstOrDefault(s => s is not null)
-            : null;
-        if (into is not null) return Go(cold, into, null);
+    /// <summary>
+    /// Row 152's finder (the ditch finder <c>FUN_1405a59a0</c> through the stub <c>FUN_1405a70a0</c>, <b>Verified</b>), which weighs the 152 order's
+    /// desire: 1 when a storage or machine of the character's takes the machine's output item (<see cref="StorageFor"/>) and the output holds some or
+    /// the character carries some; else 0, so always 0 at a machine with no output (a fuel generator) (docs/game/ai-tasks.md "Finished tests").
+    /// </summary>
+    internal float AutoHaulFinder(World world, CharacterCold cold, string siteId)
+    {
+        if (Site(world, siteId) is not { Complete: true } site || world.Machines.Find(siteId) is not { Output: { } output } m) return 0;
+        if (output.Count == 0 && !CarriesOutputOf(cold, m)) return 0;
+        if (_items.Create(output.Recipe.Item, 1) is not { } one) return 0;
 
-        if (m.Craft is { Queue.Count: 0 }) return false;
-
-        // The fill finder's walk with an empty input (Machine.FillOrder): the empty inputs in list order, the first with a source decides.
-        foreach (var input in m.Inputs)
-        {
-            if (input.Rate > 0 && input.Count == 0 && NearestSource(world, site, input.Item, cold) is { } from)
-                return Go(cold, from, input.Item);
-        }
-
-        return false;
+        return StorageFor(world, site, one, cold) is not null ? 1 : 0;
     }
 
     /// <summary>
@@ -124,8 +159,9 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// At the storage, where the character stands at <paramref name="at"/>: puts the carried output in, or fetches as an NPC worker's fetch does
-    /// (<see cref="FetchAt"/>); then the trip ends.
+    /// At the storage, where the character stands at <paramref name="at"/>: puts the carried output in (a machine target: into its inputs,
+    /// <see cref="PutCarried"/>), or fetches (an automatic machine's hauler as an NPC worker's fetch does, <see cref="FetchTownWants"/>; an operator
+    /// what it went for, <see cref="FetchAt"/>); then the trip ends.
     /// </summary>
     void HaulAt(World world, CharacterCold cold, Vector3 at, Machine machine, Machine store)
     {
@@ -136,7 +172,12 @@ public sealed partial class ProductionSystem
         }
 
         var inv = cold.Inventory;
-        if (inv is not null && cold.HaulFetch is { } want) FetchAt(world, cold, at, store, want, inv);
+        if (inv is not null && cold.HaulFetch is { } want)
+        {
+            if (machine.Data.IsAutomatic) FetchTownWants(world, cold, at, store, want, inv);
+            else FetchAt(machine, store, want, inv);
+        }
+        else if (inv is not null && store.Storage is null) PutCarried(inv, store, machine);
         else if (inv is not null && store.Storage is { } into)
         {
             foreach (var item in CarriedMade(inv, machine).ToList())
@@ -157,10 +198,31 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// A haul fetch's take (<c>Task_EmptyMachine</c> with flag 0, <see cref="FillDemand"/>): out of a producer's output (a well) what the town wants
-    /// of it (<see cref="FillDemand.Count"/>), else the storage's first record the town wants, up to that count; not bounded by the machine's room.
+    /// An operator's Auto haul fetch: the record it went for (<paramref name="want"/>), out of a storage's main grid or a producer's output (a
+    /// well), up to the room the machine's inputs of it have. Engine choice: the original's operate job fetches no inputs at all (docs/game/
+    /// buildings-production.md "Hauling"), so Auto haul has no original take to follow, and the original's take (<see cref="FetchTownWants"/>)
+    /// hands over another record than the one looked for whenever the storage lists one the town wants first (#1230).
     /// </summary>
-    void FetchAt(World world, CharacterCold cold, Vector3 at, Machine store, string want, Inventory inv)
+    void FetchAt(Machine machine, Machine store, string want, Inventory inv)
+    {
+        int room = InputRoom(machine, want);
+        if (room <= 0) return;
+
+        if (store.Data.IsStorage)
+        {
+            if (store.Storage is { } storage) TakeStored(storage, inv, want, room);
+            return;
+        }
+
+        TakeOutput(store, want, room, inv);
+    }
+
+    /// <summary>
+    /// An automatic machine's hauler's fetch (the 152 job, which the original plans through <c>Task_EmptyMachine</c> with flag 0,
+    /// <see cref="FillDemand"/>): out of a producer's output (a well) what the town wants of it (<see cref="FillDemand.Count"/>), else the
+    /// storage's first record the town wants, up to that count; not bounded by the machine's room.
+    /// </summary>
+    void FetchTownWants(World world, CharacterCold cold, Vector3 at, Machine store, string want, Inventory inv)
     {
         if (store.Data.IsStorage)
         {
@@ -168,9 +230,33 @@ public sealed partial class ProductionSystem
             return;
         }
 
-        if (store.Output is not { } from || from.Recipe.Item != want || _items.Create(want, 1) is not { } unit) return;
+        if (store.Output?.Recipe.Item != want || _items.Create(want, 1) is not { } unit) return;
 
-        int take = Math.Min(FillDemand.Count(world, _towns, cold, at, unit, store.Site, store.Data.Id), from.Count);
+        TakeOutput(store, want, FillDemand.Count(world, _towns, cold, at, unit, store.Site, store.Data.Id), inv);
+    }
+
+    /// <summary>
+    /// The units of <paramref name="record"/> the operator's fill would put into the machine's inputs (<see cref="InputSlot.FillRoom"/>).
+    /// </summary>
+    static int InputRoom(Machine m, string record)
+    {
+        int room = 0;
+        foreach (var input in m.Inputs)
+        {
+            if (input.Item == record) room += input.FillRoom;
+        }
+
+        return room;
+    }
+
+    /// <summary>
+    /// Takes up to <paramref name="limit"/> units of <paramref name="want"/> out of a producer's output into <paramref name="inv"/>.
+    /// </summary>
+    void TakeOutput(Machine store, string want, int limit, Inventory inv)
+    {
+        if (store.Output is not { } from || from.Recipe.Item != want) return;
+
+        int take = Math.Min(limit, from.Count);
         if (take > 0 && _items.Create(want, take) is { } made) from.Count -= Placed(inv, made);
     }
 
@@ -278,27 +364,48 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// The nearest storage <paramref name="by"/> uses within <see cref="InFinderRange"/> of <paramref name="site"/> that takes <paramref name="item"/>
-    /// and has room for it.
+    /// Where <paramref name="site"/>'s output <paramref name="item"/> goes (the per-item storage finder <c>FUN_14059acd0</c>, <b>Verified</b>): the
+    /// nearest building <paramref name="by"/> uses within <see cref="InFinderRange"/> whose slot <c>0x4a0</c> takes it (<see cref="TakesOutput"/>),
+    /// a storage or a machine, so a miner's stone goes into a stone processor nearer than any storage (#1406). Measured from the operator's spot
+    /// <paramref name="at"/>, as the finder measures from the character; without one (a job's look from afar) from the machine.
     /// </summary>
-    string? StorageFor(World world, BuildSite site, ItemInstance item, CharacterCold by) =>
-        NearestStorage(world, site, by, item.Record, s => s.Data.Accepts(item.Record, item.Type) && Fits(s.Storage!, item));
+    string? StorageFor(World world, BuildSite site, ItemInstance item, CharacterCold by, Vector3? at = null)
+    {
+        string? own = world.Machines.Find(site.Id)?.Data.Id;
+        return NearestStorage(world, site, at ?? site.Position, by, item.Record, s => TakesOutput(s, own, item));
+    }
 
     /// <summary>
-    /// Whether some of an item fits: a stack of it with room, or a free cell.
+    /// A candidate of the per-item storage finder that takes <paramref name="item"/> (slot <c>0x4a0</c>, <b>Verified</b>): a storage that accepts it
+    /// and has room (<c>StorageBuilding</c>, <c>FUN_1402988c0</c>), or a machine of the finder's mask (<see cref="FillSources.InMask"/>) not of the
+    /// served machine's record <paramref name="own"/> (the finder skips that record, vfunc <c>0x18</c>) whose input of it has room
+    /// (<see cref="InputTakes"/>).
     /// </summary>
-    static bool Fits(Inventory storage, ItemInstance item)
+    static bool TakesOutput(Machine m, string? own, ItemInstance item)
     {
-        int limit = storage.LimitOf(item);
-        foreach (var other in storage.Items)
-        {
-            if (other.Record == item.Record && other.Quality == item.Quality && other.Mark == item.Mark && other.Section == "main"
-                && other.Quantity < limit)
-                return true;
-        }
+        if (m.Data.IsStorage) return m.Storage is { } grid && m.Data.Accepts(item.Record, item.Type) && Fits(grid, item);
 
-        return storage.FindCell("main", item.Width, item.Height, out _, out _);
+        return m.Data.Id != own && FillSources.InMask(m.Data.Function) && InputTakes(m, item.Record);
     }
+
+    /// <summary>
+    /// A machine's slot <c>0x4a0</c> (<c>ProductionBuilding::canHaveSomeOfThese</c>, <c>FUN_1402989b0</c>, <b>Verified</b>): its first input of
+    /// <paramref name="record"/> holds less than its capacity; a crafting bench's (<c>FUN_140298a80</c>) only while a craft is queued. Meitou's fill
+    /// puts nothing into an input that draws nothing (<see cref="InputSlot.FillRoom"/>), so such an input takes nothing here either.
+    /// </summary>
+    static bool InputTakes(Machine m, string record)
+    {
+        if (m.Craft is { Queue.Count: 0 }) return false;
+
+        int at = Array.FindIndex(m.Inputs, i => i.Takes(record));
+        return at >= 0 && m.Inputs[at].FillRoom > 0;
+    }
+
+    /// <summary>
+    /// Whether some of an item fits the storage's grid: a stack it may join with room, or a free cell (<see cref="Inventory.HasRoomIn"/>, the
+    /// stacking rule the put itself follows, <see cref="Inventory.SameStack"/>), so a storage chosen for an item always takes some of it.
+    /// </summary>
+    static bool Fits(Inventory storage, ItemInstance item) => storage.HasRoomIn("main", item);
 
     /// <summary>
     /// Where an input's item is fetched from (the fill finder <c>FUN_14059d9b0</c> -> <c>FUN_14059d000</c>, <b>Verified</b>): the player's nearest
@@ -307,17 +414,19 @@ public sealed partial class ProductionSystem
     /// the machine (ties: the lower site id); no building of the machine's own record (vfunc <c>0x18</c>, the record, against the excluded target's).
     /// The finder measures from the character, who stands at the machine when it fetches (#963: a well 3000 or more away was missed). A producer
     /// <paramref name="operating"/> operates counts once its output is full, so it fills the well before it leaves with the water. A storage is
-    /// taken only when the storage filters let <paramref name="fetcher"/> take the item from it (<see cref="IStorageFilter"/>).
+    /// taken only when the storage filters let <paramref name="fetcher"/> take the item from it (<see cref="IStorageFilter"/>); of those, the one
+    /// of the highest take priority (<see cref="IStoragePriority"/>, engine API), the nearest among equals.
     /// </summary>
     string? NearestSource(World world, BuildSite from, string record, CharacterCold fetcher, CharacterCold? operating = null)
     {
         string? own = world.Machines.Find(from.Id)?.Data.Id;
         bool Fetchable(BuildSite s, Machine m) => s.Id != from.Id && m.Data.Id != own && InSourceRange(s.Position, from.Position);
-        bool Stored(BuildSite s, Machine m) => m.Data.IsStorage && Fetchable(s, m) && m.Storage is { } st && StorageHolds(st, record)
-            && world.StorageAllows(fetcher, s.Id, StorageUse.Take, record);
+        StoragePriority Stored(BuildSite s, Machine m) => m.Data.IsStorage && Fetchable(s, m) && m.Storage is { } st && StorageHolds(st, record)
+            ? world.StorageRank(fetcher, s.Id, StorageUse.Take, record)
+            : StoragePriority.Forbidden;
         bool Made(BuildSite s, Machine m) => !m.Data.IsStorage && Fetchable(s, m) && OutputHolds(m, s, record, operating);
 
-        return NearestSite(world, from.Position, float.MaxValue, IsStore, Stored, fetcher.Faction) ?? NearestSite(world, from.Position, float.MaxValue, IsMaker, Made, fetcher.Faction);
+        return BestStore(world, from.Position, IsStore, Stored, fetcher.Faction) ?? NearestSite(world, from.Position, float.MaxValue, IsMaker, Made, fetcher.Faction);
     }
 
     /// <summary>
@@ -333,27 +442,30 @@ public sealed partial class ProductionSystem
         m.Output is { Count: > 0 } o && o.Recipe.Item == record && (o.Full || by?.OperateSite != s.Id);
 
     /// <summary>
-    /// The nearest complete storage <paramref name="by"/> uses (<see cref="StoresFor"/>) within <see cref="InFinderRange"/> of a machine that passes
-    /// <paramref name="ok"/> and the storage filters for putting <paramref name="record"/> in (<see cref="IStorageFilter"/>; ties: the lower
-    /// site id). The original's per-item storage finder (<c>FUN_14059acd0</c>) measures from the character, who stands at the machine (#965: a
+    /// The nearest complete building <paramref name="by"/> uses (<see cref="StoresFor"/>) within <see cref="InFinderRange"/> of <paramref name="at"/>,
+    /// other than the machine <paramref name="from"/>, that passes <paramref name="ok"/> and the storage filters for putting <paramref name="record"/>
+    /// in (<see cref="IStorageFilter"/>; ties: the lower site id); of those, the one of the highest put priority (<see cref="IStoragePriority"/>,
+    /// engine API), the nearest among equals. The original's per-item storage finder (<c>FUN_14059acd0</c>) measures from the character (#965: a
     /// storage 3000 or more away was missed).
     /// </summary>
-    string? NearestStorage(World world, BuildSite from, CharacterCold by, string record, Func<Machine, bool> ok)
+    string? NearestStorage(World world, BuildSite from, Vector3 at, CharacterCold by, string record, Func<Machine, bool> ok)
     {
         string? best = null;
         float bestGap = float.MaxValue;
+        var bestRank = StoragePriority.Forbidden;
         foreach (var s in world.Machines.All)
         {
-            if (!s.Data.IsStorage || s.Storage is null || s.Site == from.Id || Site(world, s.Site) is not { Complete: true } site
-                || !StoresFor(world, by, site) || !WorkSiteOpen(world, site))
-                continue;
-            float gap = Gap(site.Position, from.Position);
-            if (gap > bestGap || (gap == bestGap && string.CompareOrdinal(s.Site, best) > 0)) continue;
-            if (!InFinderRange(site.Position, from.Position) || !ok(s)) continue;
-            if (!world.StorageAllows(by, s.Site, StorageUse.Put, record)) continue;
+            if (s.Site == from.Id || Site(world, s.Site) is not { Complete: true } site || !StoresFor(world, by, site) || !WorkSiteOpen(world, site)) continue;
 
-            best = s.Site;
-            bestGap = gap;
+            float gap = Gap(site.Position, at);
+            bool nearer = gap < bestGap || gap == bestGap && string.CompareOrdinal(s.Site, best) < 0;
+            if (!nearer && !world.StorageMayOutrank(bestRank)) continue;
+            if (!InFinderRange(site.Position, at) || !ok(s)) continue;
+
+            var rank = world.StorageRank(by, s.Site, StorageUse.Put, record);
+            if (rank == StoragePriority.Forbidden || rank < bestRank || rank == bestRank && !nearer) continue;
+
+            (best, bestGap, bestRank) = (s.Site, gap, rank);
         }
 
         return best;
@@ -380,4 +492,17 @@ public sealed partial class ProductionSystem
     /// Whether two points are within the source finder's range (<c>FUN_14059d000</c> keeps a building at the bound: <c>&lt;=</c>).
     /// </summary>
     static bool InSourceRange(Vector3 a, Vector3 b) => Vector3.DistanceSquared(a, b) <= ConstructionSystem.SourceRangeSquared;
+
+    /// <summary>
+    /// Applies a storage panel's priority (<see cref="SetStoragePriority"/>) to a complete storage of the player's faction; an unknown level is
+    /// ignored.
+    /// </summary>
+    void SetStoragePriority(World world, SetStoragePriority set)
+    {
+        if (!Enum.IsDefined(set.Level) || !Enum.IsDefined(set.Use)) return;
+        if (world.Machines.Find(set.Site) is not { Data.IsStorage: true, Storage: not null } storage) return;
+        if (!MayControlMachine(world, set, set.Site)) return;
+
+        world.Machines.SetPriority(storage, set.Use, set.Level);
+    }
 }

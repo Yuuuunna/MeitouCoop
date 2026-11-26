@@ -122,8 +122,8 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
     /// <see cref="XpEvent.HitTaken"/>. <paramref name="weaponStat"/> is the current weapon's skill (none when unarmed);
     /// <paramref name="strengthFactor"/> is <see cref="WeaponWeightStrengthFactor"/>, or for unarmed (1 - the encumbrance factor).
     /// <paramref name="damageTaken"/> is the incoming packet's cut + blunt + pierce + stun (<see cref="XpEvent.HitTaken"/> only). The gains are
-    /// scaled by the Global damage multiplier option. The coefficients follow <c>FUN_1408c6980</c>; Meitou's local unarmed-hit rule trains Dodge
-    /// instead of MeleeDefence (docs/game/character-stats.md "Levelling").
+    /// scaled by the Global damage multiplier option. The coefficients follow <c>FUN_1408c6980</c>; unarmed hit-taken dodge experience is
+    /// paid separately by <see cref="Dodge"/> (docs/game/character-stats.md "Levelling").
     /// </summary>
     public void Combat(CharacterStats stats, RaceData race, XpEvent ev, bool unarmed, StatsEnumerated weaponStat, float opponentSkill,
         float strengthFactor, float damageTaken = 0)
@@ -173,7 +173,7 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
     };
 
     /// <summary>
-    /// Defensive XP: a block trains MeleeDefence; a hit taken trains Dodge when unarmed, otherwise MeleeDefence.
+    /// Defensive combat XP: a block trains MeleeDefence; an armed hit taken does too. Unarmed hit-taken dodge is paid by the separate Dodge path.
     /// </summary>
     void CombatDefence(CharacterStats stats, RaceData race, XpEvent ev, bool unarmed, float factor, float opponentSkill)
     {
@@ -185,11 +185,20 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
             return;
         }
 
-        // Coop-local bug patch: when upstream supersedes this logic, remove the override and restore the upstream implementation.
-        // Parity with the original's stat-set kind 5 is unconfirmed.
-        var stat = unarmed ? StatsEnumerated.Dodge : StatsEnumerated.MeleeDefence;
-        PerEvent(stats, race, stat, factor * SkillDifferenceFactor(stats.Stored(stat), opponentSkill), ExperienceSource.Combat);
+        if (unarmed) return;
+        PerEvent(stats, race, StatsEnumerated.MeleeDefence,
+            factor * SkillDifferenceFactor(stats.Stored(StatsEnumerated.MeleeDefence), opponentSkill), ExperienceSource.Combat);
     }
+
+    /// <summary>
+    /// Dodge from a defence (<c>FUN_1408c6360</c>, <b>Verified</b>): 0.075 x k x the encumbrance factor x race[dodge] x the skill difference of the
+    /// effective dodge against the attacker's rating, k = 0.4 when a dodge was picked, 0.8 for a failed defence roll, a failed stumble break-out
+    /// or an unarmed hit taken.
+    /// </summary>
+    public float Dodge(CharacterStats stats, RaceData race, float effectiveDodge, float attackerRating, float encumbrance, bool dodged) =>
+        PerEvent(stats, race, StatsEnumerated.Dodge,
+            options.GlobalDamageMultiplier * (dodged ? 0.4f : 0.8f) * encumbrance * SkillDifferenceFactor(effectiveDodge, attackerRating),
+            ExperienceSource.Combat);
 
     /// <summary>
     /// One core gain of a combat event (<see cref="ExperienceSource.Combat"/>).

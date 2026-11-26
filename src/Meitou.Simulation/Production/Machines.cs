@@ -63,6 +63,12 @@ public sealed class InputSlot(RecipeInput recipe)
     /// Whether the section takes units of <paramref name="record"/>: its item, unless it is <see cref="Idle"/>.
     /// </summary>
     public bool Takes(string record) => !Idle && Item == record;
+
+    /// <summary>
+    /// The units an operator puts into the section (the Auto haul fill): its capacity less what it holds, 0 when it draws nothing (rate 0) or its
+    /// capacity is not positive.
+    /// </summary>
+    public int FillRoom => Rate > 0 ? Math.Max(0, Recipe.Capacity - Count) : 0;
 }
 
 /// <summary>
@@ -372,6 +378,11 @@ public sealed class Machine : IPowerDraw
     /// </summary>
     public bool OnGrid { get; set; }
     /// <summary>
+    /// Its building belongs to no town at all (NO_TOWN, docs/game/buildings-production.md "Town at materialization"), so no power frame runs it and a
+    /// machine that draws power gets none. Derived each tick; not saved, not hashed.
+    /// </summary>
+    public bool NoTown { get; set; }
+    /// <summary>
     /// Whether the battery's town grid charged its batteries overall this tick (see <see cref="OnGrid"/>).
     /// </summary>
     public bool GridCharging { get; set; }
@@ -391,6 +402,21 @@ public sealed class Machine : IPowerDraw
     /// The save's <c>power on</c> (default on; no UI switch yet).
     /// </summary>
     public bool PowerOn { get; set; } = true;
+    /// <summary>
+    /// A storage's put priority, the player's setting on its panel (<see cref="Items.StoragePriority"/>; save key <c>meitou put priority</c>):
+    /// where the game's searches put things first. Normal by default. Engine setting, not in the original.
+    /// </summary>
+    public Items.StoragePriority PutPriority { get; internal set; }
+    /// <summary>
+    /// A storage's take priority, the player's setting on its panel (save key <c>meitou take priority</c>): where the game's searches take
+    /// things from first. Normal by default. Engine setting, not in the original.
+    /// </summary>
+    public Items.StoragePriority TakePriority { get; internal set; }
+
+    /// <summary>
+    /// The storage's priority for <paramref name="use"/> (<see cref="PutPriority"/> or <see cref="TakePriority"/>).
+    /// </summary>
+    public Items.StoragePriority PriorityFor(Items.StorageUse use) => use == Items.StorageUse.Put ? PutPriority : TakePriority;
     /// <summary>
     /// The save's <c>broken</c> (UseableStuff <c>+0x3b6</c>, docs/game/buildings-production.md "Broken machines"): set by every dismantle step
     /// (<c>Building::addDismantleProgress</c>), cleared by a build step that leaves progress above 0, by completion and by the ruin's first tick. A
@@ -488,6 +514,13 @@ public sealed class Machine : IPowerDraw
         h.Add(Charge);
         h.Add(Granted);
         if (Broken) h.Add(0x42726B6E);
+        if (PutPriority != Items.StoragePriority.Normal || TakePriority != Items.StoragePriority.Normal)
+        {
+            h.Add(0x50726931);
+            h.Add((int)PutPriority);
+            h.Add((int)TakePriority);
+        }
+
         if (Data.IsFurnace) { h.Add(Burning ? 1 : 0); h.Add(BurnLevel); }
         foreach (var i in Inputs) { h.Add(i.Count); h.Add(i.Level); }
         if (Output is { } o) { h.Add(o.Count); h.Add(o.Progress); }
@@ -565,6 +598,12 @@ public sealed class MachineRegistry
     /// </summary>
     public Machine? Find(string site) => _bySite.GetValueOrDefault(site);
     /// <summary>
+    /// Whether any machine has a storage priority other than Normal (<see cref="Machine.PutPriority"/>, <see cref="Machine.TakePriority"/>), so the
+    /// game's storage searches rank storages (<see cref="World.StorageMayOutrank"/>). Recounted between ticks, whenever the machines or a priority
+    /// change.
+    /// </summary>
+    public bool AnyStoragePriority { get; private set; }
+    /// <summary>
     /// Bumped on every change the host shows (items, progress, status): by <see cref="Touch"/> and by a <see cref="Published"/> whose views changed.
     /// </summary>
     public long Version { get; private set; }
@@ -586,12 +625,31 @@ public sealed class MachineRegistry
     internal void Work() => Worked++;
 
     /// <summary>
+    /// Sets a storage's priority for <paramref name="use"/> and recounts <see cref="AnyStoragePriority"/>; serial phases only.
+    /// </summary>
+    internal void SetPriority(Machine machine, Items.StorageUse use, Items.StoragePriority level)
+    {
+        if (use == Items.StorageUse.Put) machine.PutPriority = level;
+        else machine.TakePriority = level;
+
+        RecountPriorities();
+        Touch();
+    }
+
+    /// <summary>
+    /// Recounts <see cref="AnyStoragePriority"/> from the machines; serial phases only.
+    /// </summary>
+    internal void RecountPriorities() =>
+        AnyStoragePriority = _all.Any(m => m.PutPriority != Items.StoragePriority.Normal || m.TakePriority != Items.StoragePriority.Normal);
+
+    /// <summary>
     /// Adds a machine.
     /// </summary>
     internal void Add(Machine machine)
     {
         _all.Add(machine);
         _bySite[machine.Site] = machine;
+        RecountPriorities();
         Touch();
     }
 
@@ -605,6 +663,7 @@ public sealed class MachineRegistry
         if (at < 0) _all.Add(machine);
         else _all[at] = machine;
         _bySite[machine.Site] = machine;
+        RecountPriorities();
         Touch();
     }
 
@@ -615,6 +674,7 @@ public sealed class MachineRegistry
     {
         if (!_bySite.Remove(site, out var m)) return false;
         _all.Remove(m);
+        RecountPriorities();
         Touch();
         return true;
     }
@@ -626,6 +686,7 @@ public sealed class MachineRegistry
     {
         _all.Clear();
         _bySite.Clear();
+        AnyStoragePriority = false;
         Touch();
     }
 

@@ -639,7 +639,7 @@ public sealed partial class AiSystem
                 // collection lists. For a machine target (row 93 at a town machine) it carries an item an input takes (FUN_1405a45f0); 66
                 // (FUN_140597530): it carries the machine's output item.
                 StateType.HaveSomeResourcesFor =>
-                    target.Kind == Targets.Store && cold.Inventory is { } carried ? Production.ProductionSystem.Ditchable(carried).Any()
+                    target.Kind == Targets.Store && cold.Inventory is { } carried ? Production.ProductionSystem.Ditchable(_world, cold, carried).Any()
                     : MachineAt(target) is { } fillable && Production.ProductionSystem.CarriesInputOf(cold, fillable),
                 StateType.HaveSomeResourcesFrom => ResourcesFrom(target, cold),
                 // 89 (FUN_1405a2c90): it carries the machine's output and a storage takes it (FUN_14059acd0), so row 87's !89 plans 113, then 93 into
@@ -838,7 +838,7 @@ public sealed partial class AiSystem
                         return new PlanTarget(Targets.Seat, chair.Position);
 
                     if (_system.NodeGoalFindsNothing(_mind, _board, type)) return default;
-                    return Spot(Targets.Spot, _system.SpotFor(_world, _mind, _board, AiBehaviour.Post, type));
+                    return Spot(Targets.Spot, _system.SpotFor(_world, _slot, _mind, _board, AiBehaviour.Post, type));
                 case TaskType.GoHomeAndGoToBed or TaskType.GoHomeAndGoToBedSecure:
                     // A character in a bed keeps it (the bed search FUN_1408cfe00, docs/game/locks.md "Bed search"): the target is where it lies.
                     if (_world.Characters.Cold(_slot) is { InSomething: Locks.HeldState.Bed })
@@ -848,9 +848,9 @@ public sealed partial class AiSystem
                         return Spot(Targets.Bed, (Flat(spare.Position), true, spare.Position.Y, null, false));
 
                     if (!_system.HasBed(_world, _board, _mind, _slot)) return default;
-                    return Spot(Targets.Bed, _system.SpotFor(_world, _mind, _board, AiBehaviour.Sleep, type));
+                    return Spot(Targets.Bed, _system.SpotFor(_world, _slot, _mind, _board, AiBehaviour.Sleep, type));
                 case TaskType.GoHomebuilding:
-                    return Spot(Targets.Spot, _system.SpotFor(_world, _mind, _board, AiBehaviour.GoHome, type));
+                    return Spot(Targets.Spot, _system.SpotFor(_world, _slot, _mind, _board, AiBehaviour.GoHome, type));
                 case TaskType.WanderTown or TaskType.Shopping or TaskType.Wanderer:
                     {
                         var behaviour = TaskBehaviours.Of(type);

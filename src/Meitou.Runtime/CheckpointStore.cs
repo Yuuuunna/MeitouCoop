@@ -10,7 +10,13 @@ public enum CheckpointStage
     Sealed
 }
 
-public sealed record StoredCheckpoint(Guid Id, SaveGame World, byte[] Metadata);
+public sealed record StoredCheckpoint(Guid Id, SaveGame World, byte[] Metadata)
+{
+    /// <summary>
+    /// Local directory the verified world was loaded from, for world-ready mod callbacks; never part of network metadata.
+    /// </summary>
+    public string? SaveFolder { get; init; }
+}
 /// <summary>
 /// Immutable checkpoint directories and one atomically replaced current pointer. A single writer owns the filesystem lock;
 /// readers can finish using an older checkpoint. This container does not define the multiplayer metadata schema.
@@ -131,7 +137,7 @@ public sealed class CheckpointStore
         ValidateMetadata(metadata);
         var world = SaveGame.Load(Path.Combine(snapshot, "world"));
         ValidateWorld(world);
-        return new StoredCheckpoint(pointer.Id, world, metadata);
+        return new StoredCheckpoint(pointer.Id, world, metadata) { SaveFolder = Path.Combine(snapshot, "world") };
     }
 
     static string Hash(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes));

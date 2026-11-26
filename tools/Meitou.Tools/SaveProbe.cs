@@ -277,7 +277,7 @@ static class SaveProbe
     }
 
     /// <summary>
-    /// One door of <see cref="Doors"/>: its state and the squads living in its building.
+    /// One door of <see cref="Doors"/>: its state, its building's house flag and the squads living in its building.
     /// </summary>
     static string DoorLine(ProbeWorld probe, Fixture door)
     {
@@ -287,7 +287,8 @@ static class SaveProbe
             .Select(q => $"{q.Id}:'{q.Name}' goal={LeaderGoal(probe, q.Leader.Slot)}");
         return $"{door.Id} {door.HostRecordId} at=<{door.Position.X:F0}, {door.Position.Z:F0}> gate={door.IsGate} owner={probe.Faction(door.Owner)} {door.Motion} open={door.OpenAmount:F2} "
             + $"locked={door.Lock?.Locked} wants={door.WantsLock} broken={door.DoorBroken} restored={door.Restored} "
-            + $"level={LevelDoor(world, door)} homes=[{string.Join(", ", squads)}]";
+            + $"level={LevelDoor(world, door)} homelok={world.SystemOf<LockSystem>()?.IsHouseLocked(world, door.Building)} "
+            + $"homes=[{string.Join(", ", squads)}]";
     }
 
     /// <summary>
@@ -1526,7 +1527,7 @@ static class SaveProbe
             boxes.Add(new Meitou.Simulation.Trading.StockBox(f, Meitou.Data.Gameplay.Construction.MachineData.From(probe.Db, r)));
         }
 
-        shop.View.Build(shop, boxes);
+        shop.View.Build(probe.World, shop, boxes);
         Console.WriteLine($"  window {shop.Stock.Width}x{shop.Stock.Height}:");
         foreach (var it in shop.Stock.Items.OrderBy(i => i.Y).ThenBy(i => i.X))
             Console.WriteLine($"    row {it.Y} col {it.X} {it.Name} x{it.Quantity} ({it.Width}x{it.Height})");
@@ -1569,7 +1570,7 @@ static class SaveProbe
             .Where(f => f?.Contents is not null)
             .Select(f => new Meitou.Simulation.Trading.StockBox(f!, null))
             .ToList();
-        shop.View.Build(shop, boxes);
+        shop.View.Build(world, shop, boxes);
 
         var grid = shop.Stock;
         Console.WriteLine($"squad {q.Id} '{q.Name}' window starts {shop.ViewSize.Columns}x{shop.ViewSize.Rows}, built {grid.Width}x{grid.Height}, "

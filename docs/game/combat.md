@@ -217,8 +217,15 @@ Meitou: `CombatSystem.MostAdvanced` (the followed swing; an exact tie keeps the 
 is clamped at 1, so it keeps blocking. A blow decided again draws afresh (`ChooseDefence` salts the blow's roll counter with the tick). The zone list: `AttackZoneLists.Contains`, double-buffered,
 so a defender sees the list an attacker built last tick (the original reads it in its own update order).
 
-**Observed** (decompiled, not measured in game), with several attackers: a target answering a request is asked by
-anyone, not only its own target, and the winner of the roll turns to attack the asker (`FUN_140666a30`). Deciding
+**Verified** (decompile of `FUN_140666a30`, `FUN_140665650`): a target answering a request is asked by anyone, not only its own target. It
+turns to attack the asker (`FUN_140665650` sets its opponent +0x290/+0x298 to the asker) only on the path taken without a current opponent, in
+the wait after its swing (+0x144), or in a state other than attacking (0) or defending (1); while it swings at or defends against its opponent
+the asker gets the plain answer (defending: the asker may swing; attacking: the initiative roll, a lost one refuses the asker) and the target
+keeps its opponent. So a fighter in a crowd finishes its combo on the one it started it on. Meitou: `CombatSystem.TurnOnYielder` (before, a
+fighter mobbed by a squad switched target between the blows of a combo, 46 times in 30 s on the save of #1248, and the later blows went to
+the new target's place with the heading still on the old one: 4 of 16 blows found nobody; after, every blow at a standing target landed).
+
+**Observed** (decompiled, not measured in game), with several attackers: Deciding
 (`FUN_14060c8b0`) tries attacking first and defends only when that fails; a waiting fighter that is attacked goes
 to deciding, except in the wait after its own swing (above). During its own swing a fighter aborts to defend only while under 50% of it with an incoming blow past
 50% (`FUN_14060a970` → `FUN_1406083d0(0.5, 0.5)`); while anyone attacks it the swing ends at the current blow's stop
@@ -250,6 +257,18 @@ HitMaterialType: `HIT_MISSED` dodged 0.2 s, `HIT_SWORD` blocked 0.3 s, flesh or 
   via `getBuildState`; a broken door nothing), a wall clamp(f / 2, 10, 60) × 0.003, destroyed at 0 (**Observed**).
 - Per target the attacker frees that one's attack slot (`AttackSlotManager::freeSlotH`), and after a hit or block takes it off its own engaged
   list (`removeAttackerH`, [attack slots](#attack-slots-and-circling)).
+
+### Enemy test
+
+**Verified** (decompile of `FUN_14079c950`, Character vtable slot 125 (+0x3e8) of `Character`, `CharacterHuman` and `CharacterAnimal`; `FUN_140678960`,
+`FUN_140678830`). `isEnemy(A, B)`: never when B is of A's faction. When their squads differ, A's squad memory decides first: B tagged TEMP_ENEMY
+(bit 4 of the entry's short-term tags) in A's squad's memory, or, when A is the player's faction (+0x250), A tagged TEMP_ENEMY in B's squad's
+memory, makes an enemy; B tagged TEMP_ALLY (bit 3) in A's squad's memory makes none. Only then the disguise, slave-owner and faction relation
+tests run. So a squad that remembers the player as a temporary enemy is the enemy of every member of the
+player's faction whatever the faction relation, and a sweep takes all of its members in the attack zone. Meitou:
+`CharacterFacts.RegardsEnemy(World, SquadMemory, ...)` (the squad memory part `SquadMemoryEnemy`, then the faction relations), used by the attack
+zone, the line of fire and the steering's repulsion. Checked on the save of #1239 (a maxed fighter against a squad of Hungry Bandits, 30 s windows):
+before, 23 blows thrown and 18 landed, never two victims to a blow; after, 11 thrown and 18 landed.
 
 **Verified** (disassembly of `FUN_1406087a0`): "attack start" is `CombatClass` +0x15c, written at each attack's start by `FUN_1402b4570` (the fight start's write is only the initial
 value), so `moved` is the 3D distance from where this swing began, in any direction: the attacker's own drift, backing or circling counts, not just a lunge. The clamp is max(−1, attack distance − moved)
@@ -375,6 +394,8 @@ as the fighters whose target it is stand for it), stamped with the owner's `List
     Passive one −1;
   - +10 when the candidate's intended target (state broadcast +0x68) is the chooser's AI-task target, that target is not fighting it back, and
     the candidate has under 2 attackers;
+  - with param_6 set (named LawEnforcer by the original TauntExpansion mod) a term from the candidate's state broadcast `+0xa0` and the chooser's
+    faction is added first (**Observed**, decompile; which callers set it **Unknown**; Meitou scores none);
   - a player-faction chooser drops candidates beyond a limit only when its caller sets the clamp flag (`FUN_14059e300` param_7, **Verified**): the in-fight chooser `CombatClassAI::chooseAttackTarget` does, every goal finder and the sight look pass 0 (no clamp, so the attack-on-sight look reaches the sight range). The limit is 400 (`DAT_1416abf04`) while the shooting gate `FUN_1407f2840` is false; with a ranged weapon ready (gate true) it is `FUN_140436910`: 800 (`DAT_1416d4750`) without aim data, else the aim object's range x a height factor (1 within a height difference of 20, down to 0.6 when the target is higher, up to 1.5 when lower). Meitou: `TargetScore.PlayerRange` 400 for the in-fight chooser only (the ranged limit is not modelled); on Hold ×0.01 beyond 40;
   - when the Hold test `FUN_140598630` passes: + range term (×20 for a crippled chooser), + murderous (−2) for a candidate whose fight is off
     (then the whole score ×0.5 when its intended aggression, vfunc 0x1e8 `getIntendedAggression`, is ≤ 0), the whole score ×0.1 while it gets up
@@ -532,7 +553,8 @@ Meitou (`CombatSystem.HasSlot` / `MayJoin`, `Fighting.Steer`):
   threat counts zeroed, focus cleared. `getTimeSinceLastCombatModeInHours` reads +0x138, stamped at start.
 - **Weapon away.** The fight's end sheathes nothing. Idleness (14), first aid, splinting, repair, lockpicking and patrols need
   `!hasWeaponEquipped`, so the planner puts 7 Sheathing weapon before them: a character stays armed while urgent goals run and sheathes when it
-  drops to Idleness or is ordered to such a job.
+  drops to Idleness or is ordered to such a job. `Task_OperateMachine`'s start puts it away (vfunc 0x2d0, `FUN_14035b430`); a training dummy's start draws or sheathes
+  by the dummy's stat ([97](ai-tasks.md#perma-jobs)).
 - **Orders beat goals.** `AITaskSytem::chooseGoal` tries, in order: the player's order queue (`checkOrders`, OrdersReceiver +0x38), jobs, urgent
   perma-jobs, priority-3 goals (Self preservation, Hold's goal 16, package goals), the other perma-jobs, priority 2 then 1 goals, the hold-position
   task. So a character with an order does not defend itself: a hit staggers it (below) and the queue's first order then runs again, unless its row needs no melee threat
@@ -614,7 +636,7 @@ A fighter on that chase starts no attack: the attack decision `FUN_14060c8b0` ru
 
 **Observed** (static reading, `FUN_1402af1e0` → `FUN_1404354d0`; the stat from `FUN_1408866b0` → `FUN_140883a80`): the lead point is the target's position + its velocity (Character vfuncs 9 speed × 10 heading, movement +0xb8 and +0xd0) × `(1 − r) × 2 + 1.2` seconds, recomputed every tick, with r the chaser's CharStats +0x188: its attack play rate (lerp(0.01 (0.6 dex + 0.4 attack), 0.8, 1.2) × G, capped at 1.2, the rate attack clips play at; × 0.8 when `FUN_1405c7fd0(character) == 3`, swimming). So 0.8 s ahead at r = 1.2, 1.6 s at 0.8, more for a slowed attacker; a faster chaser aims past the runner, and since the lead follows the velocity it swings to the new side when the runner turns, and drops as soon as the runner slows under 9 or leaves plain movement (the 1.5 s timer restarts). The steering faces its movement while leading. A second override (`CharMovement::vfunc_28` sets movement +0x168 and a point at +0x16c, the steering's +0x50/+0x54): the chaser heads for that point instead at most 55 u/s, the lead is off, and it clears within 10 units; `CombatClassAI::vfunc_9` skips its chase while it is set.
 
-Meitou (`PursuitSystem`, engine rules): the lead is a path goal, re-pathed when it moves over 12 units (at most every 0.5 s, so a turn can overshoot by ~12 units at a run), put a further 0.5 s of the runner's way ahead (a path ends in a stop and a fighter's speed ramps back slowly) and `PassWidth` 1.25 × the two footprints (clear of the separation radius) beside the runner's track on the chaser's side (bodies are solid, so the chaser passes the runner instead of pushing it along; the original's runs through it). It is used only while the chaser is behind the nearer of the lead point and the swing's aim point (target + velocity × `AimLeadSeconds` 1.2); level with it, it goes for the target and stands once the aim point is within reach, so the runner comes into its swing. Standing is measured to that aim point, as the swing is (stood within reach of the runner itself, the aim point would be out of reach and the chaser idle). A fighter at its path's end asks for the next one after `RepathSeconds` 0.5 (not the wanderer's 3 to 10 s wait). A lead off the navmesh falls back to the target. The +0x168 override is not modelled.
+Meitou (`PursuitSystem`, engine rules): the lead is a path goal, re-pathed when it moves over 12 units (at most every 0.5 s, so a turn can overshoot by ~12 units at a run), put a further 0.5 s of the runner's way ahead (a path ends in a stop and a fighter's speed ramps back slowly) and `PassWidth` 1.25 × the two footprints (clear of the separation radius) beside the runner's track on the chaser's side (bodies are solid, so the chaser passes the runner instead of pushing it along; the original's runs through it). It is used only while the chaser is behind the nearer of the lead point and the swing's aim point (target + velocity × `AimLeadSeconds` 1.2); level with it, it goes for the target and stands once the aim point is within reach, so the runner comes into its swing. Standing is measured to that aim point, as the swing is (stood within reach of the runner itself, the aim point would be out of reach and the chaser idle). A fighter at its path's end asks for the next one after `RepathSeconds` 0.5 (not the wanderer's 3 to 10 s wait). The point past the runner is tested by walking the ground to it from the runner in 4-unit steps, each step's height carried on (`PursuitSystem.GroundAlong`), and the path is asked at the height found there; a lead whose ground breaks (a wall, a cliff, off the navmesh) falls back to the target. Tested at the runner's own height instead, a point 100+ units ahead up or down a slope was out of a standing step's 12-unit reach, so a faster chaser kept falling back to the runner's place and trailed it about 70 behind at its speed, never swinging (**Observed**, #1394 save: two Beak Things behind a skeleton running uphill west of Vain). The +0x168 override is not modelled.
 
 ### Fight steering
 
@@ -722,7 +744,7 @@ which its next update (`FUN_14050d920` → `FUN_14050d7d0`) consumes by dropping
   - the chaser has no sense entry for the target → give up;
   - the target is neither seen nor heard (entry `+0x38`/`+0x39`) and its last sighting is older than 12 units, or the chaser
     stands within 60 of where it was last sensed (squared 3600) → give up.
-  - Giving up ends the task, fires dialogue event 60 GIVE_UP_CHASE from the chaser at the target and resets the AI's plan. Meitou (`AggroSystem.ResetPlan`): both resets clear the chaser's plan and commitment and ask for a new think; `vfunc_1` is `FUN_14033a800`, called from the `Task_MeleeAttack` update `FUN_14034ca40` (not `FUN_14034c7c0`, `Task_PlayerTalkto`).
+  - Giving up ends the task, fires dialogue event 60 GIVE_UP_CHASE from the chaser at the target and resets the AI task system (`FUN_1405074a0`, both resets, **Verified** decompile of `FUN_14034ca40` and `FUN_14033a800`: it empties the order queue `+0x38` and the second list `+0x70`/`+0x78` and force-clears the current goal `+0x1c0`, so an ordered chase, an arrest's, leaves with its order). Meitou (`AggroSystem.ResetPlan` → `PlayerOrders.Wipe`): both resets clear the chaser's orders, second list, plan, commitment and goal and ask for a new think; `vfunc_1` is `FUN_14033a800`, called from the `Task_MeleeAttack` update `FUN_14034ca40` (not `FUN_14034c7c0`, `Task_PlayerTalkto`).
 - Time: the world clock is in game hours; the sense-age unit is hours × 3600 / 33 × 0.5 (`FUN_140852150`, `FUN_14033a170`),
   so 12 = 13.2 game minutes, about 24 s real at 1x ([game loop](game-loop.md#the-three-time-values)).
 - So a player's character never gives up a path chase by this rule, and an NPC on open ground (no path chase) keeps
@@ -755,18 +777,23 @@ KO/coma/death thresholds use [character-stats](character-stats.md). Never tick m
 
 **Verified** (`MedicalSystem::punchSomething` `FUN_140666780`, called on the attacker's medical at the end of the take-hit `FUN_1404394f0`; arguments material, target,
 technique, combo index per KenshiLib 1ce4a16; constants from `re/data_values.txt`). Every blow that reaches a defender hurts a martial artist's own limb:
-- Material: 5 blocked, 0 dodged, 2 hit (`HitMaterialType`: 0 missed, 1 metal, 2 flesh, 3 sand, 4 wood, 5 sword, 6 chain); 1 when the target's race `is robot`.
-  A swing that reaches nobody never calls it.
+- Material (`HitMaterialType`: 0 missed, 1 metal, 2 flesh, 3 sand, 4 wood, 5 sword, 6 chain): 5 blocked, 0 dodged; 1 when the target's race `is robot`.
+  A hit's comes from the medical hit `FUN_1406508d0`'s out value: the ARMOUR `material type` (piece `+0x23c`, set by `FUN_140898e90`) of the last
+  piece in worn order that covered the struck part, -1 for none, 3 when the struck part is a limb with a fitted prosthetic (limb state 2) or the race is
+  a robot; the take-hit maps it through {2, 2, 6, 1} (-1 stays 2): bare, cloth and leather are flesh, chain is chain, metal plate is metal (**Verified**,
+  disassembly at `140439888`; the decompile drops this lookup). A swing that reaches nobody never calls it.
 - None unless the attacker's stat-set kind is 5 (fists), its race is not `is robot`, the blow's impact point `limb` (clamped combo index) is not 4, and
   that limb (0 left arm, 1 right arm, 2 left leg, 3 right leg) has no fitted robot limb (part `+0x28`).
 - Packet: material 1 cut 2 blunt 2; 5 cut 5 blunt 1; 6 cut 1 blunt 1; else blunt 1. Times f = (1 - 0.5 x (fist rating + toughness x scale) / 100)
   x Global damage multiplier x the gear's `fist injury mult` product (CharStats `+0x4c`); fist rating = `FUN_140884e00` with its flag, toughness the raw stat
   (`+0x90`) x `+0x34`. No clamp: above 200 together f is negative and the blow heals the limb.
 - Written as `FUN_140644a70`: flesh -= cut + `blunt permanent organ damage` x blunt, stun += the rest of the blunt (no armour, wound, bleed or toughness
-  resistance). With the base organ damage 0 a landed or dodged punch only stuns the limb; blocked blows and robot targets cut it.
+  resistance). With the base organ damage 0 a punch landed on flesh or dodged only stuns the limb (about 1 stun a blow for a beginner, so a long
+  beating greys out the arm's bar, as in the original); blocked blows, chain, metal plate, prosthetics and robot targets cut it.
 - Then the part-down test asks for the collapse (`FUN_140649870`) and the attacker gains toughness ([character-stats](character-stats.md), `FUN_1408c68e0`).
 
-Meitou: `CombatSystem.Punch`, `MedicalState.PunchDamage`, `Fighter.FistInjury`; the medical tick sees the down part.
+Meitou: `CombatSystem.Punch` and `PunchMaterial`, `HitResolver.StruckMaterial`, `MedicalState.PunchDamage`, `Fighter.FistInjury`; the medical tick sees
+the down part.
 
 ### Block sparks
 
@@ -816,7 +843,7 @@ values; trajectory, aim timing and obstruction uncertainties remain labelled.
   owner test `FUN_140546dd0`)). Base data: harpoon turrets 75, auto/multi 50 (`output rate`, **Verified** probe); walls 10–30.
 - **Gun slots of `GunClassTurret`** (vtable `1416d5258`): 6 target weight `FUN_1404348e0`: 1 when dot(turret facing `+0x458`, target − turret) > 0, else 0.1 for a target outdoors,
   for one inside a building 0.1 only in the turret's own building on its floor, else 0 (**Observed**); 12 aim direction = the barrel node's +Z (`FUN_140434f40`); 13 aim error = building `+0x448`;
-  18 mount factor M = 1 + 0.01 × the output value of the building in `+0x478` (the `mounted` handle: a wall's turret bonus) (`FUN_1404353b0`); 19 power factor P = 0.8 e + 0.2 (`FUN_140435380`),
+  18 mount factor M = 1 + 0.01 × the output value of the building in `+0x478` (the `mounted` handle: a wall's turret bonus; any mounted building, a placed turret's too, **Verified** by decompile; Meitou `TurretManning.MountOf`) (`FUN_1404353b0`); 19 power factor P = 0.8 e + 0.2 (`FUN_140435380`),
   e = building slot 109 `FUN_140296e00` = 0 when not operational, else hp ratio × power grant; 22/23 pierce ends trunc(0.75 D), trunc(1.25 D).
 - **Manning** (`Task_UseTurret`, update `FUN_1403474f0`): the building of the order's target or the character's `+0x258`; it must be a turret (slot 107 = 8) with a free
   operator place (slot 159); the gunner faces it and holds clip `combatstance`; unless broken (`+0x3b6`) the controller gets the building and stat 11 Turrets
@@ -848,13 +875,16 @@ values; trajectory, aim timing and obstruction uncertainties remain labelled.
   perception), deviation, 0)))`; harpoon damage = U[min, max] × P × hM, range = P × range × hM, speed = shot speed × (0.8 P hM + 0.2), h = height factor from the muzzle; friendly
   avoidance min(1, 0.015 FF); `Attack` on the building's object; the target is told it is attacked (`FUN_140999d50`). The harpoon is a bolt of the gunner (hit `FUN_140439c90`, [Bolt visuals](#bolt-visuals)).
 - **Target choice** (`FUN_140437f40`, `FUN_1404374d0`, score `FUN_140435d70`): the preferred/current target is kept if it still scores and equals the order's; else every
-  sensed character (list category 4, mask 0x210) scores s = (f·g)² with g = 1 − d/(k × range) (k 1), f 1 (0.1 for slot 0x360, ×0.1 for slot 0x368; slot 0x368 > 0 is 0 for a gunner not of
+  sense entry tagged ENEMY and neither dead nor imprisoned (`FUN_140853960(4, 0x210)`, **Verified**; so a slave is a candidate only when the gunner is hostile to its owner too, [sense tags](perception.md#sense-tags-who-is-an-enemy)) scores s = (f·g)² with g = 1 − d/(k × range) (k 1), f 1 (0.1 for slot 0x360, ×0.1 for slot 0x368; slot 0x368 > 0 is 0 for a gunner not of
   the player's faction); down for any gunner (slot 0x30: out, dead, ragdolled, carried, posture ≥ 3), `+0x2f8` ≠ 0 or `+0x3d4` (carried) → 0, and an ordered target that scores 0 is dropped (**Verified**; Meitou `CombatSystem.ScoresZero`); out of range → 0.001; then × weight (slot 6), × 1.5 when `FUN_1405ca6f0`, + 0.1 when it is the
   current target; × 0.1 when its sense entry is not seen, × 1.5 for the current; best above 1e-6. A candidate with diplomatic status (`FUN_140796240`, the biome factored in
   for a gunner not with the player, `FUN_140856bc0`) scores 0 unless its intended aggression (vfunc 0x1e8, the current goal's) is above 0 (**Verified**, decompile of
-  `FUN_140435d70`; Meitou `CombatSystem.SparedDiplomat`). None: with the player's **Shoot first** option (`DAT_142134690 +0x11a`) a player gunner takes
-  sensed characters of fundamental type 0 or 8 or a default-hostile faction (k 0.6); an NPC gunner takes default-hostile ones it is aware of (`FUN_14099b820`) and those fighting a member
-  of its own group. An unseen chosen target is looked at (slot 0x3b0).
+  `FUN_140435d70`; Meitou `CombatSystem.SparedDiplomat`). None (**Verified**, `FUN_1404374d0`): with the player's **Shoot first** option (`DAT_142134690 +0x11a`) a player gunner takes
+  the entries tagged NEUTRAL (mask 2, 0x210) of fundamental type 0 or 8 or a default-hostile faction (k 0.6); an NPC gunner takes the NEUTRAL entries of a default-hostile faction
+  (default relation below -30) or whose target has the gunner's Ownerships town (`FUN_1407956a0` `+0x30`) and is no enemy of the gunner (slot 125), either only when it passes
+  `FUN_14099b820`, the threat test of [34 ATTACK_TROUBLE_MAKERS](ai-tasks.md#combat-goals)'s pass 2 (no slaver; intends aggression, AGGRESSOR, or a bandit or animal whose task
+  intends it; attacking one the gunner protects). So a slave led past a town's turrets is never shot (#1359). Meitou: `CombatSystem.TurretSenses`, `AggroSystem.Threatens`; the
+  gunner's faction stands in for the victim's Ownerships town. An unseen chosen target is looked at (slot 0x3b0).
 - **NPC turret goals** 149/222/234 have list A `isNoEnemiesInVicinity` (with the `*` flag): done, so not chosen, while the gunner senses no enemy (state 6 is AI `+0xbc`
   `numEnemies` == 0, `FUN_140597630`, **Verified**; no radius of its own: the senses' reach, [perception](perception.md#senses); [ai-tasks](ai-tasks.md#perma-jobs)).
   So in peace a town's turrets stand empty and its guards keep their other goals.
@@ -1044,6 +1074,12 @@ still running answers "pending". **Line of fire** (`FUN_140437ad0`): from the mu
 the shape's handle: a character that is not the shooter and not an enemy (`Character::isEnemy` slot 0x3e8, disguises counted) holds (2); any enemy, the target or another, fires (1);
 another object (a building) blocks (0) unless the shooter is nearer the target than the hit point (feet to feet, `FUN_1404346d0`); a shape without an object and no hit at all
 fire. The terrain is such a shape (`FUN_1407eaf90`: heightfield, group 2, no user data and no handle set), so a hill in the way fires into the hill. So packed ranks hold: a rear rank's line runs into the front rank's hulls (5 wide, 6 apart in Meitou's battle) unless they stand aside.
+**Turret's mount** (**Verified** by decompile; names from KenshiLib's exports): the ray request (`FUN_140435b40`) asks the gun whether the first shape met is a building
+(object kind 0) whose handle equals its turret's mounted building (gun slot 11 `GunClassTurret::didThisTraceHitOurMountedBuilding` `FUN_140438050`; the turret is gun `+0x128`,
+`TurretBuilding::getMountedBuilding` returns `+0x478`, the saved `mounted` handle). Then a second ray (`FUN_140434750`, same mask and direction) starts from gun slot 10
+(`FUN_140435040`): barrel node + orientation × unit(gun `+0x90` = (0, `barrel pos Y`, `barrel pos Z`), `FUN_14043baa0`) × 50 (`DAT_141683170`), and what it meets decides
+as above. So a turret on a wall or roof shoots over its own parapet. Meitou: `CombatSystem.TurretLineOfFire`, `TurretRig.RecastFrom`; the mount's collision
+(`IRagdollEnvironment.BuildingTriangles`) tells it apart from other buildings at the hit point.
 **Closing ray** (`FUN_140438c70`, state 1): from the muzzle along (target feet + 5 up) − (own feet + 5 up) (read through the decompiler's garbled Ogre operators: the feet-to-feet
 line), mask `0x87f9e04` (no characters); it passes when it meets something
 farther from the shooter than the target is. Meeting nothing does not pass, so on open ground a walker goes on until its path fails or the planner turns it to melee.
@@ -1058,7 +1094,8 @@ Meitou: `CombatSystem.HullHalf`, `HitHull`, `LineOfFire`, `ClosingRayPasses`; a 
 (`FUN_1409991d0`, weapon choice `FUN_1405c97a0`). Without both, the shooting gate (`FUN_1407f2840`) fails: attack orders stay melee (`FUN_1407f9e20`) and the
 Shooting tasks 262/263/266 (condition 161) are not planned; an arm's change puts the held weapon away (`FUN_1405cc230`): a two-arm one on either arm, another
 when an arm it needs is out. The melee weapon drawn (`FUN_140345c10`; hip and back are the first item of the `hip` and `back` sections, `FUN_140747c30`,
-`FUN_140747e00`): right arm out, none (fists); right only, the hip one; both, the back one unless it is a crossbow, else the hip one. The hip one replaces a drawn
+`FUN_140747e00`): right arm out, none (fists); right only, the hip one; both, the back one unless it is a crossbow, else the hip one. Meitou
+adds one exception for its worn unarmed weapons ([characters](../characters.md#worn-unarmed-weapons)). The hip one replaces a drawn
 back one only when it rates higher by Item vtable +0x378, which returns 0 for every WEAPON and CROSSBOW (`FUN_1408a52d0`), so never. **Observed**, not built:
 with both arms, `FUN_140334250` keeps the weapon held instead of drawing the back one; it is true when the character's location resolves to a building whose
 +0xc2 byte is 0 (indoors?). Meitou: `MedicalState.ArmWorks` (also carrying and swimming); `Fighter.Weapon` takes back or hip by the arms each tick

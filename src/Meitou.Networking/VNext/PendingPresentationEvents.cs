@@ -3,8 +3,8 @@ using Meitou.Simulation;
 namespace Meitou.Networking.VNext;
 
 /// <summary>
-/// Recipient-only event retention until reliable admission. Admitted entries stay visible for the source journal lifetime;
-/// only unadmitted entries extend beyond it. Overflow is explicit, never silent event loss.
+/// Recipient-only event retention until reliable admission. Callers may retain source history or project only unadmitted entries.
+/// Overflow is explicit, never silent event loss.
 /// </summary>
 public sealed class PendingPresentationEvents(WorldViewCodec codec)
 {
@@ -46,7 +46,7 @@ public sealed class PendingPresentationEvents(WorldViewCodec codec)
     /// <summary>
     /// Retains new events and projects current source entries with any older unadmitted entries.
     /// </summary>
-    public PresentationEventBatch Observe(PresentationEventBatch source)
+    public PresentationEventBatch Observe(PresentationEventBatch source, bool includeAdmittedSource = true)
     {
         _highWater = Math.Max(_highWater, source.HighWater);
         Retain(source);
@@ -59,7 +59,11 @@ public sealed class PendingPresentationEvents(WorldViewCodec codec)
                 $"maximum={PresentationEventValidation.MaximumCount} admitted={_admitted} highWater={_highWater} {counts}.");
         }
 
-        var result = Project(source);
+        var result = includeAdmittedSource ? Project(source) : new PresentationEventBatch(_highWater, _floaters.Values.ToArray())
+        {
+            Sounds = _sounds.Values.ToArray(), Speech = _speech.Values.ToArray(),
+            Blood = _blood.Values.ToArray(), Sparks = _sparks.Values.ToArray()
+        };
         CheckProjection(result);
 
         return result;

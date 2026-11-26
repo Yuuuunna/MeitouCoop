@@ -45,6 +45,10 @@ public static class BuiltInMods
             (config, _, onDisk) => XpModSettings.AdoptPort(config, onDisk, main: false), XpTakenAgain),
         new(CoveredMods.SwampTurtleFix, "Swamp turtle attacks on the Fixes page is on", (config, _, _) => config.FixAnimalMoves = true),
         new(CoveredMods.CharacterHighlight, "Hover outline in the Advanced settings is on", (config, _, _) => config.HoverOutline = true),
+        new(CoveredMods.MuteFlies, "Mute corpse flies in the Audio settings is on", (config, _, _) => config.MuteCorpseFlies = true),
+        new(CoveredMods.ImmersiveFlies, "Quiet corpse flies in the Audio settings is on", (config, _, _) => config.QuietCorpseFlies = true),
+        new(CoveredMods.SquadLimits, "its limits are now Max faction size, Max squad size and Max squads in the Advanced settings",
+            (config, mod, _) => SquadLimitModSettings.Adopt(config, mod)),
     ];
 
     /// <summary>
@@ -144,6 +148,32 @@ public sealed class BuiltInModSettings
     /// Supported experience range, shared with both hosts' settings validation.
     /// </summary>
     public const float MinXpRate = 0, MaxXpRate = 1000;
+
+    /// <summary>
+    /// Faction and squad limits accepted by both the graphical and dedicated hosts.
+    /// </summary>
+    public const int MinSquadLimit = 1, MaxSquadLimit = 256;
+
+    /// <summary>
+    /// Client audio preferences adopted from corpse-fly mods.
+    /// </summary>
+    public bool MuteCorpseFlies { get; set; }
+    /// <summary>
+    /// Uses the quieter corpse-fly setting on the client.
+    /// </summary>
+    public bool QuietCorpseFlies { get; set; }
+    /// <summary>
+    /// Optional player-faction member cap adopted from data mods.
+    /// </summary>
+    public int? MaxFactionSize { get; set; }
+    /// <summary>
+    /// Optional members-per-squad cap adopted from data mods.
+    /// </summary>
+    public int? MaxSquadSize { get; set; }
+    /// <summary>
+    /// Optional squad-count cap adopted from data mods.
+    /// </summary>
+    public int? MaxSquads { get; set; }
 
     /// <summary>
     /// Player faction experience rate, updated only for a mod not adopted before.

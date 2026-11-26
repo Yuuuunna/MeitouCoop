@@ -100,6 +100,10 @@ put-down tasks, the FIND_BED desire and the Watching-slaves desire. **Verified**
 ditch entry, to skip the implicit sleep and sit jobs ([implicit jobs](ai-tasks.md)); 87 Operating machine's list B has no `!47`, its desire stub
 `LAB_1400215ee` jumps to `FUN_140318320`, AI vtable `+0x98` (slot 19, constant 1), and `Task_OperateMachine` (`FUN_14035b430`, `FUN_14035bc90`) reads
 neither `+0x348` nor the state-47 evaluator. No production or construction row but 146 Turret gunner has `!47` (234 Turret guard plans through 146).
+A carrier also sits: 43 Staying home and 255 Reigning (desire AI slot 48, a random constant) and their provider 221 Pretend operating have no `!47`
+in list B, and neither 43's finder (`FUN_1408cbc00`, `FUN_1408cbad0`) nor `Task_OperateMachine`'s chair seating reads `+0x348` or the state-47
+evaluator, so a carrier staying home is seated on its chair with the body on its shoulder; 275 Sitting around and the sleep rows 98, 258, 175 do list
+`!47` (**Verified**, the [TaskData registry](ai-tasks.md#taskdata-registry) and decompile). Meitou plans these rows as listed.
 Meitou: `ProductionSystem.Able` (#915), `ConstructionSystem.Able` (#361); a carrier takes no job while its lift or put-down clip plays on past the
 order, or while it delivers on an errand (engine choice).
 
@@ -129,7 +133,12 @@ Task repertoire, pickup reach, confinement movement and authority checks still a
 | any other | `Q` | 0 |
 
 `U(a, b)` is `FUN_1409b1c80`, a uniform random float. Their body is static (the 4th argument of the body builder is `+0x1da == 0`), a weapon's from its `physics file` `.xml` when it names one, else a box of the mesh bounds; the weapon's ray mask leaves out groups 28 to 31 (`0x7f9e04`), the others' includes them (`0xf07f9e04`). Severed limbs set `+0x1d9` and `+0x1da` and keep the bone's pose with a dynamic body ([collision](../formats/collision.md#item-physics)). Why a weapon sticks in the ground (**Verified**, probe over the base game's records and their meshes): weapon meshes run along +Y with the grip near the origin (e.g. Mercenary Club Y -2.5 to 8.6, Polearm -5.9 to 14.8), so the turned mesh's blade end lies about 0.7 to 0.8 of its length below the origin, which the raise of 0.5 to 0.7 leaves 0 to 0.3 of the length below the ground; 283 of 309 ITEM meshes are thinnest in Y with the origin on their base, 120 of 142 ARMOUR and 14 of 16 CONTAINER meshes thinnest in Z.
-Meitou: `GameHost.PlacedPose` (a limb keeps `GameHost.LaidFlat`, engine choice); the random draws come from the item's id.
+The placement writes the item's own position `+0x48` and orientation `+0xb0`, which the save writes. A loaded item keeps them: the zone load
+`FUN_14036f950` puts each `1-itemlist` item in the world through vfunc `+0x228` with the pose-kept flag 1 (`FUN_14075d9b0` -> `FUN_14075d660`
+sets `+0x1d9`), so it is not placed again (**Verified**, decompile).
+Meitou: `GroundItemSync.PlacedPose` (a limb keeps `GroundItemSync.LaidFlat`, engine choice); the random draws come from the item's id. A save
+writes a drop where it is drawn (`GroundItemSave.PoseOf`). A loaded WEAPON, ARMOUR or CONTAINER turned about Y only, a pose the placement never
+leaves, is placed again as a drop (`GroundItems.Load`).
 
 ## Theft and witnesses
 
@@ -151,7 +160,7 @@ platoon `+0x1d8`; [whose](factions-squads-towns.md#whose-template-a-home-carries
 [squad leader](factions-squads-towns.md#squad-leader)), which keeps the member it falls back on as the backup. So a take out of a building that is no interior furniture (the wells, the outdoor farms, mines, refineries
 and wind generators: `is interior furniture` False in gamedata.base; the indoor farms, rain collectors and generators are True), out of interior
 furniture standing outdoors or out of furniture in a building nobody lives in is never a crime and has no roll; `isStealing` alone still marks the
-item. A building window's codes: the right click sets Theft 3 unless the owner character is down, when the loot permission decides
+item when the building it stands in has residents ([stolen ownership](#stolen-ownership)). A building window's codes: the right click sets Theft 3 unless the owner character is down, when the loot permission decides
 (`FUN_140793940`, which allows any subject that is no character, so no crime, but the roll follows); the drag sets Looting 10 (its downed-owner
 branch needs a character subject, vfunc `0x20` = 1); the give Theft 3. The roll's object is the window's subject (right click: the GUI's `+0x50`;
 drag: slot 16 `FUN_14070d010`), but the give passes the owner character, so a give out of a building's window rolls as a take out of that
@@ -205,7 +214,7 @@ keeps its damage, wear and stun on the item; a refused right-click move leaves i
 **Observed** item+0x140=from-owner, +0x160=current holder. Backpack uses its owning character's
 faction. Same faction/lawless holder (faction `fundamental type` 8 or `not real`) is not stolen (**Verified**, `FUN_14079e550`; it is tested before the state checks, whatever the strictness); strict1 can use set/nonmatching original-owner
 handle even if unresolved, strict0 also requires resolution. Dropping ownerless items can set
-dropper as owner. The save's `ownedby` is item+0x140 (**Observed**, `Item` vfunc 75/76); preserve handles, not a boolean only. A mark naming only a faction (goods of a building
+dropper as owner. The save's `ownedby` is item+0x140 (**Observed**, `Item` vfunc 75/76); preserve handles, not a boolean only. A mark naming only a faction (a loose item of a building
 nobody lives in) or a robbed character the save does not hold has no handle; Meitou keeps the faction in `meitou stolen from` ([save.md](../formats/save.md#zone-files)).
 
 A take from the inventory window (right click `RClickAutoTrade` `FUN_140713d20`, drag `FUN_140715560`) books its Theft/Looting, rolls
@@ -224,7 +233,8 @@ The mark does not ask `isItOkForMeToLoot` (that only picks the crime), so a band
 The hand `notifyTheftFrom` writes (`FUN_140792780`, `FUN_140792680`, **Verified** by decompile and disassembly): a character source's own hand, so each robbed
 body gives its own owner; for a BUILDING source a hand kept on the building (`+0xd0`, of the building it is mounted on or inside when it has one,
 `FUN_1400d5fa0`), the null hand when that one's type is 0; a `ShopTraderClass` (0x5b) hand gives the null hand. With a null hand the item stays ownerless
-(`FUN_140792800` writes only onto an ownerless item). **Verified** (harness, 1.0.65, Stack): the building's hand names a character (item `+0x148` type 1 after
+(`FUN_140792800` writes only onto an ownerless item): goods out of a building nobody lives in are not stolen and no shop asks to fence them
+(**Observed**, plain game: a town mine's ore has no fencing chance). Meitou: `CrimeSystem.GoodsMark` (the resident squad's leader, whatever its faction; none without residents). **Verified** (harness, 1.0.65, Stack): the building's hand names a character (item `+0x148` type 1 after
 the take): a clothes shop's goods read "Stolen from: Clothing trader holy", a home's chest "Stolen from: Holy Citizen", a knocked-out guard's kit
 "Stolen from: Holy Sentinel"; the player's own clean item put into such a container shows no owner there and is marked the same way when taken back.
 How the marks stack: [stack test](ui-screens.md#6-inventory-trade-dialogue-build).
@@ -280,7 +290,7 @@ TaskData (`FUN_140319a60`) holds a **target finder** at `+0x160` and the player 
 
 **Character finder** (`FUN_1408cd2d0(task, out, include, exclude, allowBed)`, **Verified** by decompile; rescue 105/148 call it with masks 1 / 0x4010 and `allowBed` 0,
 kidnap 132 with 0x4008 / 0x811 and `allowBed` 1): walks the owner's sensed list, keeping entries whose category word has a bit of `include` and none of `exclude`
-(bit 0 = SENSE_ALLY = not the owner's enemy and slot 126 `FUN_1407923d0` friendly, bit 4 dead, bit 14 crawling, [sense tags](perception.md#sense-tags-who-is-an-enemy)); the nearest (squared XZ distance) passing all of these wins: the target is down (ragdolled or carried, `FUN_1407d1440`, or the byte
+(bit 0 = SENSE_ALLY = not the owner's enemy and slot 126 `FUN_1407923d0` friendly, bit 3 down, bit 4 dead, bit 11 robot race, bit 14 crawling; so kidnap never takes a skeleton, [sense tags](perception.md#sense-tags-who-is-an-enemy)); the nearest (squared XZ distance) passing all of these wins: the target is down (ragdolled or carried, `FUN_1407d1440`, or the byte
 `+0x5b8`) or, only when `allowBed`, in a bed (`+0x2f8 == 1`); not carried (`+0x3d4`), not dead, special state 0 (not caged; bed 1 when allowed), not an animal
 (slot `0x248` is `asAnimal`), and not worked by a squad mate (`FUN_1402690e0`, `Blackboard::howManyGuysWorkingOnThisSubTarget`: the squad blackboard's entries whose worker is neither the asker nor the target and whose sub-target is the target; **Verified**, a count every finder tests, not a give-up list). Rescue (`include` 1) also requires
 the target to share the owner's faction (vfunc `0x58`), tested only when the global `+0x112` (Rescue Allies, [squad AI options](ai-tasks.md#squad-ai-options)) is clear **and** the owner's
@@ -430,7 +440,8 @@ A per-character status update lets a state above 1 run down from that stamp. Wit
 - **State 3 and elapsed / 24 above 4.0:** the state becomes 0 and the owner is cleared.
 - **State 2 and elapsed above 12.0:** the state becomes 3 and `+0x8` is stamped again.
 
-These writes are direct, not through the setter. State 1 never takes this path.
+These writes are direct, not through the setter. State 1 never takes this path. The status tooltip's "Time remaining:" counts down to these thresholds
+([status rows](ui-screens.md)).
 
 **Verified** by disassembly of a Kenshi 1.0.65 `kenshi_x64.exe`, sha256 `504b362c…cd3e`. In that build, the setter is `FUN_1405a3eb0`, the rule is `FUN_1405a44c0`, and its only caller is the vtable-reached `FUN_1405a4750`. Its constants are 24.0, 4.0 and 12.0. The other addresses in this file come from another build.
 
@@ -592,4 +603,4 @@ independently of container windows. Corpse disposal binds its selected machine/s
 site revision, actor grant and membership revision until arrival. Losing these rights cancels the
 errand while preserving the carried body; incineration checks that the original carried body is dead.
 
-**Loot order window** (26, `Task_Loot_Order`, **Verified**, decompile): the start `FUN_140354dc0` opens the loot window (`FUN_140791830`, mode 3) and plays Character_Loot (Character_Inspect for a non-character); the update `FUN_140354ef0` counts updates and, after 5, ends the task once the window is closed (`FUN_1406e2df0` == 0); every update (from the first) aborts it while the looter's `+0x2b0` is set (a melee threat within 40, [combat](combat.md#fight-lifecycle-and-orders)); the end `FUN_1403466a0` plays 'squat T', sets the Hold point (CharStats +0x130) and has the interface close both windows (`FUN_140791890` sets interface `+0x5c`, on which the per-frame `FUN_1406ea070` closes the pair with `FUN_1406e53d0`). So the looter stays in the task, with no other task, while the window is open, and any end of the task closes it. Row 26 needs `isAtLocation` and lists no threat state, and the abort is in the task's update, which starts only at the body (**Verified**, row lists and the update); whether the plan's move provider tests a threat is **Unknown** ([ai-tasks](ai-tasks.md)); that the looter walks to the body through a fight is **Observed** (reporter, #372). That a character beside the body opens the window while paused (the task start runs from the order at once) is **Observed** only (reporter, #372). Meitou: the order's start beside the body opens the window at once, paused too (`CarrySystem.OpenAtBody`); farther away `CarrySystem.Loot` opens it on arrival; the looter then holds it (`LootStart.WindowHeld`, `CarrySystem.HoldWindow`) and ends the task when the window closes or `CombatSystem.ImmediateThreat` holds (ticks only, so never while paused); the task's end closes the window (`CloseHeldWindow`). The 5-update minimum and the squat clip are not modelled; whether the abort keeps the order queued is **Unknown** (Meitou drops it).
+**Loot order window** (26, `Task_Loot_Order`, **Verified**, decompile): the start `FUN_140354dc0` opens the loot window (`FUN_140791830`, mode 3) and plays Character_Loot (Character_Inspect for a non-character); the update `FUN_140354ef0` counts updates and, after 5, ends the task once the window is closed (`FUN_1406e2df0` == 0); every update (from the first) aborts it while the looter's `+0x2b0` is set (a melee threat within 40, [combat](combat.md#fight-lifecycle-and-orders)); the end `FUN_1403466a0` plays 'squat T', sets the Hold point (CharStats +0x130) and has the interface close both windows (`FUN_140791890` sets interface `+0x5c`, on which the per-frame `FUN_1406ea070` closes the pair with `FUN_1406e53d0`). So the looter stays in the task, with no other task, while the window is open, and any end of the task closes it. Row 26 needs `isAtLocation` and lists no threat state, and the abort is in the task's update, which starts only at the body (**Verified**, row lists and the update); that the looter walks to the body through a fight is **Observed** (reporter, #372). That a character beside the body opens the window while paused (the task start runs from the order at once) is **Observed** only (reporter, #372). Meitou: the order's start beside the body opens the window at once, paused too (`CarrySystem.OpenAtBody`); farther away `CarrySystem.Loot` opens it on arrival; the looter then holds it (`LootStart.WindowHeld`, `CarrySystem.HoldWindow`) and ends the task when the window closes or `CombatSystem.ImmediateThreat` holds (ticks only, so never while paused); the task's end closes the window (`CloseHeldWindow`). The 5-update minimum and the squat clip are not modelled. Reach: row 26's `isAtLocation` on a character is the talk distance's test (`FUN_1405a2450` over `FUN_14059c6d0`, [dialogue](dialogue.md), **Observed**): the target's radius + 7 x 3 (7 x 2 for a ragdoll), doubled once the looter stops. Meitou (`CarrySystem.LootReach`): one of the player's own standing is reached at its radius + 21, 42 once stopped (at least the flat reach), so a follower of the looter that backs off, or a big animal whose body holds the looter off, is reached at once (#1247); a down or carried one and a pickpocket target keep the flat 14 or the cage's reach; an open window closes beyond 1.5 x that reach (engine choice; **Observed**: the per-frame close `FUN_1406ea070` and the close callers read, `FUN_1406e63a0`, `FUN_1406e67f0`, `FUN_1406e6820`, `FUN_1406e8ff0`, test no distance).

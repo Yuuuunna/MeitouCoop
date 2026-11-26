@@ -514,7 +514,11 @@ public sealed class RemoteGameSession : IAsyncDisposable
                                     QueueTransportAck(GameViewProtocol.Epoch(WireMessage.MotionCheckpointAck, _sessionEpoch, _viewEpoch, checkpoint.Header.PacketSequence));
                                 }
                                 else
+                                {
                                     applied = _replica.Apply(message.Payload.Span);
+                                    // Reliable lifecycle may arrive between Ready and Active. Preserve every batch before latest state replaces it.
+                                    if (applied && _replica.View is { } received) _presentationEvents.Observe(received.Events);
+                                }
                             }
                             else if (_active && _replica is not null)
                                 applied = _replica.ApplyMotion(MotionDatagramCodec.Decode(message.Payload.Span));
@@ -729,6 +733,8 @@ public sealed class RemoteGameSession : IAsyncDisposable
         _staged = null;
         if (_replica!.View is not { } committed || committed.Publication < _commitPublication)
             throw new InvalidDataException("Baseline publication mismatch.");
+        // Observe under the same session gate as Read/Acknowledge, before readiness admits a newer lifecycle event batch.
+        _presentationEvents.Observe(committed.Events);
         // Ordinary same-view component deltas are already within an active authorized domain.
         // Publish atomically after checksum/commit validation; only initial/new views await Active.
         if (_active)

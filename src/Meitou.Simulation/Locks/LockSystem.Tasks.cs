@@ -225,7 +225,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
                 c.PickingLock = null;
                 c.Shackles = new ShackleJob(request.Target, (ShackleWork)request.Detail!);
                 if (request.Target != table.IdOf(slot) && table.TryResolveNext(request.Target, out int w))
-                    MovementSystem.GoTo(table, slot, Flat(table.Next[w].Position), c.RunSpeed);
+                    MovementSystem.GoToAt(table, slot, table.Next[w].Position, c.RunSpeed);
 
                 break;
             case TaskType.ReleasePrisoner:
@@ -279,7 +279,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
             if (pick) walker.PickingLock = door.Id;
         }
         else walker.DoorWalk = door.Id;
-        MovementSystem.GoToFloor(world, slot, new Vector3(at.X, door.Position.Y, at.Y), walker.RunSpeed);
+        MovementSystem.GoToFloor(world, slot, WorkPoint(world, door, at), walker.RunSpeed);
     }
 
     /// <summary>
@@ -296,7 +296,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
         walker.BashOrdered = false;
         walker.DoorWalk = null;
         walker.DoorJob = new DoorLockJob(door.Id, locking);
-        MovementSystem.GoToFloor(world, slot, new Vector3(at.X, door.Position.Y, at.Y), walker.RunSpeed);
+        MovementSystem.GoToFloor(world, slot, WorkPoint(world, door, at), walker.RunSpeed);
     }
 
     /// <summary>
@@ -320,7 +320,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
         else (walker.ForcingLock, walker.Force) = (fixture.Id, force);
 
         if (walker.IsImprisoned) return;
-        MovementSystem.GoToFloor(world, slot, new Vector3(at.X, fixture.Position.Y, at.Y), walker.RunSpeed);
+        MovementSystem.GoToFloor(world, slot, WorkPoint(world, fixture, at), walker.RunSpeed);
     }
 
 }

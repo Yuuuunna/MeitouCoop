@@ -204,7 +204,8 @@ sealed class CharacterEditorPanel(PlayerInterface player)
         if (player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is not { Appearance: { } look } snapshot
                 || RecordOf(look) is not { } record)
             return null;
-        draft = new CharacterDraft(data.Db, data.InstallRoot, record, snapshot.Name) { Creation = Editor.Kind == EditKind.Creation };
+        // A save's race from a mod no longer loaded: the race the character is drawn with (#1344), not the data's first race.
+        draft = new CharacterDraft(data.Db, data.InstallRoot, record, snapshot.Name, look.Race) { Creation = Editor.Kind == EditKind.Creation };
         Editor.Drafts[id] = draft;
         Editor.StartNames[id] = snapshot.Name;
         return draft;
@@ -674,12 +675,12 @@ sealed class CharacterEditorPanel(PlayerInterface player)
         };
         var everyRace = PlayableRaces.Of(data.Db);
         int shown = IndexOf(everyRace, draft.Race);
-        b.Text["RaceText"] = shown >= 0 ? everyRace[shown].Group.Name : draft.Race.Name;
-        b.Text["SubRaceText"] = draft.Race.Name;
+        b.Text["RaceText"] = shown >= 0 ? everyRace[shown].Group.ShownName() : draft.Race.ShownName();
+        b.Text["SubRaceText"] = draft.Race.ShownName();
         // "-" without a choice of gender (FUN_1405ee0c0: the race's gender list has fewer than two entries).
         b.Text["GenderText"] = draft.Race.GetBool("single gender") ? "-" : draft.Female ? "Female" : "Male";
         b.Text["CharIndexText"] = $"{s.Index + 1}/{s.Characters.Count}";
-        b.Text["DescriptionPanelText"] = draft.Race.GetString("description");
+        b.Text["DescriptionPanelText"] = draft.Race.GetShownString("description");
         b.Properties["DescriptionPanelText"] = new Dictionary<string, string>
         {
             ["Static"] = "true",
@@ -723,11 +724,11 @@ sealed class CharacterEditorPanel(PlayerInterface player)
 
         string clothes = s.Clothes ? "true" : "false";
         b.Properties["ClothesButton"] = new Dictionary<string, string> { ["Checked"] = clothes, ["StateSelected"] = clothes };
-        b.Text["RaceText"] = look.Race.Name;
-        b.Text["SubRaceText"] = look.Race.Name;
+        b.Text["RaceText"] = look.Race.ShownName();
+        b.Text["SubRaceText"] = look.Race.ShownName();
         b.Text["GenderText"] = "-";
         b.Text["CharIndexText"] = $"{s.Index + 1}/{s.Characters.Count}";
-        b.Text["DescriptionPanelText"] = look.Race.GetString("description");
+        b.Text["DescriptionPanelText"] = look.Race.GetShownString("description");
         string ink = MyGuiColours.TemplateInk(player.UiResources, "Kenshi_WordWrap");
         b.Properties["DescriptionPanelText"] = new Dictionary<string, string>
         {
@@ -843,7 +844,7 @@ sealed class CharacterEditorPanel(PlayerInterface player)
             {
                 var options = draft.Options(c.Kind);
                 b.Text[owner + ".ElementText"] = c.Kind switch { EditorControlKind.Head => "Face", EditorControlKind.Beard => "Beard", _ => "Hair" };
-                b.Text[owner + ".ElementValueText"] = draft.OptionName(c.Kind);
+                b.Text[owner + ".ElementValueText"] = draft.ShownOptionName(c.Kind);
                 b.Text[owner + ".NumberText"] = $"{draft.OptionIndex(c.Kind) + 1}/{options.Count}";
                 continue;
             }

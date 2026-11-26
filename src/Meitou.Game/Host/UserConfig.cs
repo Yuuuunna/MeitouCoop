@@ -1,7 +1,9 @@
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Meitou.Content;
+using Meitou.Game.DevTools.Benchmark;
 using Meitou.Game.Effects;
 using Meitou.Game.Settings;
 using Meitou.Game.Ui;
@@ -125,6 +127,10 @@ sealed class UserConfig
     /// </summary>
     public const float MinInterfaceScale = 0.5f, MaxInterfaceScale = 2;
     /// <summary>
+    /// The lowest <see cref="SettingsOpacity"/> (25%).
+    /// </summary>
+    public const float MinSettingsOpacity = 0.25f;
+    /// <summary>
     /// The ranges of <see cref="CameraMoveSpeed"/> (150 … 1000) and <see cref="CameraZoomSpeed"/> (10 … 200), the original's.
     /// </summary>
     public const float MinCameraMoveSpeed = 150, MaxCameraMoveSpeed = 1000, MinCameraZoomSpeed = 10, MaxCameraZoomSpeed = 200;
@@ -132,11 +138,21 @@ sealed class UserConfig
     /// The range and default of <see cref="ShiftPanMultiplier"/>.
     /// </summary>
     public const float MinShiftPanMultiplier = 1.25f, MaxShiftPanMultiplier = 5, DefaultShiftPanMultiplier = 2;
+    /// <summary>
+    /// The range and default of <see cref="CorpseFlyRange"/>: 10% to 200% of the game's range; 30% (150 units) is Meitou's choice.
+    /// </summary>
+    public const float MinCorpseFlyRange = 0.1f, MaxCorpseFlyRange = 2, DefaultCorpseFlyRange = 0.3f;
+    /// <summary>
+    /// The Advanced settings' player squad and faction cap sliders: 1 to 256, with the base game's CONSTANTS values (30, 20, 10) as defaults.
+    /// </summary>
+    public const int MinSquadLimit = 1, MaxSquadLimit = 256,
+        DefaultMaxFactionSize = 30, DefaultMaxSquadSize = 20, DefaultMaxSquads = 10;
 
     /// <summary>
     /// The file's layout: <see cref="CurrentVersion"/>, or the newer one of a later release whose file this is (kept, so that release does not
     /// convert its own keys again).
     /// </summary>
+    [BenchmarkNeutral]
     public int Version { get; set; } = CurrentVersion;
     /// <summary>
     /// Top-level keys this release does not know (a newer one's), written back as read.
@@ -147,10 +163,12 @@ sealed class UserConfig
     /// <summary>
     /// Frames per second when vsync is off; 0 = unlimited. Engine default 150.
     /// </summary>
+    [BenchmarkNeutral]
     public int FpsLimit { get; set; } = 150;
     /// <summary>
     /// Vsync on: the frames follow the display and <see cref="FpsLimit"/> is not applied; <c>--vsync</c> / <c>--no-vsync</c> override it for one run.
     /// </summary>
+    [BenchmarkNeutral]
     public bool VSync { get; set; }
     /// <summary>
     /// Frame generation: a generated frame between each two rendered ones, by <see cref="FrameGenerationVendor"/>: FSR 3's frame-interpolation
@@ -163,11 +181,13 @@ sealed class UserConfig
     /// <summary>
     /// HDR10 output where the display offers it (read at start-up; not with frame generation; docs/render-post.md "HDR output"). Off by default.
     /// </summary>
+    [BenchmarkNeutral]
     public bool Hdr { get; set; }
 
     /// <summary>
     /// HDR output: the nits of the picture's white (the interface, sunlit ground).
     /// </summary>
+    [BenchmarkNeutral]
     public float HdrPaperNits { get; set; }
 
     /// <summary>
@@ -185,6 +205,7 @@ sealed class UserConfig
     /// <summary>
     /// HDR output: the nits of the display's peak.
     /// </summary>
+    [BenchmarkNeutral]
     public float HdrPeakNits { get; set; } = 1000;
 
     /// <summary>
@@ -212,26 +233,31 @@ sealed class UserConfig
     /// Whether the Metal path uses an upscaler (the default) or none: with it off the scene renders at the window's size, or in full screen at
     /// <see cref="MetalRenderDivisor"/> of the screen's. Switched off by itself when MetalFX is unavailable.
     /// </summary>
+    [BenchmarkNeutral]
     public bool MetalUseUpscaling { get; set; } = true;
     /// <summary>
     /// The Metal upscaler used while <see cref="MetalUseUpscaling"/> is on, kept while it is off: MetalFX balanced (temporal at 0.50) by default.
     /// Never <see cref="MetalUpscalerMode.Disabled"/>.
     /// </summary>
+    [BenchmarkNeutral]
     public MetalUpscalerMode MetalUpscaler { get; set; } = MetalUpscalerMode.Temporal;
     /// <summary>
     /// The Metal render scale; the default 0.50 is the balanced profile. The Metal settings panel edits it live.
     /// </summary>
+    [BenchmarkNeutral]
     public float MetalRenderScale { get; set; } = 0.5f;
     /// <summary>
     /// Without the Metal upscaler, in full screen: the screen's size divided by this (1 to <see cref="MetalRenderDivisorMax"/>, whole
     /// numbers) is the size the scene renders at. In a window the scene is as large as the window.
     /// </summary>
+    [BenchmarkNeutral]
     public int MetalRenderDivisor { get; set; } = 1;
     /// <summary>
     /// Without the Metal upscaler, in a window (full screen has <see cref="MetalRenderDivisor"/>): whether the scene renders at the window's real
     /// pixels (the default) or at its virtual Retina pixels, one per point, stretched to the window. It changes nothing where the window has one
     /// pixel per point.
     /// </summary>
+    [BenchmarkNeutral]
     public bool MetalRetinaResolution { get; set; } = true;
     /// <summary>
     /// The largest <see cref="MetalRenderDivisor"/>.
@@ -241,6 +267,7 @@ sealed class UserConfig
     /// Without the Metal upscaler and a render size below the screen's (full screen): the interface is drawn at the screen's size over the
     /// stretched picture (the default), else at the render size with it.
     /// </summary>
+    [BenchmarkNeutral]
     public bool MetalUiAtScreenResolution { get; set; } = true;
     /// <summary>
     /// The interface style: Meitou (the default) or Faithful, the game's.
@@ -256,10 +283,21 @@ sealed class UserConfig
     /// </summary>
     public float InterfaceScale { get; set; } = 1;
     /// <summary>
+    /// The opacity of the in-game settings window (25% … 100%, default 100%; header bar and Interface settings).
+    /// </summary>
+    [BenchmarkNeutral]
+    public float SettingsOpacity { get; set; } = 1;
+    /// <summary>
     /// The damage floaters (Interface settings): the original's <c>floaters</c> option, Simple by default; Meitou also floats a green "+N" over a
     /// player character that heals.
     /// </summary>
     public FloaterMode Floaters { get; set; } = FloaterMode.Simple;
+    /// <summary>
+    /// Meitou's greyed context-menu rows (Interface settings, on by default): a row the selection cannot carry out now (First Aid or Repairs with no
+    /// kit at hand, Splint Injuries without a splint kit, a mod row marked unavailable) is greyed and takes only a Shift click, which sets up its
+    /// job. Off is the original's menu.
+    /// </summary>
+    public bool GreyUnavailableVerbs { get; set; } = true;
     /// <summary>
     /// The original's <c>censorship</c> option (Interface settings, off by default): five words swapped in the displayed dialogue.
     /// </summary>
@@ -277,6 +315,7 @@ sealed class UserConfig
     /// <summary>
     /// The Meitou load window's Hide Kenshi saves tick: the base game's saves are left out of the list (off by default).
     /// </summary>
+    [BenchmarkNeutral]
     public bool HideKenshiSaves { get; set; }
     /// <summary>
     /// The original's splash at startup in the Faithful UI (Advanced settings: the switch's Faithful side), off by default; off, the menu shows as
@@ -329,7 +368,14 @@ sealed class UserConfig
     /// <summary>
     /// Borderless full screen (the Tab panel, Alt+Enter); <c>--windowed</c> starts in a window for one run.
     /// </summary>
+    [BenchmarkNeutral]
     public bool FullScreen { get; set; } = true;
+    /// <summary>
+    /// The monitor full screen goes to, 1-based in GLFW's order (as <c>--monitor</c>, which wins for its run), the window starts on too; 0 (or a
+    /// monitor no longer there) is automatic: the one the window is on, else the primary (docs/viewer.md, Alt+Enter).
+    /// </summary>
+    [BenchmarkNeutral]
+    public int Monitor { get; set; }
     /// <summary>
     /// World ticks per second, 30 by default (the session's fixed-step clock).
     /// </summary>
@@ -383,6 +429,11 @@ sealed class UserConfig
     /// lifts either way, as the game does, and guards at a full station pass the same body round; read at load; <c>ArrestSettings.LiftFix</c>).
     /// </summary>
     public bool FixArrestLifts { get; set; } = true;
+    /// <summary>
+    /// An arrest's guard who lost his target (his senses hold none of it once his fight stopped) gives the arrest up (Fixes settings; off: he takes
+    /// the fight up again however far the target is, as the game does; read at load; <c>ArrestSettings.LostFix</c>).
+    /// </summary>
+    public bool FixArrestChases { get; set; } = true;
     /// <summary>
     /// Wild animals and homeless squads keep their characters while their area is unloaded (Advanced settings; Faithful off: removed and made anew,
     /// as the game does).
@@ -441,9 +492,25 @@ sealed class UserConfig
     /// </summary>
     public const float MinXpRate = 0, MaxXpRate = 1000;
     /// <summary>
+    /// How many characters and animals the player faction may recruit (Advanced settings "Max faction size", <see cref="MinSquadLimit"/> …
+    /// <see cref="MaxSquadLimit"/>; null: the loaded CONSTANTS <c>max faction size</c>, 30 in the base game).
+    /// </summary>
+    public int? MaxFactionSize { get; set; }
+    /// <summary>
+    /// How many members one of the player's squads may hold (Advanced settings "Max squad size", <see cref="MinSquadLimit"/> …
+    /// <see cref="MaxSquadLimit"/>; null: the loaded CONSTANTS <c>max squad size</c>, 20 in the base game).
+    /// </summary>
+    public int? MaxSquadSize { get; set; }
+    /// <summary>
+    /// How many squads the player faction may create (Advanced settings "Max squads", <see cref="MinSquadLimit"/> … <see cref="MaxSquadLimit"/>;
+    /// null: the loaded CONSTANTS <c>max squads</c>, 10 in the base game).
+    /// </summary>
+    public int? MaxSquads { get; set; }
+    /// <summary>
     /// The mods (by <c>mods.cfg</c> name) whose settings Meitou has taken into its own built-in feature, once each (<c>BuiltInMods</c>); a name
     /// followed by " (again)" marks a second takeover, of settings a later Meitou added to the feature.
     /// </summary>
+    [BenchmarkNeutral]
     public List<string> AdoptedMods { get; set; } = [];
     /// <summary>
     /// A loaded or imported save starts paused (Advanced settings; on by default; in the game it runs at once).
@@ -517,6 +584,11 @@ sealed class UserConfig
     /// </summary>
     public bool FixBenchFacing { get; set; } = true;
     /// <summary>
+    /// A seat playing a bed's clip is lain on at its nearest use node (Fixes settings; off: on its origin, across the bed, as the game does;
+    /// docs/game/ai-tasks.md "Town goals").
+    /// </summary>
+    public bool FixSeatBeds { get; set; } = true;
+    /// <summary>
     /// A prisoner in a cage or on a pole plays only the fixture's pose (Fixes settings; off: it holds its wounds there, as the game does;
     /// docs/animation.md "Injury holds").
     /// </summary>
@@ -530,6 +602,11 @@ sealed class UserConfig
     /// and the worn backpack, as the game does; docs/game/dialogue.md "Conditions").
     /// </summary>
     public bool FixBagSearch { get; set; } = true;
+    /// <summary>
+    /// A stolen ground pick-up is a Theft from the item's owner (Fixes settings; off: from the building the thief stands in, as the game does;
+    /// docs/game/economy.md "Fencing, stealing and smuggling").
+    /// </summary>
+    public bool FixPickUpTheft { get; set; } = true;
     /// <summary>
     /// A shopkeeper at its counter is talked to from the counter's front (Gameplay settings, Meitou; off: the game's talk reach, so the customer
     /// walks round behind the counter; <c>World.CounterTalk</c>).
@@ -565,6 +642,11 @@ sealed class UserConfig
     /// settings; off: collapsed at every start, as the game does; docs/game/ui-screens.md "Information panel").
     /// </summary>
     public bool KeepInfoPanel { get; set; } = true;
+    /// <summary>
+    /// The lockpick pointer's chance label shows 0 for a building's lock below the minimum pick chance, as the Pick Lock row does (Fixes settings;
+    /// off: the bare chance, as the game does; docs/game/ui-input.md "Pointer chance label").
+    /// </summary>
+    public bool FixLockpickLabel { get; set; } = true;
     /// <summary>
     /// The information panel was last left extended (its ^ button), written at every press; read at start while <see cref="KeepInfoPanel"/> is on.
     /// </summary>
@@ -645,6 +727,20 @@ sealed class UserConfig
     /// Sounds are heard from the first selected character instead of the camera (Audio settings; off, the default: the camera, as the game does).
     /// </summary>
     public bool HearFromSelected { get; set; }
+    /// <summary>
+    /// The corpse flies make no sound (Audio settings; Meitou only, default off: they buzz, as in the game); the mute-flies mods' feature.
+    /// </summary>
+    public bool MuteCorpseFlies { get; set; }
+    /// <summary>
+    /// The corpse flies are heard only within <see cref="CorpseFlyRange"/> of their range (Audio settings; Meitou only, default off: the full 500
+    /// units); the Immersive Flies mod's feature.
+    /// </summary>
+    public bool QuietCorpseFlies { get; set; }
+    /// <summary>
+    /// With <see cref="QuietCorpseFlies"/>: the corpse flies' range, of the game's (Audio settings, <see cref="MinCorpseFlyRange"/> …
+    /// <see cref="MaxCorpseFlyRange"/>).
+    /// </summary>
+    public float CorpseFlyRange { get; set; } = DefaultCorpseFlyRange;
     /// <summary>
     /// The Windows cursor instead of the game's drawn pointer (the original's <c>hardware_mouse</c>, default off; Interface settings).
     /// </summary>
@@ -744,6 +840,7 @@ sealed class UserConfig
     /// <summary>
     /// The autosave slot written last (the original's <c>settings.cfg</c> <c>autosaveindex</c>); the next autosave takes the one after.
     /// </summary>
+    [BenchmarkNeutral]
     public int AutosaveIndex { get; set; }
     /// <summary>
     /// The code mods the player explicitly allowed to run, by mod name; other mods load as data only.
@@ -754,14 +851,22 @@ sealed class UserConfig
     /// The save folder the title's Continue loads: the last save written (the original's <c>settings.cfg</c> <c>continue</c>, docs/formats/save.md
     /// "Where saves live"); null until Meitou writes one (<see cref="ContinueFolder"/> then picks one).
     /// </summary>
+    [BenchmarkNeutral]
     public string? ContinueSave { get; set; }
     /// <summary>
     /// The code mods' settings the player changed (docs/modding.md "Settings"): mod id to setting key to the value as text; a default is not kept.
     /// </summary>
     public Dictionary<string, Dictionary<string, string>> ModSettings { get; set; } = [];
     /// <summary>
+    /// The code mods' named setting presets (docs/modding.md "Settings"): mod id to preset name to setting key to the value as text; Restore
+    /// defaults keeps them.
+    /// </summary>
+    [BenchmarkNeutral]
+    public Dictionary<string, Dictionary<string, Dictionary<string, string>>> ModSettingPresets { get; set; } = [];
+    /// <summary>
     /// The feedback form's ticks and Discord name, as last used; null until the form first opens.
     /// </summary>
+    [BenchmarkNeutral]
     public FeedbackSettings? Feedback { get; set; }
     /// <summary>
     /// The Tab panel's graphics sliders, by label.
@@ -790,6 +895,7 @@ sealed class UserConfig
     /// The key bindings that differ from the defaults (the engine's and the install's controls.cfg): action name to comma-separated keys, as
     /// <see cref="Input.InputBindings.Apply"/> reads them; an empty value unbinds.
     /// </summary>
+    [BenchmarkNeutral]
     public Dictionary<string, string> Bindings { get; set; } = [];
     /// <summary>
     /// The code mods' key actions whose keys differ from their defaults (docs/modding.md "Key actions"): mod id to action name to comma-separated
@@ -797,6 +903,7 @@ sealed class UserConfig
     /// entries.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [BenchmarkNeutral]
     public Dictionary<string, Dictionary<string, string>>? ModBindings { get; set; }
     /// <summary>
     /// The Meitou skin per race, where chosen against the default (RACE string id to on or off; Graphics > Skin): <c>CharacterRenderer.SkinRaces</c>.
@@ -866,12 +973,56 @@ sealed class UserConfig
     /// The file's JSON form: indented, camelCase keys.
     /// </summary>
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    /// <summary>
+    /// <see cref="BenchmarkText"/>'s JSON form: compact, camelCase keys, without the settings marked <see cref="BenchmarkNeutralAttribute"/>.
+    /// </summary>
+    static readonly JsonSerializerOptions BenchmarkJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { DropBenchmarkNeutral } },
+    };
 
     /// <summary>
     /// The file this config was read from and is written back to; for a config made new, the working directory's.
     /// </summary>
     [JsonIgnore]
     public string Path { get; private set; } = FileName;
+
+    /// <summary>
+    /// A config that is never written (<see cref="Save"/> does nothing): the launcher benchmark's (<c>--benchmark</c>).
+    /// </summary>
+    [JsonIgnore]
+    public bool ReadOnly { get; private set; }
+
+    /// <summary>
+    /// The launcher benchmark's config (docs/bench.md "Launcher benchmark"): the defaults with the tutorials off (else the install's settings.cfg
+    /// decides, and their state file in the working directory carries from run to run), the file neither read nor written.
+    /// </summary>
+    public static UserConfig ForBenchmark() => new()
+    {
+        Path = System.IO.Path.Combine(Directory.GetCurrentDirectory(), FileName),
+        ReadOnly = true,
+        Tutorials = false,
+    };
+
+    /// <summary>
+    /// <see cref="ForBenchmark"/>'s config as compact JSON, its benchmark-neutral settings left out (the benchmark's fingerprint, BenchmarkSpec).
+    /// </summary>
+    internal static string BenchmarkText() => JsonSerializer.Serialize(ForBenchmark(), BenchmarkJson);
+
+    /// <summary>
+    /// Removes the config's properties marked <see cref="BenchmarkNeutralAttribute"/> from <paramref name="info"/>.
+    /// </summary>
+    static void DropBenchmarkNeutral(JsonTypeInfo info)
+    {
+        if (info.Type != typeof(UserConfig)) return;
+
+        for (int i = info.Properties.Count - 1; i >= 0; i--)
+        {
+            if (info.Properties[i].AttributeProvider?.IsDefined(typeof(BenchmarkNeutralAttribute), inherit: false) == true)
+                info.Properties.RemoveAt(i);
+        }
+    }
 
     /// <summary>
     /// Reads the config from the working directory, else from next to the executable; without either file, the defaults, for the working directory.
@@ -1097,6 +1248,16 @@ sealed class UserConfig
     }
 
     /// <summary>
+    /// Keeps a mod's setting presets in <see cref="ModSettingPresets"/> (none: the mod's entry dropped); written with the rest of the config.
+    /// </summary>
+    public void KeepModPresets(ModSettingsGroup group)
+    {
+        var presets = group.PresetValues();
+        if (presets.Count == 0) ModSettingPresets.Remove(group.ModId);
+        else ModSettingPresets[group.ModId] = presets;
+    }
+
+    /// <summary>
     /// Keeps a hand-edited or older config inside the values the Metal path can use.
     /// </summary>
     void Normalize()
@@ -1107,10 +1268,14 @@ sealed class UserConfig
         if (MetalUpscaler is MetalUpscalerMode.Temporal or MetalUpscalerMode.Spatial) MetalRenderScale = Math.Clamp(MetalRenderScale, 0.4f, 1f);
         MetalRenderDivisor = Math.Clamp(MetalRenderDivisor, 1, MetalRenderDivisorMax);
         ModSettings ??= [];
+        ModSettingPresets ??= [];
         AdoptedMods ??= [];
         SquadXp = float.IsFinite(SquadXp) ? Math.Clamp(SquadXp, MinXpRate, MaxXpRate) : 1;
         OthersXp = float.IsFinite(OthersXp) ? Math.Clamp(OthersXp, MinXpRate, MaxXpRate) : 1;
         SquadSkillXp = SkillXp.Kept(SquadSkillXp);
+        MaxFactionSize = MaxFactionSize is { } faction ? Math.Clamp(faction, MinSquadLimit, MaxSquadLimit) : null;
+        MaxSquadSize = MaxSquadSize is { } squad ? Math.Clamp(squad, MinSquadLimit, MaxSquadLimit) : null;
+        MaxSquads = MaxSquads is { } squads ? Math.Clamp(squads, MinSquadLimit, MaxSquadLimit) : null;
         foreach (var (mod, saved) in ModSettings.ToList())
             if (saved is null) ModSettings.Remove(mod);
     }
@@ -1120,6 +1285,8 @@ sealed class UserConfig
     /// </summary>
     public void Save()
     {
+        if (ReadOnly) return;
+
         try
         {
             AtomicFile.WriteAllText(Path, JsonSerializer.Serialize(this, Json));

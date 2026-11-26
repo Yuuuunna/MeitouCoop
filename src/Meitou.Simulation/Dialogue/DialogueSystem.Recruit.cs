@@ -29,7 +29,7 @@ public sealed partial class DialogueSystem
         {
             return true;
         }
-        if (SquadManagement.CappedHeads(world, c.Faction) >= _data.Bodies.Constants.MaxFactionSize)
+        if (SquadManagement.CappedHeads(world, c.Faction) >= _data.Bodies.MaxFactionSize)
         {
             Post(world, c, "It looks like your squad is a little full.");
             c.Ended = true;
@@ -73,8 +73,9 @@ public sealed partial class DialogueSystem
     /// extra, empty squad of the active squad's template at its position before the recruit is added (the recruit does not join it, so it stays
     /// empty, docs/game/dialogue.md "Recruiting").
     /// </summary>
-    static void ExtraSquadAtTheCap(World world, PopulationData data, Squad active, GameConstants limits)
+    static void ExtraSquadAtTheCap(World world, PopulationData data, Squad active)
     {
+        var limits = data.Bodies;
         if (SquadManagement.CappedHeads(world, active.Faction) >= limits.MaxFactionSize || active.Members.Count + 1 <= limits.MaxSquadSize
             || SquadManagement.LedSquads(world, active.Faction).Count < limits.MaxSquads)
         {
@@ -96,7 +97,7 @@ public sealed partial class DialogueSystem
         if (!table.IsAlive(id)) return $"{cold.Name} is dead";
         if (!Recruitable(world, data, slot)) return $"{cold.Name} has no dialogue that makes them join";
         if (ActiveSquad(world) is not { } squad) return "you have no squad";
-        if (squad.Members.Count >= data.Bodies.Constants.MaxSquadSize) return "your squad is full";
+        if (squad.Members.Count >= data.Bodies.MaxSquadSize) return "your squad is full";
         return null;
     }
 
@@ -137,12 +138,12 @@ public sealed partial class DialogueSystem
         var me = table.IdOf(slot);
         var mc = table.Cold(slot)!;
         if (context.Actor is not null && world.Players.KnownControl(mc.Entity) is not null) return false;
-        var limits = _data.Bodies.Constants;
+        var limits = _data.Bodies;
         if (!CanJoin(world, context, talker)) return false;
         var owner = Player(world, context);
         if (JoiningSquad(world, context, talker) is not { } squad) return false;
 
-        if (!world.Players.RequiresExplicitControl) ExtraSquadAtTheCap(world, _data, squad, limits);
+        if (!world.Players.RequiresExplicitControl) ExtraSquadAtTheCap(world, _data, squad);
         if (squad.Members.Count >= limits.MaxSquadSize)
         {
             squad = SquadManagement.NewSquad(world, _data.Db, table.Next[slot].Position, _data.Factions[context.Faction].Name is { Length: > 0 } f ? f : "Nameless", context.Faction);

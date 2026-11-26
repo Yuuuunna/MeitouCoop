@@ -412,6 +412,7 @@ sealed partial class GameHost
         LocalSession.World.Daytime = Session.Clock.IsDaytime;
         _sentFocus = false;
         SendFocus();
+        SendView();
         LocalSession.SynchronizeWorld();
         LocalSession.World.RunTick();
         LocalSession.SynchronizeWorld();

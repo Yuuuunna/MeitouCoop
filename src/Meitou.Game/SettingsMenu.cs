@@ -214,6 +214,14 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// The header's search box and its results.
     /// </summary>
     internal SettingsSearch Search => field ??= new(this);
+    /// <summary>
+    /// The free-text row being typed in.
+    /// </summary>
+    internal SettingsTextEdit TextEdit => field ??= new(this);
+    /// <summary>
+    /// The window's position, drag, minimize / restore bar and opacity.
+    /// </summary>
+    internal SettingsWindow Window => field ??= new(this);
 
     /// <summary>
     /// A drop-down: its options, the chosen one, and what choosing does.
@@ -227,7 +235,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     internal sealed record Entry(string Label, string Hint = "", Slider? Slider = null, Toggle? Toggle = null, Choice? Choice = null,
         InputAction? Binding = null, Action? Run = null, string? Picture = null, bool Segmented = false, bool Changed = false,
         string? Impact = null, bool Warn = false, string? Raw = null, int Depth = 0, bool? Open = null, string? GroupId = null, Action? Reset = null,
-        bool Locked = false, string? Tag = null, bool TagHot = false, string? RunLabel = null);
+        bool Locked = false, string? Tag = null, bool TagHot = false, string? RunLabel = null, TextEntry? Text = null);
 
     /// <summary>
     /// A clickable widget as the last frame drew it: its bounds, what a click does, and a slider's track.
@@ -297,29 +305,54 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         get => MenuOpen || Motion.MenuProgress > 0;
         set
         {
-            if (MenuOpen == value) return;
+            if (MenuOpen == value)
+            {
+                if (value && Window.Minimized) Window.SetMinimized(false);
+                return;
+            }
 
             MenuOpen = value;
             _dragging = null;
             _thumbGrab = null;
+            Window.EndDrag();
             Rebinding = null;
             ActiveChoice = null;
             ResetPending = false;
             PresetNaming.Open = false;
             Search.Clear();
+            ModsPage.FilterFocused = false;
             Focus = -1;
             Notice = "";
             EditingNumber = null;
+            TextEdit.Cancel();
 
             if (value)
             {
+                Window.SetMinimized(false);
                 Motion.LastFrameAt = 0;
                 Player.SetSettingsOpen(true);
                 Player.CloseOptions = () => Visible = false;
             }
-
-            if (!value) save();
+            else
+            {
+                Window.SetMinimized(false);
+                save();
+            }
         }
+    }
+
+    /// <summary>
+    /// Whether the settings window is open and blocking the world (false while closed or minimized to its floating bar).
+    /// </summary>
+    public bool Modal => Visible && !Window.Minimized;
+
+    /// <summary>
+    /// Opens the settings window, restores it if minimized, or closes it if already expanded.
+    /// </summary>
+    public void Toggle()
+    {
+        if (Visible && Window.Minimized) Window.SetMinimized(false);
+        else Visible = !Visible;
     }
 
     /// <summary>
@@ -410,6 +443,17 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     public Func<string>? FrameGenerationStatus { get; init; }
 
     /// <summary>
+    /// The Monitor row's monitor names, in the order its numbers count (<see cref="Rendering.Display.GlfwMonitors.Names"/>); null on a host without that
+    /// setting.
+    /// </summary>
+    public Func<IReadOnlyList<string>>? MonitorNames { get; init; }
+
+    /// <summary>
+    /// Moves a full-screen window to the newly chosen monitor.
+    /// </summary>
+    public Action? MonitorChanged { get; init; }
+
+    /// <summary>
     /// Applies a new attackers-per-target setting to the running combat system.
     /// </summary>
     public Action<int?>? AttackSlotsChanged { get; init; }
@@ -445,6 +489,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     public Action<bool>? BenchFacingChanged { get; init; }
 
     /// <summary>
+    /// Applies the seat bed fix (<see cref="UserConfig.FixSeatBeds"/>).
+    /// </summary>
+    public Action<bool>? SeatBedsChanged { get; init; }
+
+    /// <summary>
     /// Applies the prisoner pose fix (<see cref="UserConfig.FixPrisonPose"/>).
     /// </summary>
     public Action<bool>? PrisonPoseChanged { get; init; }
@@ -458,6 +507,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// Applies the bag search fix (<see cref="UserConfig.FixBagSearch"/>).
     /// </summary>
     public Action<bool>? BagSearchChanged { get; init; }
+
+    /// <summary>
+    /// Applies the pick-up theft fix (<see cref="UserConfig.FixPickUpTheft"/>).
+    /// </summary>
+    public Action<bool>? PickUpTheftChanged { get; init; }
 
     /// <summary>
     /// Applies the shop counter talk reach (<see cref="UserConfig.CounterTalk"/>).
@@ -555,6 +609,19 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// The Tick ahead row's choices.
     /// </summary>
     internal static readonly string[] TickAheadChoices = ["Faithful (in series)", "Meitou (when busy)", "Always on"];
+    /// <summary>
+    /// The Monitor row's name.
+    /// </summary>
+    internal const string MonitorName = "Monitor";
+    /// <summary>
+    /// The Monitor row's hint (<see cref="UserConfig.Monitor"/>).
+    /// </summary>
+    internal const string MonitorHint =
+        "The monitor the game starts and goes full screen on. Automatic: the one its window is on (on Wayland, the first monitor).";
+    /// <summary>
+    /// The highest monitor number the launcher offers: it cannot list the computer's monitors, the game's own row does.
+    /// </summary>
+    internal const int LauncherMonitors = 4;
     /// <summary>
     /// The names of the HDR output rows of the Display page and of the launcher (docs/render-post.md "HDR output").
     /// </summary>
@@ -1067,16 +1134,17 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     }
 
     /// <summary>
-    /// The Display page: its sliders, the frame limit, world tick, frame generation and HDR output, in the catalogue's order; modes replace their
-    /// sliders.
+    /// The Display page: its sliders, the frame limit, the monitor, world tick, frame generation and HDR output, in the catalogue's order; modes
+    /// replace their sliders.
     /// </summary>
     List<Entry> DisplayRows(List<Entry> result)
     {
-        // The Display page in the catalogue's order, as the launcher's: full screen, VSync, frame limit, frame generation, world tick, then the
-        // display sliders.
+        // The Display page in the catalogue's order, as the launcher's: full screen, monitor, VSync, frame limit, frame generation, world tick,
+        // then the display sliders.
         var fps = LauncherSchema.Find("fpsLimit");
         result.Add(new(fps?.Name ?? "Frame limit", fps?.Description ?? "", Slider: fps is null ? frameLimit
             : frameLimit with { Min = fps.Min, Max = fps.Max, Text = fps.Text }, Raw: "fpsLimit"));
+        if (MonitorNames is not null) result.Add(MonitorRow());
         result.Add(new("World tick alongside drawing", TickAheadHint, Choice: new(() => TickAheadChoices, () => (int)Config.TickAhead,
             i => Config.TickAhead = (TickAheadMode)i),
             Raw: "tickAhead"));
@@ -1092,6 +1160,28 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         result = [.. result.OrderBy(e => RowOrder(e.Raw ?? ""))];
 
         return [.. result.SelectMany(Modes.ModeEntries).Select(Restarting)];
+    }
+
+    /// <summary>
+    /// The Monitor row: Automatic, then the monitors there are now, by number and name.
+    /// </summary>
+    Entry MonitorRow()
+    {
+        var options = new List<string> { "Automatic" };
+        var names = MonitorNames?.Invoke() ?? [];
+        for (int i = 0; i < names.Count; i++) options.Add(Loc.Tr("Monitor {1}: {2}", i + 1, names[i]));
+
+        var choice = new Choice(() => options, () => Config.Monitor < options.Count ? Math.Max(Config.Monitor, 0) : 0, ChooseMonitor);
+        return new(MonitorName, MonitorHint, Choice: choice, Raw: "monitor");
+    }
+
+    /// <summary>
+    /// Chooses the monitor (0 automatic) and moves a full-screen window there.
+    /// </summary>
+    void ChooseMonitor(int index)
+    {
+        Config.Monitor = index;
+        MonitorChanged?.Invoke();
     }
 
     /// <summary>
@@ -1179,17 +1269,31 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     #region Input
 
     /// <summary>
-    /// The menu takes every point while it shows.
+    /// The menu takes every point while expanded, and only its floating bar while minimized.
     /// </summary>
-    public bool Contains(Vector2 _) => Visible;
+    public bool Contains(Vector2 at) => Visible && (!Window.Minimized || Window.MinimizedBounds.Contains(at.X, at.Y));
 
     /// <summary>
     /// A button press: a binding being set takes it, a typed value is committed first, then the hit widget acts (a slider starts its drag); true
-    /// while the menu shows.
+    /// while the menu takes the point.
     /// </summary>
     public bool MouseDown(Vector2 at, MouseButton button = MouseButton.Left)
     {
         if (!Visible) return false;
+
+        if (Window.Minimized)
+        {
+            if (!Window.MinimizedBounds.Contains(at.X, at.Y)) return false;
+
+            Pointer = at;
+            PointerDown = button == MouseButton.Left;
+            if (button != MouseButton.Left) return true;
+
+            var barHit = Hits.LastOrDefault(h => h.Bounds.Contains(at.X, at.Y));
+            if (barHit is not null) barHit.Activate();
+            else Window.BeginDrag(at);
+            return true;
+        }
 
         Pointer = at;
         PointerDown = button == MouseButton.Left;
@@ -1209,13 +1313,19 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
 
         if (button != MouseButton.Left) return true;
 
-        // A press anywhere leaves the search box; one on it focuses it again.
+        // A press anywhere leaves the search and filter boxes; one on them focuses them again.
         Search.Focused = false;
+        ModsPage.FilterFocused = false;
 
         if (EditingNumber is not null)
         {
             if (NumberBounds.Contains(at.X, at.Y)) return true;
             if (!CommitNumber()) return true;
+        }
+        if (TextEdit.Editing is not null)
+        {
+            if (TextEdit.Bounds.Contains(at.X, at.Y)) return true;
+            TextEdit.Commit();
         }
 
         if (GrabScrollBar(at)) return true;
@@ -1224,6 +1334,9 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
 
         if (hit is null)
         {
+            if (ActiveChoice is null && !ResetPending && PendingAction is null && !PresetNaming.Open && Window.BeginDrag(at))
+                return true;
+
             ActiveChoice = null;
             return true;
         }
@@ -1241,12 +1354,20 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     }
 
     /// <summary>
-    /// A pointer move: a dragged slider follows it.
+    /// A pointer move: a dragged slider, scroll bar or window follows it.
     /// </summary>
     public bool MouseMove(Vector2 at)
     {
         Pointer = at;
         if (!Visible) return false;
+
+        if (Window.Dragging)
+        {
+            Window.DragMove(at);
+            return true;
+        }
+
+        if (Window.Minimized) return Window.MinimizedBounds.Contains(at.X, at.Y);
         if (_dragging is { Slider: { } slider, Track: { } track }) slider.SetFraction((at.X - track.X) / track.Width);
         else if (_thumbGrab is not null) DragScrollBar(at);
 
@@ -1254,11 +1375,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     }
 
     /// <summary>
-    /// The button's release ends a slider's or the scroll bar's drag; true when one was dragged.
+    /// The button's release ends a slider's, the scroll bar's or the window's drag; true when one was dragged.
     /// </summary>
     public bool MouseUp()
     {
-        bool had = _dragging is not null || _thumbGrab is not null;
+        bool had = _dragging is not null || _thumbGrab is not null || Window.EndDrag();
         _dragging = null;
         _thumbGrab = null;
         PointerDown = false;
@@ -1296,12 +1417,12 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     }
 
     /// <summary>
-    /// A wheel step: the drop-down, the mod details or the page scroll; true while the menu shows.
+    /// A wheel step: the drop-down, the mod details or the page scroll; true while the menu shows and is expanded.
     /// </summary>
     public bool Scroll(float steps)
     {
-        if (!Visible) return false;
-        if (EditingNumber is not null || Rebinding is not null || ResetPending || PendingAction is not null)
+        if (!Modal) return false;
+        if (EditingNumber is not null || TextEdit.Editing is not null || Rebinding is not null || ResetPending || PendingAction is not null)
             return true;
         if (ActiveChoice is { } choice)
             ChoiceScroll = Math.Clamp(ChoiceScroll - (int)steps, 0, Math.Max(0, choice.Options().Count - 6));
@@ -1318,19 +1439,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// </summary>
     public bool KeyDown(Key key, bool shift)
     {
-        if (!Visible) return false;
+        if (!Modal) return false;
 
         if (Rebinding is { } action)
         {
-            if (key == Key.Escape) Rebinding = null;
-            else if (key == Key.Delete || key == Key.Backspace)
-            {
-                Bindings.Set(action);
-                Rebinding = null;
-                Notice = "Binding cleared.";
-            }
-            else SetBinding(action, key);
-
+            RebindKey(action, key);
             return true;
         }
 
@@ -1387,11 +1500,15 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// A key: the preset name dialog, else the search box (Ctrl+F focuses it), else the typed value's keys (Esc, Enter, Tab, then the
     /// editing keys of <see cref="TextField"/>), else as without Ctrl.
     /// </summary>
-    public bool KeyDown(Key key, bool shift, bool ctrl)
+    public bool KeyDown(Key key, bool shift, bool ctrl, bool alt = false)
     {
-        if (PresetNaming.Open && Visible) return PresetNaming.OnKey(key);
-        if (Search.Focused && Visible) return Search.OnKey(key, shift, ctrl);
-        if (key == Key.F && ctrl && Visible && EditingNumber is null && Rebinding is null) return Search.Begin();
+        if (!Modal) return false;
+        _heldModifiers = InputBindings.Modifiers(ctrl, shift, alt);
+        if (PresetNaming.Open) return PresetNaming.OnKey(key);
+        if (Search.Focused) return Search.OnKey(key, shift, ctrl);
+        if (ModsPage.FilterFocused) return ModsPage.OnFilterKey(key, shift, ctrl);
+        if (TextEdit.Editing is not null) return TextEdit.OnKey(key, shift, ctrl);
+        if (key == Key.F && ctrl && EditingNumber is null && Rebinding is null) return Search.Begin();
         if (EditingNumber is null) return KeyDown(key, shift);
 
         switch (key)
@@ -1421,19 +1538,33 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// </summary>
     public void TextInput(char value)
     {
-        if (PresetNaming.Open && Visible)
+        if (!Modal) return;
+
+        if (PresetNaming.Open)
         {
             PresetNaming.OnText(value);
             return;
         }
 
-        if (Search.Focused && Visible)
+        if (Search.Focused)
         {
             Search.OnText(value);
             return;
         }
 
-        if (EditingNumber is null || !Visible) return;
+        if (ModsPage.FilterFocused)
+        {
+            ModsPage.OnFilterText(value);
+            return;
+        }
+
+        if (TextEdit.Editing is not null)
+        {
+            TextEdit.OnText(value);
+            return;
+        }
+
+        if (EditingNumber is null) return;
         if (NumberChars(value.ToString()) is { Length: > 0 } typed && Number.Insert(typed)) Notice = "";
     }
 
@@ -1483,6 +1614,35 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     }
 
     /// <summary>
+    /// The modifiers held as the key being handled went down (<see cref="KeyDown(Key, bool, bool, bool)"/>), for a code mod's chord.
+    /// </summary>
+    KeyModifiers _heldModifiers;
+
+    /// <summary>
+    /// A key while <paramref name="action"/> waits for its binding: Esc cancels, Delete or Backspace unbinds, any other key binds. A code mod's
+    /// action takes the key with the modifiers held as a chord (docs/modding.md "Key actions") and waits on while only a modifier goes down.
+    /// </summary>
+    void RebindKey(InputAction action, Key key)
+    {
+        bool modAction = Bindings.ModAction(action) is not null;
+        if (key == Key.Escape) Rebinding = null;
+        else if (key == Key.Delete || key == Key.Backspace)
+        {
+            Bindings.Set(action);
+            Rebinding = null;
+            Notice = "Binding cleared.";
+        }
+        else if (modAction && IsModifier(key)) return;
+        else SetBinding(action, modAction && _heldModifiers != KeyModifiers.None ? Binding.Of(key).With(_heldModifiers) : key);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="key"/> is a Ctrl, Shift or Alt key.
+    /// </summary>
+    static bool IsModifier(Key key) =>
+        key is Key.LeftControl or Key.RightControl or Key.LeftShift or Key.RightShift or Key.LeftAlt or Key.RightAlt;
+
+    /// <summary>
     /// Binds <paramref name="action"/> to <paramref name="binding"/>, taking it from the actions of its key map that have it; a reserved key is
     /// refused with a notice.
     /// </summary>
@@ -1496,11 +1656,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
 
         // Rotate item acts only over an inventory item, so it shares its control with whatever acts elsewhere (the camera's orbit by default).
         // The build map is a key map of its own (docs/game/ui-input.md section 4): its keys are taken only from its actions, and the reverse.
-        bool shared = action == InputAction.RotateItem;
-        var conflicts = Bindings.Actions
-            .Where(a => InputBindings.IsBuildMap(a) == InputBindings.IsBuildMap(action))
-            .Where(a => a != action && a != InputAction.RotateItem && !shared && Bindings.Get(a).Contains(binding))
-            .ToArray();
+        var conflicts = Bindings.Holders(action, binding);
 
         // A mouse button taken from another action is swapped: that action gets this one's old button, so the three buttons can be shuffled (the
         // buttons form a cycle otherwise).
@@ -1595,6 +1751,12 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             AnimalMovesChanged?.Invoke(true);
             Config.FixTurretAssault = true;
             TurretAssaultChanged?.Invoke(true);
+            Config.FixSeatBeds = true;
+            SeatBedsChanged?.Invoke(true);
+            Config.FixPickUpTheft = true;
+            PickUpTheftChanged?.Invoke(true);
+            Config.FixArrestChases = true;
+            Config.MaxFactionSize = Config.MaxSquadSize = Config.MaxSquads = null;
             Config.FixPrisonPose = true;
             PrisonPoseChanged?.Invoke(true);
             Config.FixGround = true;
@@ -1609,6 +1771,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             OffscreenChanged?.Invoke();
         }
         Config.FixHeadTurnBack = false;
+        Config.KeepInfoPanel = true;
+        Player.FixLockpickLabel = Config.FixLockpickLabel = true;
+        Config.MuteCorpseFlies = false;
+        Config.QuietCorpseFlies = false;
+        Config.CorpseFlyRange = UserConfig.DefaultCorpseFlyRange;
         Config.Audio = new();
         AudioChanged?.Invoke();
         if (!Player.IsRemoteSession) GamePages.SetGameplay(new());
@@ -1648,7 +1815,10 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         Player.MeitouMainMenu = Config.MeitouMainMenu = true;
         Player.SpeedUnit = Config.SpeedUnit = SpeedUnit.Mph;
         Player.Floaters = Config.Floaters = FloaterMode.Simple;
+        Player.GreyUnavailableVerbs = Config.GreyUnavailableVerbs = true;
         Player.InterfaceScale = Config.InterfaceScale = 1;
+        Config.SettingsOpacity = 1;
+        Window.ResetPosition();
         Player.ShowNames = Config.ShowNames = true;
         Player.FeedbackButtonInPlay = Config.FeedbackButton = true;
         Config.TickAhead = TickAheadMode.Always;
@@ -1679,38 +1849,51 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         Controls.Clear();
         Hits.Clear();
         Motion.AnimationScope = "chrome";
-        DrawFrame(width, height);
+        float open = MenuMotion.Ease(Motion.MenuProgress);
+
+        if (Window.Minimized)
+        {
+            Window.DrawMinimized();
+            Motion.Opacity(0, open * Window.Opacity);
+            painter.Draw(Controls, width, height, Pointer, null, pass: pass);
+            return;
+        }
+
+        float backdrop = Window.BackdropAlpha;
+        if (backdrop > 0.001f) Canvas.Rect(new(0, 0, width, height), new(8 / 255f, 6 / 255f, 5 / 255f, backdrop));
+
+        int windowStart = Controls.Count;
+        DrawFrame();
         int contentStart = Controls.Count;
         DrawPage();
         Motion.Opacity(contentStart, MenuMotion.Ease(Motion.ContentProgress));
         DrawFooter();
         DrawDialogs();
 
-        Motion.Opacity(0, MenuMotion.Ease(Motion.MenuProgress));
+        Motion.Opacity(0, open);
+        Motion.Opacity(windowStart, Window.Opacity);
         painter.Draw(Controls, width, height, Pointer, null, pass: pass);
     }
 
     /// <summary>
     /// The window's scale and bounds for a <paramref name="width"/> x <paramref name="height"/> screen (physical pixels, so a high-DPI display's is
-    /// larger than its points: Retina's twice), slid by the opening motion. The scale has no upper limit: the window keeps its share of the screen
-    /// at any resolution.
+    /// larger than its points: Retina's twice), slid by the opening motion and offset by any title-bar drag. The scale has no upper limit: the
+    /// window keeps its share of the screen at any resolution.
     /// </summary>
     void PlaceWindow(int width, int height)
     {
         Scale = Math.Max(0.35f, Math.Min(height / 900f, width / 1280f));
         Canvas.TextViewportHeight = height;
-        Bounds = new(MathF.Round((width - 1120 * Scale) / 2), MathF.Round((height - 720 * Scale) / 2), MathF.Round(1120 * Scale),
-            MathF.Round(720 * Scale));
-        Bounds = Bounds with { Y = Bounds.Y + (1 - MenuMotion.Ease(Motion.MenuProgress)) * 8 * Scale };
+        float slide = (1 - MenuMotion.Ease(Motion.MenuProgress)) * 8 * Scale;
+        Bounds = Window.Place(width, height, Scale, slide);
     }
 
     /// <summary>
-    /// The window's chrome: the dimmed screen, the surface, the header with its close button, the page buttons, the mode and version and the
-    /// mods summary.
+    /// The window's chrome: the surface, the header with its opacity slider, search box, minimize and close buttons, the page buttons, the mode
+    /// and version and the mods summary.
     /// </summary>
-    void DrawFrame(int width, int height)
+    void DrawFrame()
     {
-        Canvas.Rect(new(0, 0, width, height), new(8 / 255f, 6 / 255f, 5 / 255f, 0.64f));
         Canvas.Surface(Bounds, "window");
 
         if (!Canvas.Meitou)
@@ -1719,7 +1902,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
                 new Dictionary<string, string>(), Vector4.Zero, Pickable: false));
         }
 
-        Canvas.Text("Settings", Canvas.R(20, 4, 650, 32), 22, SettingsCanvas.LightInk);
+        Canvas.Text("Settings", Canvas.R(20, 4, 520, 32), 22, SettingsCanvas.LightInk);
+        Window.DrawHeaderControls();
         var close = Canvas.R(1069, 6, 31, 32);
         Controls.Add(new("settings-close", "Button", close, "", "settings:close", "Kenshi_CloseButtonSkin", true,
             new Dictionary<string, string>(), Vector4.Zero));
@@ -1909,7 +2093,9 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         "Advanced ragdolls" or "luckyren Mode" or "Dropped items kept" or "Raids as written" or "Weak punch reach" or "Bench facing"
         or "Bags in the inventory" or "Squad XP" or "Others' XP" or "Swamp turtle attacks" or "Prisoners hold still"
         or "Holes and needles in the ground" or "Caged animals idle" or "Towns change far away"
-        or "Raids keep their progress" or "Guards stop passing bodies" or "Knocked out stay" or "Talk across shop counters" or "Turret fire is a crime";
+        or "Raids keep their progress" or "Guards stop passing bodies" or "Knocked out stay" or "Talk across shop counters" or "Turret fire is a crime"
+        or "Beds used as seats" or "Pick-up thefts from the owner" or "Guards give up lost suspects"
+        or "Max faction size" or "Max squad size" or "Max squads";
 
     /// <summary>
     /// Presents a server-owned row without mutation controls.

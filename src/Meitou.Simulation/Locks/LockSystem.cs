@@ -245,9 +245,7 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
 
             if (!c.IsImprisoned)
             {
-                var (at, reach) = WorkSpot(world, f, new Vector2(next[s].Position.X, next[s].Position.Z));
-                float d = Vector2.Distance(new Vector2(next[s].Position.X, next[s].Position.Z), at);
-                if (d > reach)
+                if (!AtWorkSpot(world, f, next[s], out var at, out float reach))
                 {
                     // Still walking; another order (a new goal) or a failed path ends it.
                     if (Redirected(next[s], at, reach)) c.PickingLock = null;
@@ -322,5 +320,5 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
     /// Posts a character's own line as "name: line" (a lock worker's "It's locked."). The line is a game msgid looked up on its own, so every
     /// language with a game catalogue shows it translated; the "{1}: {2}" frame is Meitou's.
     /// </summary>
-    static void Say(World world, CharacterCold c, string line) => world.PostCharacter(c, Loc.Tr("{1}: {2}", c.Name, Loc.Tr(line)));
+    static void Say(World world, CharacterCold c, string line) => world.PostCharacter(c, Loc.Tr("{1}: {2}", world.ShownName(c), Loc.Tr(line)));
 }

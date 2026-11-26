@@ -11,7 +11,10 @@
 -Critical Success Chance:
 -Current Smith:
 -End total:
+-Fabrics Cost:
 -Material Costs:
+-Materials Cost:
+-Materials Costs:
 -Predicted Result:
 -Wanted For:
 2 Broken Arms!
@@ -246,6 +249,7 @@ Escape
 Escaped Prisoner
 Escaped slave
 Escaping Prison
+Estimated Craft Time:
 Estimated build time:
 Everything
 Ex-slave
@@ -400,8 +404,10 @@ Location
 Lock
 Locked
 Locked (lvl: {1,num})
+Locking
 Lockpicking
 Lockpicking (Chance {1}%)
+Looks like a slave:
 Looks like slave:
 Loot
 Looting
@@ -595,6 +601,7 @@ Save game
 Science
 Sciences
 Security:
+Seen!
 Sell
 Set Free
 Severe limb damage has now led to critical blood loss. You will die without medical attention.
@@ -606,6 +613,7 @@ Show movement marker
 Show rotation marker
 Simple info
 Sit when idle
+Situation:
 Skill:
 Slave
 Slave of:
@@ -666,6 +674,7 @@ The current amount of wind.
 The current wind speed
 The door is broken
 The door is closed
+The door is damaged.
 The door is in good condition.
 The door is locked and will keep out intruders.
 The door is open
@@ -732,6 +741,7 @@ Throw out of home
 Throw out of town
 Time left to harvest
 Time left to harvest all plants before they go bad.
+Time remaining:
 To add jobs, hold shift key when giving an order
 Total Metals:
 Total Weight:
@@ -759,13 +769,16 @@ Unconscious
 Unconscious from blood loss and bleeding to death. Hope that the bleeding stops before it's too late.
 Unconscious from blood loss. It will recover over time, bed rest will help.
 Under construction
+Undiscovered
 Undo:
 Uniform Theft
 Unlock
 Unlock Shackles
 Unlocked
+Unlocking
 Upgrade
 Upgrade required
+Upgradeable to:
 Upgrades To:
 Use
 Use Strength
@@ -869,6 +882,7 @@ someone
 when finished
 {1,num=fix,p=1} mph
 {1,num} Days, {2,num}hrs
+{1,num} hour
 {1,num} hr
 {1,num} kg
 {1,num} mins
@@ -904,6 +918,7 @@ when finished
 
 # Not shown as Meitou's text: widget, skin and icon names, alignments, formats, fonts, skeleton bone names, record names (translated by .translation files), Workshop mod titles, editor fields.
  d MMM
+256 Squad Limit
 ACES
 Alert
 Ancient
@@ -914,6 +929,7 @@ Bottom
 Brass
 Button
 Camp
+Cannibalism
 Cascadia Mono, Consolas, DejaVu Sans Mono, Menlo, monospace
 Cascadia Mono, Consolas, Menlo, DejaVu Sans Mono, monospace
 Center
@@ -929,10 +945,12 @@ Disarm
 Disguises
 Drifter's Boots
 Drifter's Leather Pants
+Durability
 Dust Bandit
 Dust Bandits
 Dustcoat
 Eaten
+Elemental Enchantment
 Enter
 Field
 Frame
@@ -957,9 +975,13 @@ Left
 Left Bottom
 Left Top
 Left VCenter
+Limit Talent
 Main
+Map-markers
 Meitou
 Meitou Level Editor
+Mentors
+Metabolic Traversal
 Metal
 Mg
 Movement
@@ -982,9 +1004,11 @@ Ruin
 Run
 SMAA
 SSAO
+Search bar
 Secondary
 Slider
 Small Backpack
+Sparring
 Speed Menu
 Stretch
 Swamp Turtle FIX
@@ -1004,21 +1028,52 @@ Walk
 Watchtower
 White
 Widget
+Work for Cats - Get Hired at NPC Workbenches
 Workcamp
 Yellow
+[Desktop Entry]\nType=Application\nName=Meitou Launcher\nCategories=Game;\n
+[Meitou Client] Area Guard Port
+[Meitou Client] Better Looting Port
+[Meitou Client] Building Search Bar Port
+[Meitou Client] Cannibalism Port
 [Meitou Client] Disarm Port
+[Meitou Client] Elemental Enchantment Port
+[Meitou Client] Equipment Durability Port
+[Meitou Client] Fix Shopping Wages Port
 [Meitou Client] It. Tickles. Me. Port
+[Meitou Client] Job Management Port
+[Meitou Client] Job Tabs Port
+[Meitou Client] Kenshi Affixes Port
+[Meitou Client] Kenshi Compact Port
 [Meitou Client] Kill Counter Port
 [Meitou Client] Level Up Notify Port
+[Meitou Client] Limb Toughness Port
+[Meitou Client] Limited Stats Port
+[Meitou Client] Map Markers Port
+[Meitou Client] Mentors Port
+[Meitou Client] Metabolic Traversal Port
+[Meitou Client] Persistent Prisoners Port
+[Meitou Client] Posh Damage Numbers Port
+[Meitou Client] Queen Birthing Port
+[Meitou Client] Sleep Fix Port
+[Meitou Client] Sparring Port
 [Meitou Client] Speed Menu Port
+[Meitou Client] Squad Autonomy Port
 [Meitou Client] Stack Sort Port
 [Meitou Client] Taunt Expansion Port
+[Meitou Client] Vital Read Port
+[Meitou Client] Vital Sense Port
+[Meitou Client] Wanted Map Port
+[Meitou Client] Weapon Dodge & Guard Port
+[Meitou Client] Work for Cats Port
+[Meitou Client] XP Info Port
 [MeitouClient] Execution
 [Meitou] Proving Grounds
 brew install molten-vk vulkan-loader
 character panel line 
 character panel lines
 d MMMM yyyy
+dialogue reply 
 enable armour
 enable buildings
 enable item
@@ -1029,6 +1084,9 @@ fonts:Kenshi#Exo 2, $Default
 interior layout name
 job panel button 
 job panel buttons
+max faction size
+max squad size
+max squads
 meitou world states
 npc range
 town panel line 

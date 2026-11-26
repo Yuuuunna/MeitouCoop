@@ -77,6 +77,15 @@ public sealed class CharacterAnimation
     internal object? PlaysFor;
 
     /// <summary>
+    /// The clip lengths of this body (<see cref="AnimationLengths.ForPerson"/>), for the appearance <see cref="LengthsFor"/>.
+    /// </summary>
+    internal AnimationLengths? BodyLengths;
+    /// <summary>
+    /// The appearance <see cref="BodyLengths"/> was taken for; another appearance takes them again.
+    /// </summary>
+    internal object? LengthsFor;
+
+    /// <summary>
     /// Cycles per second the phase advances: written whenever the lower movement blend is picked (<b>Verified</b> <c>@ 14051d8e0</c>,
     /// <c>@ 14051d000</c>), kept while no such pick runs (standing out of combat, a technique): the legs go on stepping through their fade-out.
     /// </summary>
@@ -144,6 +153,11 @@ public sealed class CharacterAnimation
     /// <see cref="HeldRate"/> is the held clip's rate itself, whatever its record's play speed (a bed's clip). Derived, not hashed.
     /// </summary>
     public bool HeldFlat;
+    /// <summary>
+    /// The held clip's time, set from the simulation (a basher's swing, so the blow lands at its frame); -1: the clip runs on its own. Derived,
+    /// not hashed.
+    /// </summary>
+    public float HeldTime = -1;
 
     #endregion
 
@@ -333,6 +347,18 @@ public sealed class AnimationSystem(
     }
 
     /// <summary>
+    /// The clip lengths of a person's body: its linked animation files' clips before the base skeletons' (<see cref="AnimationLengths.ForPerson"/>),
+    /// as its rig plays them, so a looping clip's time wraps where the drawn clip ends. Kept per appearance. The one-shot ends (an action, a lift)
+    /// stay on <see cref="Lengths"/>, the table their timers in the combat and carry systems read.
+    /// </summary>
+    AnimationLengths LengthsOf(CharacterAnimation a, CharacterCold cold)
+    {
+        var look = cold.Appearance;
+        if (!ReferenceEquals(a.LengthsFor, look) || a.BodyLengths is null) (a.LengthsFor, a.BodyLengths) = (look, Lengths.ForPerson(look));
+        return a.BodyLengths;
+    }
+
+    /// <summary>
     /// The ragdolls (null: none; the fall and lying clips stand in for them). Read in the parallel phase: the last tick's state.
     /// </summary>
     public Ragdolls.IRagdollState? Ragdolls { get; set; }
@@ -371,6 +397,38 @@ public sealed class AnimationSystem(
     /// has none.
     /// </summary>
     int DismantlingClip { get; } = library.IndexOf("stonemine");
+
+    /// <summary>
+    /// Whether the character swings at a door or wall this tick (<see cref="CharacterCold.BashSwing"/>, stamped by the lock system each update in
+    /// reach).
+    /// </summary>
+    static bool Swinging(CharacterCold cold, long tick) => cold.BashSwing >= tick - 1;
+
+    /// <summary>
+    /// Whether the character picked a lock this update or the last: a cage's or a container's, a door's on the way, or shackles (its own or
+    /// another's).
+    /// </summary>
+    static bool Picking(CharacterCold cold, long tick)
+    {
+        bool picks = cold.PickingLock is not null || cold.DoorWay is not null || cold.Shackles is { Work: Locks.ShackleWork.Pick };
+        return picks && cold.PickWork.Tick >= tick - 1;
+    }
+
+    /// <summary>
+    /// The swing clip's time from the basher's phase (<see cref="CharacterCold.BashTime"/>, seconds into the cycle): the clip runs at its play
+    /// speed, a human's <c>stonemine</c> at its record's and an animal's technique at its <c>anim speed mult</c>, so the blow lands at 0.6 of it
+    /// (<c>FUN_140348c10</c>).
+    /// </summary>
+    static float SwingTime(CharacterCold cold, float rate) => MathF.Max(cold.BashTime, 0) * rate;
+
+    /// <summary>
+    /// An animal's swing this tick: its door-bash attack technique's clip (<see cref="CombatSystem.AnimalBashTechnique"/>) and its play rate; -1
+    /// when it does not swing or has none.
+    /// </summary>
+    (int Clip, float Rate) AnimalSwing(CharacterCold cold, long tick) =>
+        Swinging(cold, tick) && combat?.AnimalBashTechnique(cold) is { } own && Library.IndexOfTechnique(own.StringId) is >= 0 and var clip
+            ? (clip, MathF.Max(own.AnimSpeedMult, 0.1f))
+            : (-1, 0);
 
     /// <summary>
     /// The crouch clip Task_Crouch plays forwards and Task_UnCrouch backwards (<c>squat T</c>, FUN_140346360 / FUN_140345fb0).
@@ -445,9 +503,11 @@ public sealed class AnimationSystem(
         _ when cold.StandingUp && SquatClip >= 0 => SquatClip,
         // A crouch goal (Task_Crouch 27 plays it forwards, Task_UnCrouch 28 backwards); the stance byte follows (FinishCrouch).
         _ when CrouchGoal(cold) != 0 && SquatClip >= 0 => SquatClip,
+        // A basher plays stonemine at speed 1 every update it is in reach of its door or wall (Task_BashDoor, FUN_140348c10, Verified; #1336).
+        _ when Swinging(cold, tick) && DismantlingClip >= 0 => DismantlingClip,
         // The lock picker plays the cage's `animation lockpick`, else the medic clip every update it picks
         // (Task_PickLock, FUN_140359160; the crawler's kneeling clip is chosen in Crawl).
-        _ when (cold.PickingLock is not null || cold.DoorWay is not null) && cold.PickWork.Tick >= tick - 1
+        _ when Picking(cold, tick)
             => (cold.PickWork.Clip is { } pick ? SitClipOf(pick) : -1) is >= 0 and var picking ? picking : TreatingClip,
         CharacterTask.Build or CharacterTask.DeliverMaterials or CharacterTask.Prospect => TreatingClip,
         // A medic kneels only at a patient keeping still (Task_FirstAid's update plays the clip; FirstAidSystem);
@@ -732,7 +792,8 @@ public sealed class AnimationSystem(
 
     /// <summary>
     /// The clip index and progress of the technique or crossbow pose the character plays, else of a mod's move (<see cref="CombatSystem.ModMove"/>;
-    /// not while carried or getting up); -1 and 0 when none.
+    /// not while carried or getting up); -1 and 0 when none. <see cref="CombatSystem.ModMoveBlockOf"/> answers the same tests for mods: keep the
+    /// two in step.
     /// </summary>
     (int Technique, float Progress) TechniqueOf(World world, CharacterId id, CharacterCold cold, float tickSeconds)
     {
@@ -743,7 +804,18 @@ public sealed class AnimationSystem(
         if (combat.RangedPoseOf(id, tick, tickSeconds) is { } pose) return RangedClip(pose, cold);
         if (!cold.CarriedBy.IsNone || CharacterFacts.GettingUp(cold, tick)) return (-1, 0);
 
-        return combat.ModMove(world, id, tick) is { } move ? (Library.IndexOfTechnique(move.Technique.StringId), move.Progress) : (-1, 0);
+        return combat.ModMove(world, id, tick) is { } move ? (ModMoveClip(move), move.Progress) : (-1, 0);
+    }
+
+    /// <summary>
+    /// A mod's move's clip: its ANIMATION by name, else by string id, else its technique's; -1 when the library has none.
+    /// </summary>
+    int ModMoveClip(in CombatMove move)
+    {
+        if (move.Animation is not { } name) return Library.IndexOfTechnique(move.Technique!.StringId);
+
+        int clip = Library.IndexOf(name);
+        return clip >= 0 ? clip : Library.IndexOfRecord(name);
     }
 
     /// <summary>
@@ -1047,6 +1119,7 @@ public sealed class AnimationSystem(
         var upper = upperScratch ?? [];
         a.HeldIndex = -1;
         a.HeldFlat = false;
+        a.HeldTime = -1;
         lower.Clear();
         upper.Clear();
         if (Library.Animal(cold.RecordId) is { } animal)
@@ -1090,7 +1163,7 @@ public sealed class AnimationSystem(
 
         if (Rigs is not null) DropUnplayable(a, cold, wanted, ref legs);
 
-        var root = Settle(a, wanted, legs, lift, liftTime, technique, fight, speed, dt, Lengths, 1, seed, key, tick, legsShare);
+        var root = Settle(a, wanted, legs, lift, liftTime, technique, fight, speed, dt, LengthsOf(a, cold), 1, seed, key, tick, legsShare);
         if (lift >= 0)
             for (int k = 0; k < a.Count; k++)
                 if (a.Layers[k].Definition == lift)
@@ -1162,7 +1235,7 @@ public sealed class AnimationSystem(
 
         // Picking its cage's lock from inside: the cage's `animation lockpick`, else `medic` (FUN_140520bc0, Verified: the Prisoner Cage names none),
         // at the picking rate (#359).
-        else if (pose.InCage && technique < 0 && cold.PickingLock is not null && cold.PickWork.Tick >= tick - 1
+        else if (pose.InCage && technique < 0 && Picking(cold, tick)
             && HeldClip(pose.Task, cold, tick) is >= 0 and var picking)
         {
             (a.HeldIndex, a.HeldRate) = (picking, cold.PickWork.Rate);
@@ -1265,6 +1338,7 @@ public sealed class AnimationSystem(
         {
             a.HeldIndex = held;
             a.HeldRate = HeldRateOf(task, cold, held, tick);
+            if (held == DismantlingClip && Swinging(cold, tick)) a.HeldTime = SwingTime(cold, Library.Definitions[held].PlaySpeed);
 
             // In a bed (the only place the sleep task holds a clip): the bed's flat rate.
             if (task == CharacterTask.Sleep && !cold.LeavingBed) (a.HeldRate, a.HeldFlat) = (BedRate, true);
@@ -1424,7 +1498,7 @@ public sealed class AnimationSystem(
     {
         if (cold.StandingUp && held == SquatClip) return -1;
         if (held == SquatClip && CrouchGoal(cold) != 0) return CrouchGoal(cold);
-        if ((cold.PickingLock is not null || cold.DoorWay is not null) && cold.PickWork.Tick >= tick - 1) return cold.PickWork.Rate;
+        if (Picking(cold, tick)) return cold.PickWork.Rate;
 
         bool seated = task == CharacterTask.Rest && cold.Ai?.SitClip is not null;
         return task == CharacterTask.Operate || seated ? OperateRateOf(task, cold) : 1;
@@ -1723,6 +1797,7 @@ public sealed class AnimationSystem(
             else if (layer.Definition == technique) layer.Time = fight.Progress * length;   // the combat system's timing: the blow lands at its frame
             // held at the start while getting up blends out of a ragdoll
             else if (layer.Definition == a.Action) layer.Time = MathF.Max(a.ActionTime, 0);
+            else if (layer.Definition == a.HeldIndex && a.HeldTime >= 0) layer.Time = a.HeldTime;
             else if (layer.Target <= 0 && !RunsFading(d, synched)) layer.Time = FadingTime(d, layer, dt);
             else if (IsStrafe(d))
             {
@@ -1843,6 +1918,13 @@ public sealed class AnimationSystem(
             a.Idle = -1;
         }
         else if (technique >= 0) wanted.Add((technique, 1));
+        else if (!down && AnimalSwing(cold, tick) is { Clip: >= 0 } swing)
+        {
+            // Bashing a door: its attack technique's clip, timed by the swing (Task_BashDoor, FUN_140348c10, Verified).
+            wanted.Add((swing.Clip, 1));
+            (a.HeldIndex, a.HeldTime) = (swing.Clip, SwingTime(cold, swing.Rate));
+            a.Idle = -1;
+        }
         else if (!down && JobClip(cold, plan, task) is >= 0 and var job)
         {
             wanted.Add((job, 1));

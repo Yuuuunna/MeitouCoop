@@ -40,12 +40,15 @@ sealed partial class GameHost
     float NpcRange => ActiveCharacters?.DrawDistance ?? (_npcRange ??= GameplaySettings.NpcRange(Install));
 
     /// <summary>
-    /// Tells the world the camera it is looked at through, every frame (the update flag of <see cref="Meitou.Simulation.Bodies.MedicalTimeBudget"/>
-    /// and the sensing hooks, <see cref="Meitou.Simulation.Bodies.MedicalClock"/>).
+    /// Tells the world the camera it is looked at through, every frame once the frame has placed the drawn camera (the update flag of
+    /// <see cref="Meitou.Simulation.Bodies.MedicalTimeBudget"/>, the off-screen time and the sensing hooks,
+    /// <see cref="Meitou.Simulation.Bodies.MedicalClock"/>): the follow camera's target on the character and the eye's ground clearance come after
+    /// the rig's camera, whose pivot sits on the terrain, so a character on a bridge high above it fell outside the rig's view while drawn mid-screen
+    /// and moved on twice the time (#1384).
     /// </summary>
-    void SendView()
+    internal void SendView()
     {
-        if (Session.IsRemote || Battle.IsBattle) return;
+        if (Session.IsRemote || Battle.IsBattle || Duel.IsDuel) return;
         var (fieldOfView, aspect) = Camera.CullCone(ViewAspect);
         LocalSession.World.Commands.Enqueue(new Simulation.Bodies.CameraViewCommand(Camera.Eye, Camera.Forward, fieldOfView, aspect,
             NpcRange) { Tick = Session.CommandTick });
@@ -58,7 +61,6 @@ sealed partial class GameHost
     {
         if (Duel.IsDuel) return;   // the duel's worlds keep the focus on its spot (DuelSetup), wherever the camera flies
         if (Session.IsRemote) return;
-        SendView();
         var current = Session.Camera.Current;
         if (at is null && _sentFocus && current.IsFree && current.Eye.Y - Session.Camera.EyeGroundAt(current.Eye.X, current.Eye.Z, current.Eye.Y) > FocusCeiling)
             return;
@@ -528,8 +530,8 @@ sealed partial class GameHost
     internal long DrawKey(CharacterId id) => (((long)id.Slot << 32 | (uint)id.Generation) + 1) | (long)Saves.WorldEpoch << 56;
 
     /// <summary>
-    /// The portraits for the renderer to draw this frame: the squad bar's and the squads screen's members, the character trading window's rows and
-    /// the conversation's two in their cells (docs/character-renderer.md "Portraits").
+    /// The portraits for the renderer to draw this frame: the squad bar's and the squads screen's members, the character trading window's rows, the
+    /// code mods' live portraits and the conversation's two in their cells (docs/character-renderer.md "Portraits").
     /// </summary>
     void FillPortraits()
     {
@@ -543,6 +545,8 @@ sealed partial class GameHost
             for (int i = 0; i < members.Count; i++)
                 characters.PortraitRequests.Add(new PortraitRequest(PortraitKey(members[i].Id), i, members[i].PortraitSerial));
             foreach (var (id, cell) in Player.TradeWindows.CharacterTradePortraits())
+                characters.PortraitRequests.Add(new PortraitRequest(PortraitKey(id), cell, Player.PortraitBar.PortraitSerial(id)));
+            foreach (var (id, cell) in Player.RecordPortraits.Live)
                 characters.PortraitRequests.Add(new PortraitRequest(PortraitKey(id), cell, Player.PortraitBar.PortraitSerial(id)));
             RecordLooks.AddRequests(characters);
         }

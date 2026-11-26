@@ -475,8 +475,11 @@ to Jobs; the saved `chase mode` flag is that switch (**Verified**, [perma-jobs](
   escaping. Needs to lay low for a day and avoid getting spotted. {2}"; "Ex-slave" - "Was once a slave of {1} but has now escaped. The heat has died down but he still needs to avoid getting found out. {2}".
   `{2}` is empty for a character with no squad (`+0x250`), else the hint: for state 1 "Your character will have a permanent job assigned called [Obedient slave]. While this is active he will
   automatically work for his master. You can remove this job, but beware of the consequences...", for 2 and 3 "Keep your [Looks Like A Slave] level as low as possible, wear clothing or disguises and
-  find a plastic surgeon to restore your hair. Don't get spotted." (3: "... You should be safe if you stay out of towns."). For state 2 and 3 the same tooltip adds rows "Situation:" ("Undiscovered" when the
-  status `+0x110` is 0 or less, else "Seen!"), "Looks like a slave:" (`+0xf4` x 100 %) and "Time remaining:" (`FUN_140598b10` hours); the free-person text ("You are a free person.", "You are no slave.",
+  find a plastic surgeon to restore your hair. Don't get spotted." (3: "... You should be safe if you stay out of towns."). For state 2 and 3 (any character) the same tooltip first adds three rows, each label in Main after a `-` (`DAT_14168901c`): "Situation:" ("Undiscovered"
+  in Good when the status `+0x110` is 0 or less, else "Seen!" upper-cased in Bad), "Looks like a slave:" (Main, the float `+0xf4` x 100 through `{1,num}%`) and "Time remaining:" (Main,
+  `{1,num} hour` / `{1,num} hours` of `FUN_140598b10`: int(12.0 - elapsed) for state 2, int(96.0 - elapsed) for state 3, else 0, elapsed the game hours since the status `+0x8`
+  stamp, [lie low](carry-loot.md#escaped-slaves-lie-low); constants `DAT_1416adc00` 12.0 and `DAT_1416efde0` 96.0 **Verified** by reading the 1.0.68 `kenshi_x64.exe`, sha256 `a596ab4e407c…`);
+  then the bounty rows and the text. Meitou: `TooltipRuntime.LieLowRows`, `FixtureRegistry.SlaveHoursLeft`. The free-person text ("You are a free person.", "You are no slave.",
   "The faction that owns you.") belongs to the player's disguise tooltip.
 - Status entry (section 0x10 of the same builder, **Observed** by decompile), first match: the leader of its campaign (`Character::isLeadingAWarCampaign` `FUN_1409c4b10`: its platoon's leader and the campaign's
   leader) "War Leader" ("This is the Commander in charge of an entire army.") when `CampaignData::_isHostile` (+0x12, KenshiLib 1ce4a16), else "Leader" ("This is the leader of this group.");
@@ -594,8 +597,12 @@ also finds `MessagesTextBox`). The tag replaces the `Kenshi_EditBoxStandardText`
 character, test `FUN_1407916d0`), the conversation window's NPC line (`140674170`, ML_NORMAL), the player's chosen reply (`140683df0`, the player character's name or
 "Player", ML_PLAYER) and each MessageRoller message (`140724a20`, empty owner, ML_SYSTEM).
 
+**Observed** (Steam 1.0.68 `14049a130` and MyGUI 3.2.2 `EditBox::setCaption`): the visible Dialogue tab refreshes when new lines arrive.
+Replacing the caption moves the cursor to the end of the text and scrolls it into view.
+
 Meitou: `World.Said` from `DialogueSystem` (bubble lines, conversation lines, replies) → `DialogueLog.LogMessage`, each line tagged with its colour (ML_NORMAL is
 the kit's Main colour in the Meitou mode, for its dark panel); notices log as ML_SYSTEM without the `[`. The newest 200 lines are kept; not saved.
+The tab scrolls to the newest line when it shows an updated log. Manual scrolling holds its position between updates.
 
 ### Inline colour tags
 
@@ -648,7 +655,8 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     material still owed (the target's required less the current state's delivered, > 0: six spaces + item name, `+` amount) and, for a building
     with power, `Power` with the `power output` change (Good, Bad when negative); without a target the line is removed (`FUN_1406fd460`). With a
     downgrade target while the construction state is not complete, `[DOWNGRADE]` (Main) with the tooltip `Downgrade To:` name. WallBuilding's
-    slot 116 (`FUN_1402ff760`) has only the upgrade, keyed `Upgradeable to:`. Then the construction buttons (slot 117 `FUN_1402fea10`, shown when slot 79 `FUN_14029c380` is
+    slot 116 (`FUN_1402ff760`) has only the upgrade, keyed `Upgradeable to:`, its tooltip without Power; the materials owed are against slot 69's
+    state (an attached piece's is its wall's) and the button acts on the piece's wall (its parent handle), else on itself. Then the construction buttons (slot 117 `FUN_1402fea10`, shown when slot 79 `FUN_14029c380` is
     true, **Observed**: the owner is the player's faction and `isFoliage` (+0xc0, KenshiLib 1ce4a16) is clear; then true when the building it is furniture of (slot `0x438`) is
     the player's; else false only for a building with no such parent (slot `0x1d8` handle of type 11) whose town (slot 15) exists, is not the player's and whose record has
     `creates player town`): a full-row button `Dismantle` (caption BadBright) and, while the construction state is not complete, `PAUSE CONSTRUCTION` (Main), captioned
@@ -686,6 +694,13 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     function 19 is not among them); its members are ordered GO_HOMEBUILDING (19) on the new home, or with no home found PATROL (22) and the platoon's
     +0x115 (`persistent`) set to 0 (`FUN_1407ebdd0`), each order with the clear flag (**Verified**, disassembly; [order givers](ai-tasks.md#order-givers)); `FUN_14038a720` and `FUN_1404d2dd0` with the building;
     "Building purchased!". Meitou: [house purchases](../simulation.md#town-house-purchases).
+  - Meitou's addition, not in the original: a complete storage of the player's gets `Put priority:` and `Take priority:` buttons (width 0.4)
+    naming its [storage priority](../modding.md) level (Forbidden in BadBright, above Normal in Good); a click raises the level, a right-click
+    or Shift+click lowers it, each wrapping (`General_Click`; `SetStoragePriority`).
+  - Meitou's addition, not in the original: a building the player built gets a `Rename` button (Main) after Dismantle. It opens the message box
+    titled RENAME with a text box (at most 40 characters) holding the building's name; RENAME sends `RenameSite`, Cancel or Esc changes nothing.
+    The name, trimmed and without control characters, replaces the record's name in the panel title, the context menu and inventory titles and
+    the job list (`Hauling to: <name>`); an empty one gives back the record's name. Saved as [`meitou custom name`](../formats/save.md).
   - 4 is the medical panel's section (**Observed**: `MedicalDatapanel`'s constructor `FUN_140726a70` passes 4 to `FUN_1406fd7d0`; it finds the
     `LifeBarN` widgets and their `Value`, `Yellow`, `Green`, `White`, `Datapanel`, `Tooltip`, `Robot` and `Crushed` children (and one more whose name string was not read), and `HealthText`). The
     header word is slot 114 (`FUN_1402fe040`: Normal / Broken / Under construction with a tooltip); the rows slot 115 (`FUN_140302380`): `Condition`, or
@@ -696,6 +711,9 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     "All necessary materials are ready." or, in Title, "{1} more 'Building Materials' will be needed to complete this construction." with the
     missing amount (the number in Title, the rest in the default ink). A row's tooltip is set on its `LifeBarNTooltip` (`FUN_1407228a0`, the type 0
     setter). 7 gives nothing for buildings.
+    A door's own rows (DoorStuff `FUN_140304120` section 4, **Verified**) come first: `Door Condition`, the number int(progress) and the bar
+    progress / target (`FUN_140547200`), tooltip "The door is in good condition." while the progress is 0 or more, else (below 0, after the
+    breaking blow) the number in Title and "The door is damaged.". Meitou: `BuildingSelection.DoorConditionRow` from `DoorDetail.Progress`.
   **Observed** (the owner's screenshot of a town house, base game): the header word (`Normal`) and `LifeBar` rows `Door Condition` 10 and
   `Building Condition` 5, full yellow bars: the targets of the door and the house (their materials, all delivered). The name bar read the
   state's own name ("Big Shop") left and the owner faction ("Swampers") right; the info panel `Type:` (the record's name, "Swamp Shack") and
@@ -713,8 +731,8 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   the mounted refusal comes from the simulation; no inventory warning, as its items drop) and PAUSE CONSTRUCTION (`PauseSite`); the first door's lines come before the house's (Meitou does not focus the
   door object). Open to public on another faction's building is its residents' template `public day`, else the state's `is public day`, at any hour (slot 82; `public night` is
   [never read](locks.md)); a private one shows the line only when its record has an `interior` list (engine choice: the original shows it on every building not the player's). A building of the player's (its site, or a town building whose fixtures the player's faction owns, `BuildingDetail.Owned`) gets the
-  buttons: the door lines as full-row buttons, `[UPGRADE]` / `[DOWNGRADE]` on a site (`UpgradeSite` / `DowngradeSite`, same scope as the
-  simulation's), and in a town, for a record with an `interior` list, the Open to public toggle (`SetBuildingPublic`: a site's `BuildSite.Public`, a town building's flag in the fixtures,
+  buttons: the door lines as full-row buttons, `[UPGRADE]` / `[DOWNGRADE]` on a site (`UpgradeSite` / `DowngradeSite`; a wall's
+  `Upgradeable to:` line, `AddWallUpgradeLine`), and in a town, for a record with an `interior` list, the Open to public toggle (`SetBuildingPublic`: a site's `BuildSite.Public`, a town building's flag in the fixtures,
   both saved as `is public day`; a town building set Private drops out of the town AI's wander and bar places). **Observed** (owner's original-game Longhouse screenshot): clicking its price opens a confirmation titled with the building name, asking `Do you want to buy this building for c.{1,num}?`, with Yes / No buttons. For sale and its confirmation use the [house purchase contract](../simulation.md#town-house-purchases). A bought town house gets no Dismantle (**Verified**: 82 of the 85 base-data BUILDING records with an interior or a house/shack name have `creates player town`, so the slot 79 rule
   above hides it in another faction's town); only furniture inside it (its parent the player's) and the rare record without the flag (Outhouse, Ash Dome) get it, not built in Meitou.
   Not built: the original's other consumers of +0xc8.
@@ -739,7 +757,8 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   inventory (+0x430) holding no items (its count +0x18 is 0, `FUN_14004a0cf`) `[EMPTY]` in Title `#492620` (the uppercased translation of "Empty" in brackets, empty value; **Observed** decompile), `Training:` (function 7, any `stat used`: the
   label `Training:` with the editor stat name `FUN_140888440` of +0x3f8 appended, no separator, as the label of an empty-valued line; **Verified**
   decompile; Meitou puts a space between), `Cost to use:`
-  `Private` or `Pay c.{1,num}` (beds), `Lock state:` Locked / Unlocked, `Lock complexity:` `Level {1,num}`; 6 `Healing bonus:`
+  `Private` (slot 152 rent below 0) or `(Pay c.{1,num})`, 0 included, for function 6 (BF_BED) or 25 (BF_SKELETON_BED) whose owner faction (+0x10) is not the
+  player's (+0x250 null) (**Verified**, disassembly 0x140305333..0x140305395: no zero test; [rent](locks.md#beds); Meitou `BedDetail.Cost`), `Lock state:` Locked / Unlocked, `Lock complexity:` `Level {1,num}`; 6 `Healing bonus:`
   `x{1,num}` (beds), `Max Skill Level:` (training); 0xf `Money:`. Turrets, machines, generators and batteries have their own lines
   (`FUN_14030d620`, `FUN_140300090`, `FUN_140307bf0` ...: Working / No power / Out of resource / Output full, power, workers, fuel).
   A town bed (**Observed**, original-game screenshot of a Squin bar): a left click selects the bed itself, not the bar; panel:
@@ -1018,6 +1037,11 @@ Stats Affected and Ways To Train headings with bullet rows. The right starts wit
 a thin Next Level bar and percentage, followed by Description and wrapped prose.
 Help text is available from the installed [gettext catalog](../formats/gettext.md).
 
+**Physical effects** (**Verified**, 1.0.68 `FUN_1408b9270` branches matched to `main.pot`, `kenshi/statswindow.cpp`):
+the description adds a physical bulk label for Strength (line 429), Weapon smith and Armour smith (433),
+a slight muscle definition label for Athletics and Swimming (426), a visible muscle definition label for Dexterity and Martial arts (422),
+and a negative visible muscle definition label for Cooking and Science (437).
+
 **Observed** in the original (1.0.68): the description shows the stat whose row (label or value, attribute or skill) is under the pointer, with
 no click. It keeps the last stat pointed at once the pointer leaves the rows, and a click pins nothing: pointing at another row shows that one.
 The description is empty each time the window opens, until the pointer reaches a row. Meitou: the same; a click on a row still shows it.
@@ -1177,8 +1201,15 @@ Overview tab 2 (`ResearchTab`), part of `ManagementScreen` (constructor `FUN_140
   label-less line below with the rest, joined by ", " (#444444 finished, Good queued, else Bad; "-" for none); then one line per record of `enable buildings`, `enable weapon type`,
   `enable weapon model`, `enable armour`, `enable item`, `enable crossbow`, `enable backpack`, `enable robotics`, labelled "New Building:", "New Weapon Class:", "New Weapons
   Grade:", "New Armour Type:", "New Items:", "New Crossbows:", "New Backpacks:", "New Robot Limbs:", the name in Good (`FUN_14048ebc0`).
-- Meitou: `ResearchQueueList` rows are plain text; a click on a line queues it, on a queue row takes it off; the wheel
-  scrolls the blueprint lines a line per notch (no bar drawn); the description lines use the DatapanelGUI row geometry; the DESCRIPTION captions are inset 8 px at 1080 (engine choice).
+- **Queue drag** (**Verified**, Kenshi 1.0.68, `FUN_1404b13b0`, `FUN_14049f320`, `FUN_1404c8dd0`): drop onto another queue row to move there.
+  The drop check tests every queued item's unmet requirements by swapping the two endpoints for the lookup. Each unmet requirement must be found
+  before the dependent's original index in that lookup. An accepted drop removes the dragged entry and reinserts it at the target index, keeping its progress.
+- `ResearchQueueList` (**Verified**, decompile): an `ItemBox` of `ReorderableListItem<TechItemViewData>` cells (`FUN_1404c72d0`, `Kenshi_ItemListItem.layout`): a
+  `Kenshi_Button1` frame over 0.9 of the cell, `ItemName` (the research's name, left), `ItemValue` (its time left, `getValue` = `FUN_140831550` as above,
+  right-aligned), `Progress` (`Kenshi_LifeBarSkin`) and `RemoveButton` ("X" in red, 0.9 to 1 of the cell). Each draw (`FUN_1404bbfe0`) cuts the name short of the
+  time's text and sets the bar's width to the share done times `ItemValue`'s width. The X takes the research off the queue (`researchRemoved`).
+- Meitou: a click on a blueprint queues it; a queue row draws as above (`ResearchQueueRow`), its X takes it off, and a drag between queue rows reorders them. The wheel scrolls the blueprint lines a line per notch (no bar drawn). The description lines use the DatapanelGUI row geometry,
+  and the DESCRIPTION captions are inset 8 px at 1080 (engine choice).
 
 ### Craft tab
 
@@ -1187,7 +1218,17 @@ Overview tab 3 (`CraftingQueue`, constructor `FUN_1402bf0f0`; Meitou: `Productio
 stretch; the research tab does the same with `ResearchQueueList` in `ResearchQueuePanel` (`FUN_14049f5b0`) (**Verified**, decompile; Meitou: `QueueBox`, #463). The skin `Kenshi_ItemBoxEmpty` (`gui/templates/kenshi_templates.xml`) gives the box a `VScroll` 15 wide (`Kenshi_ScrollBarV`), so a queue taller than the box scrolls (**Observed**, the template); Meitou: `QueueView` draws that bar when the queue overflows and scrolls the rows with its arrows, track, thumb and the wheel (#1224). `CraftQueue` is an
 ItemBox of the bench's queue (building `+0x498` deque, filled by `FUN_1402b5ca0`, the ITEMS click `FUN_1402b9770` and the save loader); its tooltip callback `FUN_1402be650` sets the hovered index
 and calls `FUN_1402bcf60`, which writes into `QueueDescriptionPanel2` (the ingredients and the item's own tooltip rows come from `FUN_1402b6b40`, Panel 1 and 2). A hovered ITEMS row
-has a different description, `FUN_1402b79b0` ("Estimated Craft Time:", "-Materials Cost:", "-Fabrics Cost:"; **Verified** strings; Meitou's option description is not that).
+has a different description, `FUN_1402b79b0` (`mouseOverCraftList`, **Verified**, decompile 2026-11-24):
+- It makes the item the row crafts with the item factory (`FUN_140580750`): armour at the quality `FUN_14082e6b0` gives level 40 with no critical (Standard),
+  everything else at 0; a weapon of the row's model (user strings `id` / `id2`, the `PLAYER_WEAPONS` manufacturer). Panel 2 gets `Estimated Craft Time:` (the
+  item's hours, vfunc `0x328`, truncated; "{1,num} hr" / "{1,num} hrs"), then for armour (type 3) `-Materials Cost:` (`FUN_1402b7800`: `total coverage` x 0.01)
+  and `-Fabrics Cost:` (that x `fabrics amount`), for a weapon (type 2) `-Materials Costs:` (`material cost`). `FUN_1402b6b40` (item, true) then writes the
+  item's first tooltip rows (vfunc `0x278`; armour and type 15 drop the fourth) and an `Ingredients` row listing each ingredient " x{1,num}" to Panel 1 and,
+  unless the item is a weapon, its second tooltip rows (vfunc `0x280`) to Panel 2; the item is then destroyed. No smith rows.
+- Meitou (`ProductionWindows.OptionDescription`, the product from `CraftOptionView.Product`): Panel 1 takes the item tooltip's rows up to its weight, the
+  row's level and the inputs one per line; Panel 2 the rest of the tooltip without its paragraphs. Meitou's additions: while the bench has a smith,
+  armour, crossbows and robotic limbs show at the quality he makes (with his `-Predicted Result:` grade), and `-Critical Success Chance:` for the row's
+  level; a locked row reads "Needs research" in Bad.
 - **Queue entry description** (`FUN_1402bcf60`, **Verified** unless marked): `State:` "In production..." and, by the bench's status (building `+0x468`), a second `State:` row in Bad: 0 "Out of resources",
   1 "Output full", 3 "Upgrade required" (any other status adds none). An entry whose bench hand (entry `+0x18`, copied from the building in `FUN_1402b5ca0`) is null reads `State:`
   "Not assigned to a craft bench" in Bad instead and skips the status row; Meitou's entries always have a bench, so it never shows. Status 3 is set by `FUN_1402b5680` for an empty queue, or for a
@@ -1616,7 +1657,7 @@ the obedience job row (item 28, **Verified** `_setHightlightCoords` `FUN_140972a
 
 ### 8. Damage floaters
 
-**Building damage number** (`FUN_14029d2b0`, **Verified**; wall `FUN_14029d560`, door `FUN_14029d690`): a blow on a building not yet destroyed shows `{1,num}` of int(f), f the clamped damage (door: clamp(2 blunt + 0.5 cut, 20, 60); wall: clamp((hit1 x 2 + hit0 x 0.5) x 0.5, 10, 60), 0.003 x f off its health fraction, destroyed at 0 with the Wwise event `Break`), only while the floaters option is on, at the building point lifted by a fixed height and jittered at random in x, y and z, one uniform grey, through the same floating-text factory (`FUN_14073faf0`, mode 2). Meitou: doors only (`FloaterKind.Building`, queued by `LockSystem`; walls take no damage here).
+**Building damage number** (`FUN_14029d2b0`, **Verified**; wall `FUN_14029d560`, door `FUN_14029d690`): a blow on a building not yet destroyed shows `{1,num}` of int(f), f the clamped damage (door: clamp(2 blunt + 0.5 cut, 20, 60); wall: clamp((hit1 x 2 + hit0 x 0.5) x 0.5, 10, 60), 0.003 x f off its health fraction, destroyed at 0 with the Wwise event `Break`), only while the floaters option is on, at the struck object's creation point (a door's is its building's position: `FUN_140557280` makes each `doors` entry at the building's position and orientation) + (U(-20, 20), 15 + U(0, 10), U(-20, 20)) (`FUN_1409b1c80`, `rand()` scaled), one uniform grey, through the same floating-text factory (`FUN_14073faf0`, mode 2). Meitou: doors only (`FloaterKind.Building` at `Fixture.Position`, the building's, queued by `LockSystem`; the offsets in `DamageFloaters.Jittered`; walls take no damage here).
 
 The options `floaters` (Off 0, Simple info 1 default, Full info 2; [settings](../formats/settings.md)) control the numbers that
 float over a character when a blow lands. Tooltip: damage "and in brackets the amount of damage that was stopped by armour";
@@ -1631,7 +1672,7 @@ Full info "separate numbers for each damage type". Built at the end of `MedicalS
 - **Full**: the hit part's name, `": "`, then `C` = cut (cut + pierce when pierce is above 1) with ` (-a)` when its stopped amount
   is above 0; when blunt is 1 or more also `" + "`, `B` = blunt + stun and its own ` (-b)`. Numbers are truncated to integers.
 - **Placement**: the label follows the character, 15 units above its node. Colour (0.9, 0.9, 0.9) by default (**Verified**, `FUN_1406508d0` end). Two tests follow, the second winning (**Verified**: `FUN_1406508d0`'s 6th argument is the attacker, whose position the blood direction is taken from; the other character is the part's owner `+0xe0`): green (0.11, 0.6, 0.11) when the ATTACKER's faction is a player faction (`+0x250` set) or the active squad's memory holds the short-term tag TEMP ENEMY (bit 4) on the hit character (`FUN_140678830`, [squad memory](dialogue.md#squad-memory)); red (1, 0.31, 0.31) when the HIT character's faction is a player faction (`FUN_1407916d0`) or the memory holds TEMP ALLY (bit 3) on it. So a player's character is red, a blow by a player green, a TEMP ENEMY green, a TEMP ALLY red, else grey. The memory is `+0x98` of the object at `+0x1d8` of `FUN_1407f5520(DAT_142134690)` (the active squad, `PlayerState.Squad`); Meitou reads the active squad's `SquadMemory` when the hit lands (`CombatSystem.FloatHit`). The label is only made while the GUI global `DAT_142133ae0` is set and the target's data `+0x1a9` flag is set.
-- Wall (building) damage uses the same label with a plain `{1,num}` number, random scatter of +-20 units (`FUN_14029d2b0`).
+- Wall (building) damage uses the same label and placement with a plain `{1,num}` number (`FUN_14029d2b0`).
 - **Look and motion** (**Verified**, `ScreenLabel` update `FUN_1406ea9f0`, constants read from the binary): a plain MyGUI TextBox (template
   `Kenshi_TextboxStandardText`, so no shadow) on the `Dialog` layer, font from a table by the creator's 4th argument (0 `Kenshi_FloaterFont_Small`,
   1 `_Medium`, 2 `_Large`; `FUN_14157ff60`); a hit passes 1 when the option is Simple info, else 0. Its size is the text's plus 20 x the UI scale; its

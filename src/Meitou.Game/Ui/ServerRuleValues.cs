@@ -17,6 +17,9 @@ static class ServerRuleValues
     {
         if (label == "Fast speed") return session.TimeScales[1].ToString("0.##", CultureInfo.InvariantCulture);
         if (label == "Fastest speed") return session.TimeScales[2].ToString("0.##", CultureInfo.InvariantCulture);
+        if (label == "Max faction size") return session.CurrentSnapshot.MaxFactionSize.ToString(CultureInfo.InvariantCulture);
+        if (label == "Max squad size") return session.CurrentSnapshot.MaxSquadSize.ToString(CultureInfo.InvariantCulture);
+        if (label == "Max squads") return session.CurrentSnapshot.MaxSquads.ToString(CultureInfo.InvariantCulture);
         if (session.AuthorityRules is not { } rules) return null;
         foreach (var (skill, stat, _, _) in SkillXp.Skills)
         {
@@ -61,6 +64,9 @@ static class ServerRuleValues
             "Guards stop passing bodies" => rules.ArrestLiftFix,
             "Holes and needles in the ground" => rules.GroundRepair,
             "Bench facing" => rules.BenchFacingFix,
+            "Beds used as seats" => rules.SeatBedFix,
+            "Pick-up thefts from the owner" => rules.PickUpTheftFix,
+            "Guards give up lost suspects" => rules.ArrestLostFix,
             "Bags in the inventory" => rules.BagSearchFix,
             "Talk across shop counters" => rules.CounterTalk,
             "Turret fire is a crime" => rules.TurretAssault,

@@ -100,8 +100,8 @@ sealed class BuildingSelection(PlayerInterface player)
     /// </summary>
     internal SelectedBuilding SiteBuilding(Simulation.Construction.BuildingSnapshot site)
     {
-        var name = player.Build.SiteName(site);
-        var owner = player.FactionName?.Invoke(player.Session.ActiveFaction);
+        var name = player.Build.ShownSiteName(site);
+        var owner = player.ShownFactionName(site.Owner);
         var footprint = player.Build.Services?.Placement.Footprint(site.Record) ?? player.Build.Services?.Placement.Plot(site.Record);
         var rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, PlacementCheck.YawOf(site.Rotation));
         var hull = footprint is { } f ? f.Place(site.Position, rotation) : null;
@@ -198,7 +198,7 @@ sealed class BuildingSelection(PlayerInterface player)
         if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => IsSiteOf(s, hit.Id)) is { } site)
             return (SiteBuilding(site), hit.T);
 
-        var name = player.Build.Services?.ItemName(hit.Record) ?? hit.Record;
+        var name = player.Build.Services?.ShownName(hit.Record) ?? hit.Record;
         var owner = OwnerOf(hit.Owner, hit.Town);
         var town = TownOf(hit.House, hit.Position);
         string? machine = player.Build.Services?.Machine(hit.Record) is { Operable: true } ? hit.Id : null;
@@ -241,7 +241,7 @@ sealed class BuildingSelection(PlayerInterface player)
         var info = host.WorldInfo(hit.House);
         var (id, record) = (hit.Piece.Id, hit.Piece.RecordId);
         string? machine = host.Machine(record) is { Operable: true } ? id : null;
-        return (new SelectedBuilding(host.ItemName(record), null, info.Owner, info.Town, machine, id, hit.Piece.Position, null, Record: record), hit.T);
+        return (new SelectedBuilding(host.ShownName(record), null, info.Owner, info.Town, machine, id, hit.Piece.Position, null, Record: record), hit.T);
     }
 
     /// <summary>
@@ -262,7 +262,7 @@ sealed class BuildingSelection(PlayerInterface player)
         if (best is not { } hit) return null;
 
         var c = hit.Camp;
-        var name = c.Name.Length > 0 ? c.Name : host.ItemName(c.Record);
+        var name = c.Name.Length > 0 ? c.Name : host.ShownName(c.Record);
         return (new SelectedBuilding(name, null, OwnerOf(c.Owner, c.CampTown), null, null, c.Id, c.Position, null, Record: c.Record), hit.T);
     }
 
@@ -270,7 +270,7 @@ sealed class BuildingSelection(PlayerInterface player)
     /// The owner the name bar shows for <paramref name="faction"/> in <paramref name="town"/> (<see cref="PlayerInterface.OwnerName"/>).
     /// </summary>
     string? OwnerOf(int faction, Simulation.Locks.FixtureTown town) =>
-        player.OwnerName is { } shown ? shown(faction, town) : player.FactionName?.Invoke(faction);
+        player.OwnerName is { } shown ? shown(faction, town) : player.ShownFactionName(faction);
 
     /// <summary>
     /// Where the ray meets the camp building <paramref name="camp"/> before <paramref name="ground"/>; null when it misses, it is a bed, or a
@@ -385,7 +385,7 @@ sealed class BuildingSelection(PlayerInterface player)
     /// </summary>
     bool SiteShownInside((Vector3 Origin, Vector3 Direction) ray, Simulation.Navigation.PlacedBuilding level,
         (Simulation.Construction.BuildingSnapshot Site, float T) site) =>
-        !level.Plot && !player.Hidden(ray, site.T) && player.Furniture.AboveViewedFloor?.Invoke(site.Site.Position) != true
+        !level.Plot && !player.Hidden(ray, site.T) && !player.Furniture.SiteAboveViewedFloor(site.Site)
         && level.Footprint.Gap(level.Placement.Position, level.Placement.Rotation, new Vector2(site.Site.Position.X, site.Site.Position.Z)) == 0;
 
     #endregion
@@ -444,7 +444,8 @@ sealed class BuildingSelection(PlayerInterface player)
         }
 
         AddPublicLines(focus, site, detail, mine, playerSite, stats);
-        var header = HeaderLine(focus, detail, mine, owner, inspected);
+        if (playerSite && site is { Complete: true }) AddPriorityLines(focus, stats);
+        var header = HeaderLine(focus, site, detail, mine, owner, inspected);
         return (header, [.. state], [.. stats], status, bad, [.. extended]);
     }
 
@@ -458,19 +459,22 @@ sealed class BuildingSelection(PlayerInterface player)
         if (focus.Type is { Length: > 0 } type) state.Add(new("Type:", type));
         var inspected = player.Session.CurrentSnapshot.InspectedRichness is { } ir && ir.Instance == focus.Instance
             ? ir : (Simulation.Production.RichnessView?)null;
-        if ((focus.Town ?? site?.TownName ?? detail?.Bed?.Town ?? inspected?.TownName) is { Length: > 0 } town) state.Add(new("Town:", town));
+
+        if ((focus.Town ?? SiteTown(site) ?? detail?.Bed?.Town ?? inspected?.TownName) is { Length: > 0 } town) state.Add(new("Town:", town));
         Useable.AddEmptyLine(focus, site?.Record ?? focus.Record, detail, state);
         Useable.AddStateLine(site?.Record ?? focus.Record, state);
         if (own && player.Session.CurrentSnapshot.InspectedTurret is { } turret && turret.Instance == focus.Instance)
             AddHeightLines(turret, state);
 
-        // A skeleton bed's section 6 is the machine lines, not the Healing bonus (UseableStuff slot 40 FUN_140304e90 shows it for BF_BED alone).
-        if (detail?.Bed is { } bed && !Useable.IsSkeletonBed(site?.Record ?? focus.Record))
+        if (detail?.Bed is { } bed)
         {
-            if (bed.Cost != 0)
+            // UseableStuff slot 40 (FUN_140304e90) section 3: any bed or skeleton bed of a faction not the player's, a free one included.
+            if (!detail.Owned)
                 state.Add(new("Cost to use:", bed.Cost < 0 ? Loc.Tr("Private") : $"({Loc.Tr("Pay c.{1,num}", bed.Cost)})"));
 
-            stats.Add(new("Healing bonus:", Loc.Tr("x{1,num}", bed.HealingBonus), PlayerInterface.MainColour));
+            // A skeleton bed's section 6 is the machine lines, not the Healing bonus (section 6 shows it for BF_BED alone).
+            if (!Useable.IsSkeletonBed(site?.Record ?? focus.Record))
+                stats.Add(new("Healing bonus:", Loc.Tr("x{1,num}", bed.HealingBonus), PlayerInterface.MainColour));
         }
 
         if (playerSite && site is { LevelPlacement: null }) AddUpgradeLines(site, state);
@@ -479,6 +483,18 @@ sealed class BuildingSelection(PlayerInterface player)
         // captioned [PAUSED] in #777777 while paused.
         if (playerSite && site is { LevelPlacement: null }) AddConstructionButtons(site, state);
         return inspected;
+    }
+
+    /// <summary>
+    /// The town <paramref name="site"/> stands in, as shown (null when it names none). The site's town is the game's text in its snapshot (rebuilt
+    /// every tick while anything is built), so it is shown here; the other town names are shown text already.
+    /// </summary>
+    string? SiteTown(Simulation.Construction.BuildingSnapshot? site)
+    {
+        if (site?.TownName is not { } named) return null;
+        if (site.TownRecord is { } townRecord) return ShownText.Record(townRecord, named);
+
+        return player.ShownName("outpost", Simulation.Construction.PlayerTown.Template, named);
     }
 
     /// <summary>
@@ -584,25 +600,88 @@ sealed class BuildingSelection(PlayerInterface player)
     }
 
     /// <summary>
+    /// A complete storage of the player's: its Put priority and Take priority buttons (<see cref="Simulation.Items.StoragePriority"/>), a click
+    /// raising the level, Shift+click lowering it (each wraps). Meitou's setting, not in the original.
+    /// </summary>
+    void AddPriorityLines(SelectedBuilding focus, List<PlayerInterface.HudLine> stats)
+    {
+        if (player.Production.Machine(focus.SiteId) is not { IsStorage: true, HasStorage: true } storage) return;
+
+        stats.Add(PriorityLine(Loc.Tr("Put priority:"), storage.PutPriority, PutTip, "meitou:building-put-priority"));
+        stats.Add(PriorityLine(Loc.Tr("Take priority:"), storage.TakePriority, TakeTip, "meitou:building-take-priority"));
+    }
+
+    /// <summary>
+    /// The Put priority button's tooltip.
+    /// </summary>
+    static string PutTip => Loc.Tr("Haulers and workers put things into the storage of the highest put priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower.");
+
+    /// <summary>
+    /// The Take priority button's tooltip.
+    /// </summary>
+    static string TakeTip => Loc.Tr("Workers and builders take things from the storage of the highest take priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower.");
+
+    /// <summary>
+    /// One priority button line: the level's name, coloured bad for Forbidden, good above Normal.
+    /// </summary>
+    static PlayerInterface.HudLine PriorityLine(string label, Simulation.Items.StoragePriority level, string tip, string action)
+    {
+        var colour = level switch
+        {
+            Simulation.Items.StoragePriority.Forbidden => PlayerInterface.BadBrightColour,
+            > Simulation.Items.StoragePriority.Normal => PlayerInterface.GoodColour,
+            _ => PlayerInterface.MainColour,
+        };
+        return new(label, PriorityName(level), PlayerInterface.MainColour, colour, tip, action, ButtonWidth: 0.4f);
+    }
+
+    /// <summary>
+    /// A storage priority's name on its button.
+    /// </summary>
+    static string PriorityName(Simulation.Items.StoragePriority level) => level switch
+    {
+        Simulation.Items.StoragePriority.Forbidden => Loc.Tr("Forbidden"),
+        Simulation.Items.StoragePriority.Low => Loc.Tr("Low"),
+        Simulation.Items.StoragePriority.Deferred => Loc.Tr("Deferred"),
+        Simulation.Items.StoragePriority.Preferred => Loc.Tr("Preferred"),
+        Simulation.Items.StoragePriority.Important => Loc.Tr("Important"),
+        Simulation.Items.StoragePriority.High => Loc.Tr("High"),
+        Simulation.Items.StoragePriority.Critical => Loc.Tr("Critical"),
+        _ => Loc.Tr("Normal"),
+    };
+
+    /// <summary>
+    /// The level after <paramref name="level"/>: one up, or one down when <paramref name="down"/>, wrapping round the ends.
+    /// </summary>
+    static Simulation.Items.StoragePriority NextPriority(Simulation.Items.StoragePriority level, bool down)
+    {
+        const int first = (int)Simulation.Items.StoragePriority.Forbidden;
+        const int count = Simulation.Items.StoragePriority.Critical - Simulation.Items.StoragePriority.Forbidden + 1;
+        int step = down ? count - 1 : 1;
+        return (Simulation.Items.StoragePriority)(((int)level - first + step) % count + first);
+    }
+
+    /// <summary>
     /// The name bar: the building's (or bed's) name and its owner, the player's faction for the player's own building; a town machine's, its level
     /// building's (<see cref="WorldBuildingInfo.Owner"/>).
     /// </summary>
-    PlayerInterface.HudLine HeaderLine(SelectedBuilding focus, Simulation.Locks.BuildingDetail? detail, bool mine, int? authoritativeOwner,
-        Simulation.Production.RichnessView? inspected)
+    PlayerInterface.HudLine HeaderLine(SelectedBuilding focus, Simulation.Construction.BuildingSnapshot? site,
+        Simulation.Locks.BuildingDetail? detail, bool mine, int? authoritativeOwner, Simulation.Production.RichnessView? inspected)
     {
         // A rock (slot 113): the player's faction once a player character has worked it, else its owner nofac's name ("No Faction"; its town
         // NO_TOWN is explored, not secret).
         string? owner = focus.Owner;
-        if (authoritativeOwner is int faction && faction >= 0) owner = player.FactionName?.Invoke(faction);
+        if (authoritativeOwner is int faction && faction >= 0) owner = player.ShownFactionName(faction);
         else if (focus.SiteId is { } id && Simulation.Production.ProductionSystem.IsNatural(id))
         {
-            owner = inspected is { Owner: >= 0 and var by } ? player.FactionName?.Invoke(by)
+            owner = inspected is { Owner: >= 0 and var by } ? player.ShownFactionName(by)
                 : player.RecordName?.Invoke(Simulation.Factions.SquadManagement.DismissFallbackFaction);
         }
 
-        var name = detail?.Bed?.Name ?? focus.Name;
+        // Read the current site every frame so its displayed rename follows the authority snapshot.
+        var name = detail?.Bed?.Name ?? (site is not null ? player.Build.ShownSiteName(site) : focus.Name);
         var value = authoritativeOwner is not null ? owner ?? ""
-            : mine ? player.FactionName?.Invoke(player.Session.ActiveFaction) ?? "" : owner ?? "";
+            : mine ? player.ShownFactionName(player.Session.ActiveFaction) ?? "" : owner ?? "";
         return new PlayerInterface.HudLine(name, value, PlayerInterface.TitleColour, PlayerInterface.TitleColour);
     }
 
@@ -618,12 +697,18 @@ sealed class BuildingSelection(PlayerInterface player)
     }
 
     /// <summary>
-    /// The construction buttons of a player's site without a level placement: Dismantle, and while unfinished PAUSE CONSTRUCTION
+    /// The Rename button's tooltip.
+    /// </summary>
+    static string RenameTip => Loc.Tr("Give the building a name of your own, shown on its panel, its inventory and the jobs that use it.");
+
+    /// <summary>
+    /// The construction buttons of a player's site without a level placement: Dismantle, Rename (Meitou), and while unfinished PAUSE CONSTRUCTION
     /// (or its [PAUSED] caption).
     /// </summary>
     static void AddConstructionButtons(Simulation.Construction.BuildingSnapshot site, List<PlayerInterface.HudLine> state)
     {
         state.Add(new("", Loc.Tr("Dismantle"), ValueColour: PlayerInterface.BadBrightColour, Action: "meitou:building-dismantle"));
+        state.Add(new("", Loc.Tr("Rename"), ValueColour: PlayerInterface.MainColour, Tooltip: RenameTip, Action: "meitou:building-rename"));
         if (site.Complete) return;
 
         state.Add(site.Paused
@@ -653,9 +738,11 @@ sealed class BuildingSelection(PlayerInterface player)
     }
 
     /// <summary>
-    /// The upgrade chain of a BUILDING record and its build data (the panel's [UPGRADE] / [DOWNGRADE] and their tooltips); the host sets them.
+    /// The upgrade chain of a BUILDING record and its build data (the panel's [UPGRADE] / [DOWNGRADE] and their tooltips); the host sets them. This
+    /// one is the record's upgrade given the unlocked buildings, a wall piece's by its wall master's research
+    /// (<see cref="Simulation.Construction.BuildingUpgrades.UnlockedUpgradeOf"/>; record, whether it is a WallBuilding, the unlocked set).
     /// </summary>
-    public Func<string, string?>? UpgradeOf { get; set; }
+    public Func<string, bool, IReadOnlySet<string>, string?>? UnlockedUpgradeOf { get; set; }
     /// <summary>
     /// The BUILDING record that upgrades to this one; null when none does (the host sets it).
     /// </summary>
@@ -675,41 +762,75 @@ sealed class BuildingSelection(PlayerInterface player)
     /// The upgrade lines of a site of the player's (Building slot 116, docs/game/ui-screens.md "Selected building"): <c>[UPGRADE]</c> in Good when
     /// its record upgrades to a BUILDING research has unlocked, <c>[DOWNGRADE]</c> in Main while it is unfinished and some BUILDING upgrades to it.
     /// Each button's tooltip names the record it becomes; the upgrade's also lists the materials still owed (the new record's, less what is delivered
-    /// of each item) and the power output's change. Engine scope as the simulation's: no walls.
+    /// of each item) and the power output's change. A wall has its own line (<see cref="AddWallUpgradeLine"/>).
     /// </summary>
     void AddUpgradeLines(Simulation.Construction.BuildingSnapshot site, List<PlayerInterface.HudLine> state)
     {
-        var snapshot = player.Session.CurrentSnapshot;
-        if (site.WallParent is not null || DataOf(site.Record) is not ({ LinksTogether: false } or { IsWallGate: true })) return;
-        if (UpgradeOf?.Invoke(site.Record) is { } up && snapshot.UnlockedBuildings.Contains(up) && DataOf(up) is { } higher)
+        if (DataOf(site.Record) is { LinksTogether: true, IsWallGate: false })
         {
-            var had = new Dictionary<string, float>(StringComparer.Ordinal);
-            foreach (var m in site.Materials) had[m.Item] = had.GetValueOrDefault(m.Item) + m.Delivered;
-            var tip = new StringBuilder($"{Loc.Tr("Upgrades To:")} {higher.Name}");
-            foreach (var cost in higher.Materials)
-            {
-                float delivered = Math.Min(had.GetValueOrDefault(cost.Item), cost.Required);
-                had[cost.Item] = had.GetValueOrDefault(cost.Item) - delivered;
-                if (cost.Required - delivered > 0)
-                {
-                    var itemName = player.Build.Services?.ItemName(cost.Item) ?? cost.Item;
-                    var owed = (cost.Required - delivered).ToString("0.##", CultureInfo.InvariantCulture);
-                    tip.Append(CultureInfo.InvariantCulture, $"\n      {itemName} +{owed}");
-                }
-            }
+            AddWallUpgradeLine(site, state);
+            return;
+        }
 
+        var snapshot = player.Session.CurrentSnapshot;
+        if (UnlockedUpgradeOf?.Invoke(site.Record, false, snapshot.UnlockedBuildings) is { } up && DataOf(up) is { } higher)
+        {
+            var tip = new StringBuilder($"{Loc.Tr("Upgrades To:")} {ShownText.Record(higher.Id, higher.Name)}");
+            AppendOwed(tip, higher, site.Materials);
             if (PowerOutput?.Invoke(up) - PowerOutput?.Invoke(site.Record) is { } power and not 0)
                 tip.Append(CultureInfo.InvariantCulture, $"\n{Loc.Tr("Power")} {power}");
 
-            var upgradeCaption = $"[{Loc.Tr("Upgrade").ToUpper(CultureInfo.CurrentCulture)}]";
-            state.Add(new("", upgradeCaption, ValueColour: PlayerInterface.GoodColour, Tooltip: tip.ToString(), Action: "meitou:building-upgrade"));
+            state.Add(new("", UpgradeCaption(), ValueColour: PlayerInterface.GoodColour, Tooltip: tip.ToString(), Action: "meitou:building-upgrade"));
         }
 
         if (!site.Complete && DowngradeOf?.Invoke(site.Record) is { } down && DataOf(down) is { } lower)
         {
             var downgradeCaption = $"[{Loc.Tr("Downgrade").ToUpper(CultureInfo.CurrentCulture)}]";
-            state.Add(new("", downgradeCaption, ValueColour: PlayerInterface.MainColour, Tooltip: $"{Loc.Tr("Downgrade To:")} {lower.Name}",
-                Action: "meitou:building-downgrade"));
+            state.Add(new("", downgradeCaption, ValueColour: PlayerInterface.MainColour,
+                Tooltip: $"{Loc.Tr("Downgrade To:")} {ShownText.Record(lower.Id, lower.Name)}", Action: "meitou:building-downgrade"));
+        }
+    }
+
+    /// <summary>
+    /// A wall's upgrade line (<b>Verified</b>, WallBuilding slot 116 <c>FUN_1402ff760</c>): with an upgrade target, <c>Upgradeable to:</c> and the
+    /// Good <c>[UPGRADE]</c> button, whose tooltip names the target and the materials still owed against the construction state, which an attached
+    /// piece shares with its wall; no power row and no downgrade. The click upgrades the piece's wall, the wall's pieces with it (the simulation's
+    /// <c>UpgradeSite</c>).
+    /// </summary>
+    void AddWallUpgradeLine(Simulation.Construction.BuildingSnapshot site, List<PlayerInterface.HudLine> state)
+    {
+        var snapshot = player.Session.CurrentSnapshot;
+        if (UnlockedUpgradeOf?.Invoke(site.Record, true, snapshot.UnlockedBuildings) is not { } up || DataOf(up) is not { } higher) return;
+
+        var wall = site.WallParent is { } parent ? snapshot.Buildings.FirstOrDefault(s => s.Id == parent) ?? site : site;
+        var tip = new StringBuilder($"{Loc.Tr("Upgrades To:")} {ShownText.Record(higher.Id, higher.Name)}");
+        AppendOwed(tip, higher, wall.Materials);
+        state.Add(new("Upgradeable to:", UpgradeCaption(), ValueColour: PlayerInterface.GoodColour, Tooltip: tip.ToString(),
+            Action: "meitou:building-upgrade"));
+    }
+
+    /// <summary>
+    /// The upgrade button's caption: "[" + the uppercased translation of "Upgrade" + "]".
+    /// </summary>
+    static string UpgradeCaption() => $"[{Loc.Tr("Upgrade").ToUpper(CultureInfo.CurrentCulture)}]";
+
+    /// <summary>
+    /// Appends a row per material of <paramref name="higher"/> still owed (its required less what <paramref name="materials"/> delivered of the item,
+    /// > 0): six spaces, the item's name, <c>+</c> the amount.
+    /// </summary>
+    void AppendOwed(StringBuilder tip, Data.Gameplay.Construction.BuildingBuildData higher, IEnumerable<Simulation.Construction.MaterialView> materials)
+    {
+        var had = new Dictionary<string, float>(StringComparer.Ordinal);
+        foreach (var m in materials) had[m.Item] = had.GetValueOrDefault(m.Item) + m.Delivered;
+        foreach (var cost in higher.Materials)
+        {
+            float delivered = Math.Min(had.GetValueOrDefault(cost.Item), cost.Required);
+            had[cost.Item] = had.GetValueOrDefault(cost.Item) - delivered;
+            if (cost.Required - delivered <= 0) continue;
+
+            var itemName = player.Build.Services?.ShownName(cost.Item) ?? cost.Item;
+            var owed = (cost.Required - delivered).ToString("0.##", CultureInfo.InvariantCulture);
+            tip.Append(CultureInfo.InvariantCulture, $"\n      {itemName} +{owed}");
         }
     }
 
@@ -796,20 +917,17 @@ sealed class BuildingSelection(PlayerInterface player)
 
     /// <summary>
     /// The medical panel's rows of a selected building (its section 4, docs/game/ui-screens.md "Selected building"): the first door's <c>Door
-    /// Condition</c>, then <c>Building Condition</c> (<c>Condition</c> without doors), each the construction progress as the number and its fraction
-    /// of the target as the bar, then while unfinished a row per material, delivered over required. Meitou models no building damage, so a finished
-    /// building's progress is its target (the original's damaged state lowers it). A complete farm adds its crop bars after Condition.
+    /// Condition</c> (<see cref="DoorConditionRow"/>), then <c>Building Condition</c> (<c>Condition</c> without doors), the construction progress as
+    /// the number and its fraction of the target as the bar, then while unfinished a row per material, delivered over required. Meitou models no
+    /// building damage, so a finished building's progress is its target (the original's damaged state lowers it). A complete farm adds its crop bars
+    /// after Condition, then a complete building the mods' bars (<see cref="BuildingModButtons.Rows"/>).
     /// </summary>
     internal List<PlayerInterface.MedicalRow> BuildingRows(SelectedBuilding focus)
     {
         var rows = new List<PlayerInterface.MedicalRow>();
         // A rock has no site in the registry: its Condition is its record's target, complete (an Iron Resource's build materials 2).
         var door = FirstDoor(focus);
-        if (door is { Record.Length: > 0 } && BuildTarget?.Invoke(door.Value.Record) is { } doorTarget)
-        {
-            var doorValue = ((int)doorTarget).ToString(CultureInfo.InvariantCulture);
-            rows.Add(Bar(Loc.Tr("Door Condition"), 1, doorValue, "The door is in good condition."));
-        }
+        if (door is { Record.Length: > 0 } d && BuildTarget?.Invoke(d.Record) is { } doorTarget) rows.Add(DoorConditionRow(d, doorTarget));
 
         var site = player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == focus.Instance);
         float? target = site?.Target ?? (focus.Record is { } record ? BuildTarget?.Invoke(record) : null);
@@ -823,6 +941,7 @@ sealed class BuildingSelection(PlayerInterface player)
         rows.Add(Bar(Loc.Tr(door is null ? "Condition" : "Building Condition"), fraction, progressValue, tip));
 
         if (complete && PanelMachine(focus)?.Farm is { } farm) FarmPanel.AddRows(farm, rows);
+        if (complete) rows.AddRange(ModButtons.Rows(focus));
 
         // A wind generator's rows (WindGeneratorBuilding::getGUIPower section 4): Wind, its share as a whole percent and the bar; Power Output,
         // the output as an int over the rated.
@@ -857,7 +976,7 @@ sealed class BuildingSelection(PlayerInterface player)
                 string need = m.Delivered >= m.Required ? Loc.Tr("All necessary materials are ready.")
                     : Loc.Tr("{1} more 'Building Materials' will be needed to complete this construction.",
                         (m.Required - m.Delivered).ToString("0.##", CultureInfo.InvariantCulture));
-                var itemName = player.Build.Services?.ItemName(m.Item) ?? m.Item;
+                var itemName = player.Build.Services?.ShownName(m.Item) ?? m.Item;
                 rows.Add(Bar(itemName, share, $"{(int)m.Delivered}/{(int)m.Required}", need));
             }
         }
@@ -868,6 +987,21 @@ sealed class BuildingSelection(PlayerInterface player)
         // house shows it.
         static PlayerInterface.MedicalRow Bar(string name, float fraction, string value, string tooltip) =>
             new(name, 0, fraction, 0, value, "", false, Loc.Tr(tooltip));
+    }
+
+    /// <summary>
+    /// The first door's <c>Door Condition</c> row (DoorStuff <c>FUN_140304120</c> section 4, <b>Verified</b>): its progress in material units as
+    /// the number and over its target as the bar (at most 1); at 0 or more "The door is in good condition.", below (the breaking blow's excess)
+    /// the number in Title and "The door is damaged.".
+    /// </summary>
+    static PlayerInterface.MedicalRow DoorConditionRow(Simulation.Locks.DoorDetail door, float target)
+    {
+        float progress = door.Progress * target;
+        var value = ((int)progress).ToString(CultureInfo.InvariantCulture);
+        float fraction = Math.Clamp(door.Progress, 0, 1);
+        return progress >= 0
+            ? new(Loc.Tr("Door Condition"), 0, fraction, 0, value, "", false, Loc.Tr("The door is in good condition."))
+            : new(Loc.Tr("Door Condition"), 0, fraction, 0, TooltipRuntime.TitleTag + value, "", false, Loc.Tr("The door is damaged."));
     }
 
     /// <summary>
@@ -943,13 +1077,14 @@ sealed class BuildingSelection(PlayerInterface player)
     /// </summary>
     void SiteAction(string id, string action)
     {
-        if (action is "machine-power" or "machine-battery" or "machine-incinerate")
+        if (action is "machine-power" or "machine-battery" or "machine-incinerate" or "building-put-priority" or "building-take-priority")
         {
             MachineAction(id, action);
             return;
         }
 
-        if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == id) is not { } site) return;
+        if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == id) is not { } site
+            || site.Owner != player.Session.ActiveFaction) return;
         if (action == "building-upgrade") player.Say(new Simulation.Construction.UpgradeSite(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
         else if (action == "building-downgrade") player.Say(new Simulation.Construction.DowngradeSite(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
         else if (action == "building-public")
@@ -958,7 +1093,12 @@ sealed class BuildingSelection(PlayerInterface player)
             player.Say(new Simulation.Construction.SetBuildingPublic(id, !site.Public) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
         }
 
-        if (action == "building-dismantle" && site.LevelPlacement is null)
+        if (action == "building-rename" && site is { LevelPlacement: null })
+        {
+            player.InterfaceSounds.Sound("General_Click");
+            player.RenameBuildingDialog.Ask(id, site.CustomName ?? player.Build.ShownSiteName(site));
+        }
+        else if (action == "building-dismantle" && site.LevelPlacement is null)
         {
             // Slot 84 (FUN_14054db30): with furniture in it the furniture warning, else "Are you sure?"; Yes dismantles it at once
             // (Building::confirmDismantle).
@@ -993,6 +1133,34 @@ sealed class BuildingSelection(PlayerInterface player)
             player.InterfaceSounds.Sound("General_Click");   // engine choice: the button's own sound is not traced
             player.Say(new Simulation.Production.IncinerateFurnace(id) { ControlRevision = furnace.ControlRevision, Tick = player.Session.CommandTick });
         }
+        else if (action is "building-put-priority" or "building-take-priority"
+            && player.Production.Machine(id) is { IsStorage: true } storage)
+            SetPriority(id, storage, action == "building-put-priority", player.SlowModifier);
+    }
+
+    /// <summary>
+    /// A right press on the HUD control <paramref name="action"/> names: a storage's Put or Take priority button goes one level down (a left
+    /// click raises it). False for any other control.
+    /// </summary>
+    internal bool PriorityRightClick(string action)
+    {
+        if (action.StartsWith("meitou:", StringComparison.Ordinal)) action = action["meitou:".Length..];
+        if (action is not ("building-put-priority" or "building-take-priority")) return false;
+        if (BuildingFocus()?.SiteId is not { } id || player.Production.Machine(id) is not { IsStorage: true } storage) return false;
+
+        SetPriority(id, storage, action == "building-put-priority", down: true);
+        return true;
+    }
+
+    /// <summary>
+    /// A press of a storage's Put or Take priority button: the next level up, or down (<paramref name="down"/>), with the click sound.
+    /// </summary>
+    void SetPriority(string id, Simulation.Production.MachineSnapshot storage, bool put, bool down)
+    {
+        var use = put ? Simulation.Items.StorageUse.Put : Simulation.Items.StorageUse.Take;
+        var level = NextPriority(put ? storage.PutPriority : storage.TakePriority, down);
+        player.InterfaceSounds.Sound("General_Click");
+        player.Say(new Simulation.Production.SetStoragePriority(id, use, level) { ControlRevision = storage.ControlRevision, Tick = player.Session.CommandTick });
     }
 
     #endregion

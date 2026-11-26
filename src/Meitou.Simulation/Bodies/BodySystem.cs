@@ -320,7 +320,10 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
             BloodTrail(world, i, cold, medical.Bleeding, race, in n);
         events ??= [];
         events.Clear();
+        HealthObservers.Before(world, i);
+        world.PartMaxFilters.Apply(world, i, medical);
         medical.Tick(dt, ctx, events);
+        HealthObservers.After(world, i, HealthChangeKind.Body);
         cold.SwimSpeed = Speed.Swim(race, stats, medical, encumbrance);
         float now = TopSpeedNow(world, i, cold, race, stats, medical, encumbrance);
         cold.TopSpeedNow = now;
@@ -424,6 +427,8 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
             BudgetSeconds = cold.MedicalBudgetSeconds,
             PauseHunger = world.HungerActivity.IsPaused(i, cold),
             HungerSeconds = world.HungerActivity.ElapsedSeconds(world, i, cold, dt),
+            Needs = world.NeedRateFilters.Active ? world : null,
+            NeedsOf = world.Characters.IdOf(i),
         };
     }
 
@@ -555,7 +560,8 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         float runValue = Speed.RunValue(race, stats);
         float toughness = XpService.ToughnessFactor(medical);
         bool rest = ctx.Resting || medical.Unconscious || medical.Dead;
-        float hunger = race.HungerRate * MedicalState.HungerSituationFactor(Constants, rest, ctx.Still, ctx.Idle, encumbrance, ctx.UseHungerRate);
+        float hunger = NeedRateFilters.Hunger(ctx,
+            race.HungerRate * MedicalState.HungerSituationFactor(Constants, rest, ctx.Still, ctx.Idle, encumbrance, ctx.UseHungerRate));
         if (ctx.PauseHunger) hunger = 0;
         return new ExtendedStats(XpService.AthleticsRate(encumbrance, speed, runValue), _xp.StrengthCarryRate(encumbrance, carrying), toughness,
             MedicalState.KoPoint(Constants, stats.ScaledToughness), speed, runValue, hunger, rest, WorkHungerRate: ctx.UseHungerRate, Idle: ctx.Idle);
@@ -762,6 +768,8 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
                     continue;
                 }
                 var corpse = new CharacterId(i, table.Next[i].Generation);
+                if (world.RemovalVetoes.Keeps(world, corpse, unloaded ? RemovalKind.CorpseUnloaded : RemovalKind.CorpseDecayed)) continue;
+
                 world.Uniques.Left(corpse);
                 table.Remove(corpse);
             }

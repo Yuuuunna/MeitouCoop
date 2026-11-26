@@ -105,6 +105,15 @@ internal static class PresentationEventValidation
         if (value.Posted is { } sound)
         {
             if (string.IsNullOrEmpty(sound.Event) || !SoundNameFits(sound.Event)) return "invalid-sound-event-name";
+            if (sound.Volume is not (>= 0 and <= 4)) return "invalid-sound-volume";
+            if (sound.FadeSeconds is not (>= 0 and <= SoundHandle.MaxFadeSeconds) || !sound.Stop && sound.FadeSeconds != 0)
+                return "invalid-sound-fade";
+            if (sound.Stop && (sound.PlaybackId == 0 || value.Kind != SoundKind.PostedInterface || !value.Subject.IsNone
+                || !value.Other.IsNone || value.Position != Vector3.Zero || sound.Event != "stop" || sound.ModId is not null
+                || sound.SwitchGroup is not null || sound.SwitchValue is not null)) return "invalid-sound-stop";
+            if (sound.ModId is { } mod && (string.IsNullOrWhiteSpace(mod) || mod.Length > 256 || !PostedSound.ValidRelativeFile(sound.Event)))
+                return "invalid-mod-sound-path";
+            if (sound.Loose && sound.ModId is null) return "absolute-shared-sound-path";
             if ((sound.SwitchGroup is null) != (sound.SwitchValue is null)) return "incomplete-sound-switch";
             if (sound.SwitchGroup is { } group && (group.Length == 0 || !SoundNameFits(group))) return "invalid-sound-switch-group";
             if (sound.SwitchValue is { } item && (item.Length == 0 || !SoundNameFits(item))) return "invalid-sound-switch-value";

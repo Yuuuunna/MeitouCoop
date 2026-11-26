@@ -61,8 +61,9 @@ public static class SiteReach
     public static float HeightLimit(bool door, bool inBuilding) => door ? 130 : inBuilding ? 15 : 45;
 
     /// <summary>
-    /// Whether the worker is at the site's height: Meitou has no floor id, so a height difference below <see cref="HeightLimit"/> stands for "the
-    /// same floor, or close enough" (the original passes the same floor whatever the difference).
+    /// Whether the worker is at the site's height: a height difference below <see cref="HeightLimit"/> stands for "the same floor, or close enough"
+    /// where Meitou knows no floor (the original passes the same floor whatever the difference; builders pass outdoors first,
+    /// <c>ConstructionSystem.OnSiteFloor</c>).
     /// </summary>
     public static bool AtHeight(in CharacterHot n, BuildSite site, bool door) => AtHeight(n, site, site.Position.Y, door);
 
@@ -151,7 +152,7 @@ public static class SiteReach
     /// Whether a worker can stand at X/Z on the surface itself (not grazing the edge of a hole beside it) within <paramref name="heightLimit"/> of
     /// the floor at <paramref name="floorY"/>; <paramref name="y"/> is that surface's height.
     /// </summary>
-    static bool OnFloor(IWalkability walk, float x, float z, float floorY, float heightLimit, out float y)
+    internal static bool OnFloor(IWalkability walk, float x, float z, float floorY, float heightLimit, out float y)
     {
         y = walk.GroundHeight(x, z, floorY);
         return walk.IsOnSurface(x, z, floorY) && MathF.Abs(y - floorY) < heightLimit;

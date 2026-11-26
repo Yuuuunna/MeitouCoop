@@ -301,6 +301,13 @@ skill x 0.8 when treating oneself and q = min(skill, kit quality):
   as with a kit once the room left is under `Done` (healing turns bandage into flesh, so float dust otherwise reopened a sliver every update and a guard treated a fully
   bandaged prisoner for ever: **Observed**, Rebirth Slave Shop prisoner, original save); chained
   slaves are not modelled.
+- **Letting a friend out** (**Verified**, decompile of `FUN_1403563a0`, `FUN_14033c5a0`, `FUN_140330600`, `FUN_1407923d0`; vtable of `Task_FirstAid` at
+  `1416bfa38` read from `kenshi_x64.exe`): the treatment step (slot +0x30 `FUN_14033c5a0`) reports done on the second update since the task's start (flag `+0x78`, cleared only by
+  the start `FUN_14034ecf0`) on which no wound is open (`FUN_14064d800` 1) and the bandaging pass leaves no part short of full (`FUN_140649a00` 1). Then the update ends the task and, when the patient is not the medic, the medic's faction has no player flag (`+0x250`), the
+  patient is imprisoned (`+0x2f8` 2, a cage or a restraint) whose held building (`+0x300`) resolves and the medic regards it as friendly with the disguise read
+  (slot 126 `FUN_1407923d0` with 1), clears the hold (`FUN_140330600` with 0): the patient stands at the exit spot; the lock, escaped flag, slave state and
+  crimes are not touched. Then the medic fires event 20 at the patient and the patient fires 21 back only when no longer imprisoned. Meitou:
+  `FirstAidSystem.Finish` (on the first such update), `FixtureRegistry.LetOut`.
 - **Skill.** `Task_FirstAid` (`FUN_1403563a0`) runs a first aid kit phase, then (no organic part left, or no first aid kit found) a
   robot repair kit phase; the skill is CharStats +0x98 (`medic`) in the first, +0xdc (`robotics`) in the second, and the trained stat 9
   or 6 likewise; the race's `heal stat` is not read here. The task reads the raw field, no injury/hunger stat multiplier (**Verified**,
@@ -324,7 +331,7 @@ the HUD's yellow layer shows the treated damage awaiting passive recovery.
 **Observed** (play, 2026-10-21): a first-aid order (self included) given to a character without a medkit is refused before
 any movement or animation, with the bubble "I don't have a medkit." Whether a squad mate's kit nearby or a robot repair kit
 avoids the refusal: the kit search ([below](#first-aid-update)) reads only the medic's own inventory and backpack, so a squad
-mate's kit should not (**Observed**: the same vtable slot). Meitou's first-aid `FindKit` takes the medic's own kit by this search (`OwnKit`), and still accepts a mate's within `KitReach`, found by the same rule (engine choice).
+mate's kit should not (**Observed**: the same vtable slot). Meitou: the order's check (`FirstAidSystem.CanRun`) and the running treatment (`KitOf`) use this search alone (`OwnKit`), so a medic whose kit runs out stops with the empty-kit line even when the patient or a mate carries one (#1407).
 
 **Verified** carried person adds CONSTANTS weight30, independent of body/race/inventory.
 **Verified** in game (1.0.65, scripted harness, issue #45; strength -20..45, W 15/16.4/46.4 kg, torso wounds, hunger):
@@ -416,18 +423,14 @@ Stats are `float`s inside `CharStats`. The number is what RACE `heal stat`, `sta
 
 ### Levelling (XP)
 
-**Observed** (local `XpService.Combat` contract): a hit taken while unarmed trains `dodge` instead of `defence`, using the stored Dodge level
-and the race's Dodge XP multiplier; the event coefficient remains 2. Armed hits still train `defence`; successful dodges keep their separate
-`CombatSystem.ApplyBlow` reward. **Unknown**: whether this local rule matches original-game unarmed behaviour; the original-game evidence
-below records the event 4 write to `defence` at CharStats +0x124.
-This is a Coop-local bug patch: when upstream supersedes this logic, remove the local override and adopt the upstream implementation
-and corresponding test expectations.
+The earlier Coop-only unarmed-hit override is removed. Upstream's verified `XpService.Dodge` path now owns this gain: a kind-5 fighter's hit uses k 0.8, and choosing a dodge technique uses k 0.4 at defence start. A successfully dodged impact itself adds no second dodge reward. The existing defensive-XP fixtures follow these upstream coefficients while retaining their skill, race-factor and other-stat assertions.
 
 | Activity | Function | Effect (**Observed**) |
 | --- | --- | --- |
 | Hit landed (events 0 and 1) | `FUN_1408c6980` | **Verified** (decompile): `attack` (or `unarmed` when the stat-set kind at +0x1f0 is 5, still with the race's `map[2]`) gets 0.075 x skill-diff(own attack vs opponent defence) x `map[2]`; the current weapon skill (not for unarmed) gets 0.075 x skill-diff(skill x `map[20]` vs opponent defence), with no race factor in the gain; `dexterity` gets 0.075 x the attack's skill-diff x `map[18]` (unarmed too). Event 1 uses 0.5 (attack, dexterity) and 0.4 (weapon skill). Dexterity is also scaled by a CharStats factor from +0x19c/+0x1a0/+0x1a8 (`(+0x1a8 + +0x19c) / sum` when the sum is above 0, else 1; Meitou uses 1) |
 | Attack defended (event 2) | same | **Verified**: `defence` at 0.25 of base with skill-diff(own defence x `map[19]` vs opponent attack) and no race factor in the gain; weapon skill at 0.1 (diff against the opponent's defence, Meitou uses the attack). No attack or dexterity gain |
-| Being hit (event 4) | same | `defence` 2.0 of base (**Verified**: the stat written is the CharStats slot +0x124, the same slot event 2 uses for `defence`, and [combat.md](character-stats.md#stats-and-xp) lists the same; `FUN_1408c6360` handles stat-set kind 5), and `toughness` = 0.075 x `xp rate toughness` (1.33) x skill-diff(own, other) x `map[21]`, own = toughness x CharStats `+0x34` (the stat scale), other = cut + blunt + pierce + stun of the packet the hit carries (**Verified** `FUN_1408c6980`; callers the melee hit `FUN_1404394f0`, its copy of the blow's packet, and the bolt hit `FUN_140439c90`, pierce only; that the melee packet is the powered one is **Observed**). Meitou: `XpService.Combat` `damageTaken`; the hit also pays the per-damage gain below |
+| Being hit (event 4) | same | `defence` 2.0 of base (**Verified**: the stat written is the CharStats slot +0x124, the same slot event 2 uses for `defence`, and [combat.md](character-stats.md#stats-and-xp) lists the same); for stat-set kind 5 (fists: unarmed, or the right arm out) `dodge` instead, through `FUN_1408c6360` with k 0.8 (row below), and `toughness` = 0.075 x `xp rate toughness` (1.33) x skill-diff(own, other) x `map[21]`, own = toughness x CharStats `+0x34` (the stat scale), other = cut + blunt + pierce + stun of the packet the hit carries (**Verified** `FUN_1408c6980`; callers the melee hit `FUN_1404394f0`, its copy of the blow's packet, and the bolt hit `FUN_140439c90`, pierce only; that the melee packet is the powered one is **Observed**). Meitou: `XpService.Combat` `damageTaken`; the hit also pays the per-damage gain below |
+| Dodge | `FUN_1408c6360` | **Verified** (decompile; its only callers): `dodge` (CharStats +0xf0) rises by 0.075 x k x the encumbrance factor (+0x190) x `map[32]` x skill-diff(effective dodge `FUN_140885190` with its guard flag, the attacker's rating `FUN_140884ee0`); k 0.4 when the defence start (`FUN_140609290`) picks a dodge technique, 0.8 when it picks none (a failed roll), when a stumble break-out roll fails (`FUN_1406085e0`) and when a kind-5 fighter is hit (event 4). A dodged blow itself gives the defender nothing. Meitou: `XpService.Dodge`, `CombatSystem.DodgeXp` (`DodgeXpEffect` from the defence start and the break-out) |
 | Event 6 | same | **Verified**: `attack`/`unarmed` 0.25 (`map[2]`) and weapon skill 0.1 against the opponent defence; no defence or dexterity gain (meaning of event 6 not decoded) |
 | Strength tail of every event | same | `strength` rises by `core(0.075 * 0.55 * 2*xp rate strength * map[1])` scaled x0.4 for event 2, x0.1 for event 4 (1 for events 0, 1 and 6, **Verified**), and by the weapon-weight factor below; for unarmed (kind 5) the weapon-weight factor is replaced by (1 - encumbrance factor) |
 | Own punch (attacker) | `FUN_1408c68e0`, called only from `MedicalSystem::punchSomething` `FUN_140666780` | **Verified**: 0.075 x k x `xp rate toughness` x `map[21]` x Global damage multiplier; k by hit material: 0.25 for 1 (metal), 0.5 for 5 (blocked), else 0.05. A hit taken does not call it ([punch self-damage](combat.md#punch-self-damage)) |
@@ -709,6 +712,19 @@ drops and the part stays drawn. **Observed** (2026-11-17, scratch run of a Green
 | +0x50 | **wear** w (permanent loss of maximum, robots) |
 | +0x54 / +0x58 / +0x5c | base HP (ref value 1; forced to 5 for a stump) / multiplier (set by the constructor and rewritten each tick from the character slot-0x390 factor) / body scale (character slot 0x238) |
 | +0x60 | health fraction `((h - s) + extra) / M` |
+
+### Medical tests
+
+**Verified** (decompile, 1.0.68; offsets from the medical system's start, Character `+0x458`):
+- `isProbablyDying` (`FUN_140884a70`): some part with the vital byte (`+0x32`) has flesh + bandaged pool (`+0x40` + `+0x48`) below 0.
+- `canGetUpWakeUp` (`FUN_140596460`): KO byte `+0x161` and dead byte `+0x164` clear and `isHungerKO` (`FUN_140644320`) false. `isHungerKO` is
+  true below hunger 0.1 (`DAT_14167fad0`), or below the starvation point once its refractory timer (`+0x150`, `+0x158`) has run, which it
+  then re-arms (a side effect). Meitou: `MedicalState.CanGetUpWakeUp` reads the first branch; the second is its starvation knock-out.
+- `isReallyHungry` (`FUN_1404120e0`): hunger (`+0x60`) below 1.25 (`DAT_14168ba14`).
+- `canIkick` (`FUN_140883fa0`): crippled byte `+0x160` clear and both leg parts (`+0x80`, `+0x88`) at flesh - stun + rig (`+0x40` - `+0x44` +
+  `+0x4c`) of at least 0. `isCrippled` (`FUN_14051c790`) returns `+0x160`; `isInBloodlossTrauma` (`FUN_1408836e0`) returns `+0x163`.
+- `pointOfCollapseBloodloss` (`FUN_140643980`): -25 (`DAT_1416fb68c`) while `+0x163` is set, else 0.
+- **Observed** (the Vital Read DLL's state log): `+0x74` is logged as extra blood loss beside the bleed rate `+0x78`; its writer is **Unknown**.
 
 ### Limb replacements and robots
 

@@ -103,6 +103,11 @@ public sealed partial class MyGuiScreenHost
     }
 
     /// <summary>
+    /// Puts the typing focus on <paramref name="c"/>, a text box a screen's decoration added, with the screen's text for it.
+    /// </summary>
+    public void FocusDecoratedEdit(string id, UiControl c) => FocusEdit(id, c);
+
+    /// <summary>
     /// The system clipboard's text, else the boxes' own.
     /// </summary>
     string? ReadClipboard()
@@ -168,15 +173,18 @@ public sealed partial class MyGuiScreenHost
     /// <summary>
     /// Enter in the focused box (MyGUI): a multi-line box takes a line break (Ctrl+Enter accepts), any other accepts, which here is the default
     /// action; a read-only box does nothing. A box whose layout names a <c>SubmitAction</c> raises that action with its text and lets go of the keys
-    /// instead (the Edit characters window's values), and a mod overlay's text box lets go of the keys. True when the box took it.
+    /// instead (the Edit characters window's values), and a mod's text box raises <see cref="SubmitAction"/> with its text and lets go of the keys.
+    /// True when the box took it.
     /// </summary>
     public bool EditEnter(bool ctrl)
     {
         if (_edit is null || _edit.ReadOnly) return false;
 
-        if (_focus?.Screen == OverlayScreen)
+        if (_focus is { Screen: OverlayScreen } overlay)
         {
+            string text = _edit.Text;
             Blur();
+            Activated?.Invoke(new(OverlayScreen, overlay.Widget, SubmitAction, text));
             return true;
         }
 
@@ -326,6 +334,21 @@ public sealed partial class MyGuiScreenHost
     public const string OverlayEditProperty = UiTextInput.EditProperty;
 
     /// <summary>
+    /// The property of a mod's text box that asks for the typing focus (<see cref="UiNode.Focus"/>).
+    /// </summary>
+    public const string FocusRequestProperty = UiHost.FocusRequestProperty;
+
+    /// <summary>
+    /// The action of the event Enter raises in a mod's text box (<see cref="UiEventKind.Submit"/>).
+    /// </summary>
+    public const string SubmitAction = UiHost.SubmitAction;
+
+    /// <summary>
+    /// The mod text boxes that asked for the focus at the last arrangement, so each asks once (<see cref="UiNode.Focus"/>).
+    /// </summary>
+    HashSet<string> _focusAsked = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Whether <paramref name="c"/> is an overlay text box.
     /// </summary>
     static bool IsOverlayEdit(UiControl c) => c.Type == "EditBox" && c.Properties.ContainsKey(OverlayEditProperty);
@@ -351,6 +374,7 @@ public sealed partial class MyGuiScreenHost
     public void ArrangeOverlayEdits(List<UiControl> controls)
     {
         bool shown = false;
+        var asked = new HashSet<string>(StringComparer.Ordinal);
 
         for (int i = 0; i < controls.Count; i++)
         {
@@ -358,6 +382,7 @@ public sealed partial class MyGuiScreenHost
             if (!IsOverlayEdit(c)) continue;
 
             SyncOverlayText(c);
+            TakeFocusRequest(c, asked);
             if (_focus != (OverlayScreen, c.Name) || _edit is null || !c.Enabled) continue;
 
             controls[i] = WithCaret(c, _edit);
@@ -365,6 +390,19 @@ public sealed partial class MyGuiScreenHost
         }
 
         if (!shown && _focus?.Screen == OverlayScreen) Blur();
+        _focusAsked = asked;
+    }
+
+    /// <summary>
+    /// A mod's enabled text box asking for the focus (<see cref="FocusRequestProperty"/>) that did not at the last arrangement takes it, the caret at
+    /// the end of its text; <paramref name="asked"/> collects the boxes asking now.
+    /// </summary>
+    void TakeFocusRequest(UiControl c, HashSet<string> asked)
+    {
+        if (!c.Properties.ContainsKey(FocusRequestProperty)) return;
+
+        asked.Add(c.Name);
+        if (c.Enabled && !_focusAsked.Contains(c.Name)) FocusEdit(OverlayScreen, c);
     }
 
     /// <summary>

@@ -6,6 +6,7 @@ using Meitou.Data.Ui;
 using Meitou.Game.Building;
 using Meitou.Game.Rendering.Overlays;
 using Meitou.Simulation;
+using Meitou.Simulation.Locks;
 
 namespace Meitou.Game.Ui;
 
@@ -20,6 +21,11 @@ sealed class PointerView(PlayerInterface player)
     /// Whether the mouse was over a control in the last arranged UI (ArrangeUi), so the pointer needs no arrange of its own.
     /// </summary>
     internal bool PointerOverUi;
+
+    /// <summary>
+    /// The last chosen pointer target, without the shorter outline-distance filter.
+    /// </summary>
+    internal CharacterId? PointedTarget => Point().Target;
 
     /// <summary>
     /// Whether that control is one a click acts on (an enabled button, or a control with an action: as UiClickables takes them), for the enhanced
@@ -221,14 +227,18 @@ sealed class PointerView(PlayerInterface player)
         {
             case WorldPicking.Picked.Character when player.QuickOrder(player.Mouse) is { } order:
                 return (order.Pointer, order.Target);
+            case WorldPicking.Picked.Character when OwnOccupiedCage() is { } held:
+                return (player.Furniture.CagePointer(held, occupantFirst: true), null);
             case WorldPicking.Picked.GroundItem:
                 return (player.GroundItemPicks.StealsGroundItem(player.Mouse) ? "steal" : "pick_item", null);
             case WorldPicking.Picked.Container when player.Furniture.PickContainer(player.Mouse) is { } container:
                 return (player.Furniture.ContainerPointer(container), null);
             case WorldPicking.Picked.Door when player.Furniture.PickDoor(player.Mouse) is { } door:
                 return (player.Furniture.DoorPointer(door), null);
+            case WorldPicking.Picked.Cage when player.Furniture.PickCageAt(player.Mouse)?.Cage is { } cage:
+                return (player.Furniture.CagePointer(cage, occupantFirst: false), null);
             // a bed's slot 130 pointer (UseableStuff, no inventory); a town turret's (TurretBuilding, as Storage)
-            case WorldPicking.Picked.Bed or WorldPicking.Picked.Cage or WorldPicking.Picked.Dummy or WorldPicking.Picked.Seat
+            case WorldPicking.Picked.Bed or WorldPicking.Picked.Dummy or WorldPicking.Picked.Seat
                 or WorldPicking.Picked.TownTurret:
                 return ("use", null);
             // a rock a right click would operate: the machine classes' `mine` for function 1 or 27, else `use`
@@ -243,6 +253,20 @@ sealed class PointerView(PlayerInterface player)
         }
 
         return ("arrow", null);
+    }
+
+    /// <summary>
+    /// The cage under the mouse whose occupant the pointer reached first (occupant selection) when that occupant is the player's: its own hover sets
+    /// no pointer, so the original's goes on to the cage's (<c>FUN_1407fc6e0</c>, <b>Verified</b>: only another faction's occupant ends it there);
+    /// null otherwise.
+    /// </summary>
+    CageSpot? OwnOccupiedCage()
+    {
+        var cage = player.Furniture.PickCageAt(player.Mouse)?.Cage;
+        if (cage is not { OccupantSelection: true, Occupant: { IsNone: false } occupant }) return null;
+
+        var held = player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == occupant);
+        return held is { IsPlayer: true } ? cage : null;
     }
 
     /// <summary>
@@ -327,23 +351,34 @@ sealed class PointerView(PlayerInterface player)
         };
 
     /// <summary>
-    /// The pick chance of the lock under the <c>lockpick</c> pointer, for the selected character nearest it, without the minimum the menu applies: a
-    /// caged <paramref name="target"/>'s cage, else the container, else the door under the mouse.
+    /// The pick chance of the lock under the <c>lockpick</c> pointer, for the selected character nearest it: another faction's caged
+    /// <paramref name="target"/>'s cage (the player's own caged one shows the cage's pointer, set without a label), else the container, else the
+    /// door under the mouse. The original leaves out the minimum the menu applies to a building's lock; the fix
+    /// (<see cref="PlayerInterface.FixLockpickLabel"/>) applies it, so the label shows the menu's number.
     /// </summary>
     float? PointedLockChance(CharacterId? target)
     {
         var snapshot = player.Session.CurrentSnapshot;
-        if (target is { } id && snapshot.Characters.FirstOrDefault(c => c.Id == id) is { Prison: { LockLevel: >= 0 } prison } caged)
+        var caged = target is { } id ? snapshot.Characters.FirstOrDefault(c => c.Id == id) : null;
+        if (caged is { IsPlayer: false, Prison: { LockLevel: >= 0 } prison })
             return player.ContextMenuWindow.LockChance(caged.Position, prison.LockLevel);
 
         if (player.Furniture.PickContainer(player.Mouse) is { } container)
-            return player.ContextMenuWindow.LockChance(container.Position, container.Level);
+            return BuildingLockChance(container.Position, container.Level);
 
         if (player.Furniture.PickDoor(player.Mouse) is { Door: var door })
-            return player.ContextMenuWindow.LockChance(door.Position, snapshot.Doors.GetValueOrDefault((door.Building, door.Door)).Level);
+            return BuildingLockChance(door.Position, snapshot.Doors.GetValueOrDefault((door.Building, door.Door)).Level);
 
         return null;
     }
+
+    /// <summary>
+    /// The pointer's pick chance of a building's lock of <paramref name="level"/> at <paramref name="at"/>: the menu's (0 below the minimum) with
+    /// the fix on, else the bare chance as the original.
+    /// </summary>
+    float? BuildingLockChance(Vector3 at, int level) => player.FixLockpickLabel
+        ? player.ContextMenuWindow.ShownLockChance(at, level, building: true)
+        : player.ContextMenuWindow.LockChance(at, level);
 
     #endregion
 

@@ -22,10 +22,11 @@ public class XpServiceTests
         var xp = new XpService(GameConstants.Default, BodyOptions.Default);
 
         xp.Combat(stats, race, XpEvent.HitTaken, unarmed, StatsEnumerated.None, 1, 1, damageTaken: 1);
+        if (unarmed) xp.Dodge(stats, race, effectiveDodge: 1, attackerRating: 1, encumbrance: 1, dodged: false);
 
         var trained = unarmed ? StatsEnumerated.Dodge : StatsEnumerated.MeleeDefence;
         var untouched = unarmed ? StatsEnumerated.MeleeDefence : StatsEnumerated.Dodge;
-        Assert.Equal(CharacterStats.CoreGain(1, xp.EventUnit * 2), stats.Stored(trained));
+        Assert.Equal(CharacterStats.CoreGain(1, xp.EventUnit * (unarmed ? 0.8f : 2)), stats.Stored(trained));
         Assert.Equal(1, stats.Stored(untouched));
         Assert.Equal(CharacterStats.CoreGain(1, 0.075f * 0.55f * 2 * GameConstants.Default.XpRateStrength * 0.1f), stats.Strength);
         Assert.Equal(CharacterStats.CoreGain(1, xp.EventUnit * GameConstants.Default.XpRateToughness), stats.Toughness);
@@ -54,9 +55,10 @@ public class XpServiceTests
         var xp = new XpService(GameConstants.Default, options);
 
         xp.Combat(stats, race, XpEvent.HitTaken, unarmed, StatsEnumerated.None, 20, 0);
+        if (unarmed) xp.Dodge(stats, race, effectiveDodge: 10, attackerRating: 20, encumbrance: 1, dodged: false);
 
         // Dodge 10 against attack 20 gives a 2x skill difference; defence 20 against attack 20 gives 1x.
-        float expectedDodge = unarmed ? CharacterStats.CoreGain(10, xp.EventUnit * 1.5f * 2 * 2 * 1.2f) : 10;
+        float expectedDodge = unarmed ? CharacterStats.CoreGain(10, xp.EventUnit * (1.5f * 0.8f * 2) * 1.2f) : 10;
         float expectedDefence = unarmed ? 20 : CharacterStats.CoreGain(20, xp.EventUnit * 1.5f * 2 * 0.8f);
         Assert.Equal(expectedDodge, stats.Stored(StatsEnumerated.Dodge));
         Assert.Equal(expectedDefence, stats.Stored(StatsEnumerated.MeleeDefence));

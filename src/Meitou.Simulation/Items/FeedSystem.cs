@@ -443,7 +443,7 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
 
         med.Fed = amount * 0.01f;
         var at = world.Characters.Next[slot].Position;
-        if (world.HasFloaterSink) world.EmitFloater(Floater.Text(world.Characters.IdOf(slot), at, Loc.Tr("Ate {1}", item.Name)));
+        if (world.HasFloaterSink) world.EmitFloater(Floater.Text(world.Characters.IdOf(slot), at, Loc.Tr("Ate {1}", item.ShownName())));
         world.EmitSound(SoundKind.Eat, slot, at);
         ItemUseObservers.Report(world, ItemUseKind.Eaten, item.Record, world.Characters.IdOf(slot), null, amount, finished);
     }

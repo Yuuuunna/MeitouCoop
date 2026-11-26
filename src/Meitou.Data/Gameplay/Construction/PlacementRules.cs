@@ -76,6 +76,10 @@ public enum PlacementFailure : byte
     NotAvailable,
     /// <summary>Authority requires ready content and a valid transform and observation.</summary>
     RegionNotReady, InvalidPlan,
+    /// <summary>
+    /// Engine: a code mod's placement rule refused it (docs/modding.md "Placement rules"); the text shown is the mod's.
+    /// </summary>
+    RefusedByMod,
 }
 
 /// <summary>

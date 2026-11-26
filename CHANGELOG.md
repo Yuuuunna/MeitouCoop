@@ -3,6 +3,90 @@
 What changed in each release, newest first. The release workflow copies the section of the version it builds into the GitHub release
 notes and refuses to release a version without one: add a `## vX.Y.Z` section with one `- ` line per change before running it.
 
+## v0.23.2
+
+- Town NPCs no longer cut a stair's foot across the ground beside it or into the storey below their goal (#1414)
+- Guards and other walkers no longer circle endlessly at a corner or a stair ramp; navmeshes rebuild once (#1387)
+- Slave gatherers reach a cage from its own floor and give up on cages they can't reach, ending the slave-taking loop (#1383)
+- An NPC medic finishing a friendly prisoner's first aid takes it out of its cage, as the original (#1414)
+- A mod's run animation in another file no longer changes the run speed of characters, and action ends keep their timing (#1410)
+- Zoomed in near a building, the ground no longer vanishes (#1411)
+- The launcher's Benchmark page offers every benchmark, so Shark fly-by needs no Bases run first (#1412)
+- Benchmark runs show the fps counter from the start
+- Storages get put and take priorities, set in the panel or lowered with a right-click
+- Buildings you built can be named
+- Haulers fill armour and weapon storages with loose gear of their type
+- The Craft tab's item description shows the crafted product's stats
+- Worn unarmed weapons sit on the body's skeleton
+- Mod API: mods add bars to the building panel, and job offers may take any faction's buildings (ModJobOffer.Owners)
+
+## v0.23.1
+
+- Right-click and drag item moves between two of your characters' windows respect trading range (#1378)
+- Beds and other furniture on the roofs of closed buildings can be clicked again (#1376)
+- Characters inside a building you view from outside are drawn again, so slave shop slaves show without walking in (#1392)
+- Items on furniture on an upper deck no longer show through the floor above (#1395)
+- Town mines, wells and farms no longer mark their goods as stolen, so shops stop asking to fence them (#1379)
+- Skeleton beds show their rent, and a free bed of another faction shows "(Pay c.0)" (#1381)
+- Escaped slaves and ex-slaves show Situation, Looks like a slave and Time remaining in their status tooltip (#1398)
+- A caged character opens the cage's menu with the prisoner's beside it, so cage and shackle options no longer double up (#1385)
+- A cage shows the original's pointer: escape when unlocked, lockpick when locked (#1392)
+- Cages are entered, freed and picked only from their own floor, by you and by NPCs (#1396, #1397)
+- Locked doors at the top of a ramp are picked from the door, not from the ground below (#1405)
+- Bought slaves leave the pen and head for a town instead of idling, and keep their orders through save and load (#1386)
+- Slave carriers give up when their slave gets back up; one gatherer per cage, and caged players are processed by guards who see them (#1382, #1383, #1392)
+- Sleeping guards get up only for strangers they hear, so bedded slaver guards stop getting in and out of bed (#1403)
+- Sleepers take the first free home bed no squad mate claimed, as the original (#1387)
+- Town patrols throw intruders out through the Hub's gates instead of juggling them in its centre (#1399)
+- Miners walk to the edge of large rocks instead of standing idle (#1391)
+- Operators haul full output to the nearest machine that takes it (a stone processor), not only to storage (#1406)
+- Melee training dummies are trained with the character's weapon drawn (#1401)
+- Punches cut the fist on chain, plate and prosthetics; flesh only stuns, as the original (#1380)
+- Beak Things and other fast chasers catch runners on slopes (#1394)
+- A body saved while still falling no longer freezes in mid-air on load (#1388)
+- Characters high above the terrain (bridges, walkways, upper floors) no longer randomly move at double speed (#1384)
+- Blister Hill's Weapon Shop can be walked into and out of again; cached navmeshes rebuild once (#1393)
+- Textures: draw ranges come back after a VRAM squeeze, and optional growth no longer clamps them for good (#1390)
+- Full screen goes to the window's monitor, with a new Display > Monitor choice (#1402)
+- Medics use only kits from their own inventory and stop when theirs runs out, as the original (#1407)
+- Ceiling lamps and fans hung inside a house are drawn on the floor they belong to (#1408)
+- Debug give item puts items in an animal's backpack, never its shut inventory (#1375)
+- A graphics driver that refuses Vulkan 1.3 is named as such in log.txt and the launcher's Detect, not "GPU not found" (#1409)
+- Code mods built for another game version show the needs-an-update notice instead of Harmony's error
+
+## v0.23.0
+
+- Unified AI chooser & real order queues for all NPCs, squads, raids, and town/captive duties
+- NPCs rescue downed allies to beds (148/106) and bandage their own crippled legs (269)
+- Off-screen town overrides (with mod API) and KEP town name override support
+- Outpost life: shoppers buy from counters, wandering traders visit, autonomous squads guard
+- Campaign platoons run full minds, ransack outpost houses, and follow proper retreat rules
+- Overhauled Auto-Haul (152/124): room/stacking checks, loose-item pickups, and fuel generators
+- Engineer job repairs broken/damaged doors of complete buildings and owned town houses
+- Building: wall upgrades with attached pieces, turret/light snap nodes, and outpost build ring
+- Building: placement ghosts show usage nodes, build mode opens player interiors, 3D floor tests
+- Doors & locks: swing animations, material durability, condition/lock bars, shackle picking
+- Adaptive exposure (Meitou, 1-3x slider) and lit footstep dust/spray at night
+- Cross-fading regional weather, room GI & lamp lighting fixes, 32k traced scene instances
+- Low-end & Metal: simple terrain shading, lean shaders, GI off on --low-end, Metal DoF/filters
+- Clothes keep blood stains after healing (Advanced) and wash clean
+- Audio: Mute/Quiet corpse flies settings, turret GUN_DATA sounds, build-only loop audio
+- Characters: weapon/model scaling, live animal anim scaling, 8+ part/tail limb saves & scroll
+- Settings: per-skill Squad XP with HUD display, Max faction/squad size & Max squads sliders
+- New Fixes toggles: raid progress, guard body passing, turret Assault, buried ruins, caged idles
+- Inventory: stack split (Shift/Alt/Shift+Alt), dropped stack merge, right-click equip bags
+- Queues & panels: scrollable/reorderable queues with progress & X, full town machine/farm info
+- HUD & UI: movable/translucent Settings with mod search/filters, autoscrolling dialogue log
+- HUD & UI: carried squad name tags, hull-height tags, greyed-out menu rows, fallback mod fonts
+- Full localisations for all nine Kenshi languages and build-time translation checks
+- Saves: Wine prefix discovery (Heroic, Lutris, Bottles), navmesh-first loads, atomic configs
+- Performance: pooled texture buffers (lower RAM), faster WorkerPool, staggered ticks, 5x cache
+- Code mods (API v3): NuGet refs, cross-version binding, IModData pre-build data phase
+- Code mods (API v3): chooser/AI, observers, world states, UI/shown-text, FX, glow & audio hooks
+- Data mods & RE_Kenshi: crossbow ammo lists, custom weapon attacks/skills, 36 more ports
+- Launcher (v1.16-v1.21): redesigned Mods page, Linux AppImage install, built-in benchmarks
+- 169+ bugs fixed since v0.22.1 across AI, combat, crime, slavery, jobs, navmesh, UI, and saves
+
 ## v0.22.1
 
 - RE_Kenshi ports are no longer shipped with the game: they are workshop mods kept up by their maintainers, and the launcher offers the ones Meitou endorses. Proving Grounds players: subscribe to [Meitou] Proving Grounds by roscatoday (launcher v1.15.0 does it in one click)

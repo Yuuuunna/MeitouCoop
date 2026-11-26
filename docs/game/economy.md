@@ -76,8 +76,14 @@ money-item branches are scoped in the expressions/field tables and undecoded que
 An item may move between two inventories of different owners only within an X/Z distance of the owners' positions; a failure is result 1, "Out of trading range.",
 with the sound `gui_notrade` (`FUN_14070f7e0`). The limit is 1000 unless a flag is set: the caller's flag (the one-unit move sets it when the target is a building's
 inventory, `uses_building_category`), or an owner of type 1 whose +0x2f8 is 2, or of type 0x5b whose +0xc0 object has +0x2f8 = 2, or the source owner's +0x78 object passing
-its slot +0x260. Flagged: the owners must not be enemies (faction test) and must be on the same floor, and the limit is 60, or the source owner's bounds radius + 40
-when the source is a building (class 0). The limits are stored squared (1e6, 3600). Same owner: always allowed. A carried, unconscious squad member trades through its own window (**Observed** in the original 1.0.68, plain game, 2026-11-13: Zepp carries the unconscious Beep into a
+its slot +0x260 (the source's current town, Town slot 0x260 `FUN_140926fc0`, **Verified**: false when the town's faction is the player's or an ally,
+relation 50 or more (`FUN_1406b2630`); else, for a public town (slot 0x298, Town `+0x380`) not hostile (relation above -30, `FUN_1406b26d0`), true only
+for a prison (Town `+0xd8` 7); any other town true). Flagged: the owners must not be enemies (faction test) and must be on the same floor, and the limit is 60, or the source owner's bounds radius + 40
+when the source is a building (class 0). The limits are stored squared (1e6, 3600). A move between the player's own windows is not stealing (`FUN_140711740`), so between a player character and a storage
+of the player's the limit is 1000 unless the character is imprisoned or the source stands in such a town. Meitou (`ProductionSystem.Near`, #1361): 1000
+X/Z then; flagged, 40 from the footprint or 60 from the position, an engine reading of the same place, floor and 60 / bounds radius + 40. Between two player
+characters' windows, by right click (`QuickMoves`) or drag (`HeldItems.Reached`), `ItemMoveReach.CharactersNear`: 1000 X/Z, 60 when either is imprisoned or the
+source stands in such a town (#1378). Same owner: always allowed. A carried, unconscious squad member trades through its own window (**Observed** in the original 1.0.68, plain game, 2026-11-13: Zepp carries the unconscious Beep into a
 bar and trades with the barman; Beep's portrait clicked during the trade shows Beep's window beside the trader's, an item dragged from it to the trader sells for 27 and
 dragged back buys for 27). Meitou: an open trade passes to a knocked-out player character within 1000 whose window is used and stays with them, so stock dragged
 or right-clicked into that window is bought and their goods sell (`TradeSystem.Trades`, `Parties`; `HeldItems.KeepHeld` keeps a stock lift for them); opening a trade
@@ -190,8 +196,9 @@ Goal 118/119 shoppers: the sale is `FUN_14074a630`, called by [`FUN_1409a14b0`](
   has a type (the `StorageBuilding` field `+0x440`, read as a function 2 building's `itemtype limit`; ITEM for any other building, **Observed**), its section's `limit inventory`
   list (function 2 only, [storage](buildings-production.md)) and its lock's level (0 without a lock).
 - **Spread** (**Verified** by decompile, `FUN_14095b210`, `FUN_14095a5b0`, `FUN_1409565e0`, score `FUN_140952df0`; **Observed** in the original, #685's video of the Flotsam Safehouse:
-  bread, dried meat, kits and clothes over every barrel and basket; read, not traced: the item's `+0x13c` as its record type and its vfunc `0x288` as its unit value, Meitou
-  `Market.BaseValue`). The filler unlocks every container, then drops those that cannot hold what the template's vendor lists make: one of
+  bread, dried meat, kits and clothes over every barrel and basket; read, not traced: the item's `+0x13c` as its record type). The unit value below is the item's vfunc `0x288` (slot 81, the unit price, with
+  `sell` false; **Verified**, decompile): its trader and town factors come from the open trade window (`FUN_14070e2d0`, `FUN_14070d170`), none while
+  shops fill, so T is 1 (`DAT_14167c308`) and a blueprint is worth its research `money`, not the `BLUEPRINT_ITEM` record's 600 (Meitou `Market.UnitValue`). The filler unlocks every container, then drops those that cannot hold what the template's vendor lists make: one of
   another type than ITEM with no entry of that record type, one with a list holding none of the entries. With none left nothing is made. The rest are ordered by lock level,
   highest first, optionally cleared (unique items stay), and each special item goes into the first container that takes it of a `random_shuffle` of them. The vendor items, each a
   stack as the draw made it (the money stacks too), are ordered by unit value, highest first (`FUN_140969ff0` over reversed bounds; equal values keep no defined order, Meitou breaks the
@@ -767,7 +774,10 @@ holding the slaver, the customer, the character list and val0.
   DC 77 line ("You're freeing me?... Thanks!") joins it to the player at once (DA 18) when it is recruitable, else it runs off or stays free (**Observed**,
   line walk over the base data, issue #1015). The other races' root (`Tough bought from slavery`, Dialogue.mod 54741) needs the buyer within talking range
   (DC 16, 260), so a slave bought from a pen far from the slaver says nothing and its new squad's AI goes on: for the base pens' "slaves 3-7" template, package
-  "Slave only squad" (172 finds no cage without an owner; rebirth.mod's 127 Go Home (Run away)) (**Observed**, issue #1017). Then the total is taken from the player faction's money (refused without deduction when it has less; the result is ignored);
+  "Slave only squad" (172 finds no cage without an owner; rebirth.mod's 127 Go Home (Run away)) (**Observed**, issue #1017). The split's platoon has no home town (its Ownerships
+  `+0x30` stays null: `FUN_1407cb9d0`, no save record, **Verified**), so 127 is wanted wherever it stands and runs it to the gate of the nearest town its faction owns or lives
+  in, the pen's town when its slave squads are housed there ([127](ai-tasks.md#town-goals)); the last slave of a pen is not split (`FUN_1405ce4e0` returns for a
+  platoon of one, **Verified** by decompile) and stays in the pen's squad (issue #1386). Then the total is taken from the player faction's money (refused without deduction when it has less; the result is ignored);
   nothing is paid to the slaver.
 - The window's gate (`FUN_1407281c0`) makes such a shortfall unreachable: confirm is enabled only with a row ticked and the total within the buyer's money (the slaver's when
   selling, the player's when buying).
@@ -833,9 +843,10 @@ Roll convention: a `rand()` draw in [0, 1) against the chance p; the thief gets 
   Meitou (`TradeSystem.FenceOdds`, the trader of a code mod's [faction shop](../simulation.md#shopkeepers-of-the-players-faction-meitou-only) included): the owner is `ItemInstance.Owner` with the squad it was in when robbed (`OwnerSquad`, standing for `C`/`CS`), set where taking from a character is a
   theft (`CarrySystem`, `HeldItems`). A theft of a building's goods (an item of its container, a loose item of its slot) names the building's owner too: the original's
   `ownedby` is the bar's barman, the first member of the squad living there (**Observed**, plain game, The Hub's bar: the barrel's item had a null `ownedby` before the theft and the barman's
-  handle after it, "Stolen from: Barman"; the bar's loose items name him before any theft). Meitou
-  (`CrimeSystem.OwnerMark`) names the leader of the building's resident squad of the owning faction; with none the mark names only the faction, which no owner early-out applies to
-  and the home-town test reads as another town. The trader's town is `AiSystem.TownAt`, the owner's home town its squad's `Town`. Saved as the robbed character's handle in
+  handle after it, "Stolen from: Barman"; the bar's loose items name him before any theft). The hand is the residents hand of the building the goods
+  stand in, so goods out of a building nobody lives in (**Observed**: a town mine) stay ownerless and are never fenced ([carry-loot](carry-loot.md#stolen-ownership)). Meitou
+  (`CrimeSystem.GoodsMark`) names the leader of that building's resident squad, unmarked with none; a loose item of a building's slot (`CrimeSystem.OwnerMark`) the leader of its
+  resident squad of the owning faction, else the faction alone, which no owner early-out applies to and the home-town test reads as another town. The trader's town is `AiSystem.TownAt`, the owner's home town its squad's `Town`. Saved as the robbed character's handle in
   `ownedby` (the null handle when that character is not saved) and the robbed faction's id in Meitou's `meitou stolen from` (any mark; the only trace of a faction-only one or of
   a robbed character the save does not hold). Loading marks an item whose `ownedby` names a character of another faction than its holder's as stolen from that faction, and from
   the character once it is in the world (`SavedPopulation.NoteOwners`); else one whose `meitou stolen from` names another faction, from that faction.
@@ -852,7 +863,10 @@ Roll convention: a `rand()` draw in [0, 1) against the chance p; the thief gets 
   (kind 4). Thievery XP: 20 x 2 for a success and 80 x 2 for a catch, only when p < 0.98 and the thief's own pending timer (`+0x180`) is below 10 (so a catch gives none). Meitou: `CrimeSystem.Steal` (waking, event 8 or the in-bed 0x2f, the Theft, the squad memory, the XP).
 - **Where a Theft is set** (`FUN_140852c80`, before the roll): taking from a container of another faction's building against the faction of its owner character, the resident of the building it stands in (none out of a building that is no interior furniture, a well, out of interior furniture standing outdoors, nor out of an unoccupied building: [carry-loot](carry-loot.md#theft-and-witnesses)), code 3 on a right-click take
   (`FUN_140713d20`, none while that resident is down) or a give (`FUN_140712490`) and code 10 on a drag out of the window (`FUN_140715560`); out of a character's window the right click sets Looting 10 instead when the owner is down and the loot permission fails, and the drag 3 then; and picking an item up from the ground (`FUN_14034f340`, **Observed**) while standing inside a building when the item's owner (a character, `ownedby`) is of another, real faction: against the faction of the
-  building the picker stands in, no roll, thievery XP 20 (generic entry with amount 20) once the item is in the bag. Meitou: the steal roll (`CrimeSystem.Steal`) and `StolePickUp`.
+  building the picker stands in, its victim that building's resident leader (`FUN_140547ba0`: the residents hand `+0xd0`, a CHARACTER or PLATOON, gives `FUN_140792b90`'s
+  effective leader; **Verified** decompile), so the leader witnessing it takes the thief as its threat and its squad mates say event 8; no roll, thievery XP 20 (generic entry with amount 20) once the item is in the bag. Meitou: the steal roll (`CrimeSystem.Steal`) and `StolePickUp`; a building of no owner faction books nothing
+  (the original sets the crime with a null faction, which no witness cares about). Meitou fix "Pick-up thefts from the owner" (on by default,
+  `World.PickUpTheftFix`): the Theft is against the item's owner faction with its owner character (the stolen mark's) as the victim; off, as above.
 - **Smuggling check** (`FUN_140794e80(trader, out, item)`, **Observed**; Meitou builds the refusal and event 8, `TradeSystem.Smuggling`, and the held item's prompt in `PlayerInterface.AddFencePrompt`, not the smuggler's answer): for a trader of a non-player faction with a town, the item is illegal when the culture of the **town's faction**
   (`Faction+0x90`, not the town's own culture) lists it (Meitou: `TradeSystem.IsIllegal`, so never at a code mod's faction shop). A trader that does not buy illegal goods (`+0xed` clear) refuses an illegal item: result 0, shown as "Attempted smuggling!" (code 0xf), with event 8 unless the item is the trader's own
   stolen property; a legal item passes (1). A smuggler (`+0xed` set) answers 2 for a legal item and 1 for an illegal one (the answer 2 is read by no caller seen; "Smugglers only buy illegal goods." is code 0xe).

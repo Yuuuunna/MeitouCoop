@@ -509,16 +509,15 @@ public sealed partial class NavmeshWalkability : IWalkability
         var part = Toward(w, from, to, agent);
         if (!part.Found)
             return exact;
-        bool metDoor = NavQuery.LastSearchMetClosedDoor;
         long[] ground = key is null ? [] : NavQuery.LastSearchReached();
         var nearest = part.Points[^1];
         bool arrives = Arrives(nearest, to);
-        var door = metDoor && !arrives ? new NavQuery(w, Doors).ClosedDoorOnTheWay(from, to, nearest, agent) : null;
         if (key is { } found && cache is not null && Current())
-            Remember(cache, found, new(nearest, door, arrives, ground, Volatile.Read(ref _tick)));
+            Remember(cache, found, new(nearest, arrives, ground, Volatile.Read(ref _tick)));
 
-        // A loaded goal inside collision still has a working edge; authoritative movement keeps only this real mesh path.
-        return arrives || !AllowUnloadedFallback ? part : Provisional(w, part, to, incarnation, door);
+        // An off-mesh work centre can retain its reachable same-floor approach; a blocked on-mesh goal stays shut off.
+        bool workingEdge = !AllowUnloadedFallback && key is null && MathF.Abs(nearest.Y - to.Y) <= NavQuery.GoalFloorSlack;
+        return arrives || workingEdge ? part : PathResult.ShutOff;
     }
 
     /// <summary>
@@ -544,8 +543,7 @@ public sealed partial class NavmeshWalkability : IWalkability
         var near = new NavQuery(world, Doors).FindPath(from, hit.Nearest, agent, null, out _);
         if (!near.Found) return null;
 
-        var path = FromWalker(from, near);
-        return arrives || !AllowUnloadedFallback ? path : Provisional(world, path, to, incarnation, hit.Door);
+        return arrives ? FromWalker(from, near) : PathResult.ShutOff;
     }
 
     /// <summary>
@@ -569,9 +567,9 @@ public sealed partial class NavmeshWalkability : IWalkability
     }
 
     /// <summary>
-    /// A failed route's nearest point, closed door, arrival result, explored ground and simulation timestamp.
+    /// A failed route's nearest point, arrival result, explored ground and simulation timestamp.
     /// </summary>
-    readonly record struct Unreachable(Vector3 Nearest, Vector3? Door, bool Arrived, long[] Ground, long At);
+    readonly record struct Unreachable(Vector3 Nearest, bool Arrived, long[] Ground, long At);
 
     /// <summary>
     /// The goal polygon and traversal properties that decide whether two failed searches can be shared.

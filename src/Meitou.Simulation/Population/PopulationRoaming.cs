@@ -211,6 +211,12 @@ public sealed partial class PopulationSystem
     bool Kept(Platoon p) => OriginalKeeps(p) || !p.Dead && (p.ModSpawned || !p.ReplacedHome && (p.Wild ? KeepWild : KeepRoamers));
 
     /// <summary>
+    /// <see cref="Kept(Platoon)"/>, or a code mod's veto keeps the loaded platoon as it leaves the world
+    /// (<see cref="Bodies.RemovalKind.PlatoonDespawned"/>). Serial.
+    /// </summary>
+    bool Kept(World world, Platoon p) => Kept(p) || world.RemovalVetoes.KeepsPlatoon(world, p.Id, Bodies.RemovalKind.PlatoonDespawned);
+
+    /// <summary>
     /// The original's own keep test (see <see cref="Kept"/>): a platoon that is not declared dead and occupies a town or is persistent, or a
     /// campaign's force that has not been spent.
     /// </summary>
@@ -229,7 +235,8 @@ public sealed partial class PopulationSystem
     /// </summary>
     void StepOffscreen(World world, Platoon p, float dt)
     {
-        if (!p.Pinned && !Kept(p) && (p.ReplacedHome || !Wanted(world, p))) p.OrphanSeconds += dt;
+        bool orphaned = !p.Pinned && !Kept(p) && (p.ReplacedHome || !Wanted(world, p));
+        if (orphaned && !world.RemovalVetoes.KeepsPlatoon(world, p.Id, Bodies.RemovalKind.PlatoonOrphaned)) p.OrphanSeconds += dt;
         else p.OrphanSeconds = 0;
         if (p.OrphanSeconds > OrphanLimitSeconds) return;
 
@@ -431,8 +438,11 @@ public sealed partial class PopulationSystem
         {
             foreach (var m in saved.Members)
             {
-                if (!m.Dead && !m.Gone && m.Source.SquadMemberType == (int)SquadRole.Slave
-                    && m.Source.GameState?.Ints.GetValueOrDefault(Saving.SlaveSave.StateKey) == 1)
+                bool slave = m.Cold is { } left
+                    ? left.Role == (int)SquadRole.Slave && left.SlaveState == 1 && left.Medical is not { Dead: true }
+                    : !m.Dead && m.Source.SquadMemberType == (int)SquadRole.Slave
+                        && m.Source.GameState?.Ints.GetValueOrDefault(Saving.SlaveSave.StateKey) == 1;
+                if (!m.Gone && slave)
                 {
                     slaves = true;
                     break;
@@ -580,7 +590,7 @@ public sealed partial class PopulationSystem
     /// </summary>
     bool MemberDownInZone(World world, Platoon p, Squad squad)
     {
-        if (p.Pinned || !Kept(p) || OriginalKeeps(p)) return false;
+        if (p.Pinned || !Kept(world, p) || OriginalKeeps(p)) return false;
 
         var table = world.Characters;
         foreach (var m in squad.Members)
@@ -621,7 +631,7 @@ public sealed partial class PopulationSystem
     {
         if (p.Saved is { } gone)
         {
-            if (p.Stored is null) Saving.SavedCharacters.Store(world, gone, p.Position);
+            if (p.Stored is null) Saving.SavedCharacters.Store(world, gone, p.Position, leavingWorld: false);
             gone.PlatoonId = -1;
         }
 
@@ -670,7 +680,7 @@ public sealed partial class PopulationSystem
     /// of the zone is destroyed, and the platoon stays while any is left (<see cref="ThinOutOfZone"/>).
     /// </summary>
     bool StaysActive(World world, Platoon p, Squad squad) =>
-        Kept(p) || p.Pinned ? MemberInView(world, squad) : ThinOutOfZone(world, p, squad);
+        p.Pinned || Kept(world, p) ? MemberInView(world, squad) : ThinOutOfZone(world, p, squad);
 
     /// <summary>
     /// Whether a member of the squad, dead or alive, is on screen (the original's <c>Character+0x1a9</c>, <see cref="Bodies.MedicalClock.OnScreen"/>):
@@ -722,7 +732,7 @@ public sealed partial class PopulationSystem
 
         // Faithful: a platoon the original does not keep (not a town's own, not in a campaign, not occupying) is despawned as it leaves; a save's
         // wild one by the wild switch.
-        if (!Kept(p) && !p.Pinned)
+        if (!p.Pinned && !Kept(world, p))
         {
             PayRoamerDespawn(world, p, squad);
             Despawn(world, p);
@@ -1088,24 +1098,26 @@ public sealed partial class PopulationSystem
             return;
         }
 
-        if (_work is null) FinishRoamer(world, new BuiltRoamer(id, BuildRoamer(p.TemplateId, p.Faction, p.Key, seed, position)));
+        if (_work is null) FinishRoamer(world, new BuiltRoamer(id, BuildRoamer(p.TemplateId, p.Faction, p.Key, seed, position, p.MemberCap)));
         else
         {
             string template = p.TemplateId;
             int faction = p.Faction;
             ulong key = p.Key;
-            _work.Add(() => _builtRoamers.Enqueue(new BuiltRoamer(id, BuildRoamer(template, faction, key, seed, position))));
+            int cap = p.MemberCap;
+            _work.Add(() => _builtRoamers.Enqueue(new BuiltRoamer(id, BuildRoamer(template, faction, key, seed, position, cap))));
         }
     }
 
     /// <summary>
-    /// Null when the template is gone or plans no one now (e.g. a save's platoon whose members are all dead or unique).
+    /// Null when the template is gone or plans no one now (e.g. a save's platoon whose members are all dead or unique). A code mod's spawn
+    /// keeps its member cap (<paramref name="cap"/>, 0: none).
     /// </summary>
-    BuiltSquad? BuildRoamer(string templateId, int faction, ulong key, ulong seed, Vector2 position)
+    BuiltSquad? BuildRoamer(string templateId, int faction, ulong key, ulong seed, Vector2 position, int cap = 0)
     {
         if (_data.Db.Find(templateId) is not { } record) return null;
         var townFaction = faction >= 0 ? _data.Factions[faction] : null;
-        return BuildOne(SquadTemplate.From(record), faction, townFaction, key, seed, position);
+        return BuildOne(SquadTemplate.From(record), faction, townFaction, key, seed, position, cap);
     }
 
     /// <summary>
@@ -1167,6 +1179,12 @@ public sealed partial class PopulationSystem
             return;
         }
 
+        if (p.Saved is { SquadId: >= 0 } sp && p.Stored is null)
+        {
+            RepointSlaves(world, sp.SquadId, squad.Id);
+            sp.SquadId = -1;
+        }
+
         if (squad.SpawnSize == 0) squad.SpawnSize = p.Saved?.Members.Count ?? p.Size;
         squad.Money = p.Money;
         MoveOutOfPlayerWalls(world, squad);
@@ -1215,7 +1233,7 @@ public sealed partial class PopulationSystem
                 continue;
 
             table.Next[slot].Position = place;
-            world.Post(Loc.Tr("Character {1} of {2} tried to spawn inside walls!", c.Name, squad.Name));
+            world.Post(Loc.Tr("Character {1} of {2} tried to spawn inside walls!", world.ShownName(c), world.ShownName(squad)));
         }
     }
 
@@ -1395,12 +1413,13 @@ public sealed partial class PopulationSystem
     /// <paramref name="maxRadius"/> of <paramref name="around"/> (<see cref="ModSpot"/>; never outside that ring). Its package and job come from the
     /// template (<see cref="PlatoonJobs.For"/>), so a trader template walks as a trader; it loads like any roaming platoon near the player (its squad
     /// id is then <see cref="Platoon.SquadId"/>), is kept off screen whatever the keep switches say and is saved also before it first loads
-    /// (<see cref="Platoon.ModSpawned"/>). Its purse starts at <paramref name="money"/>. Returns the platoon id, or -1,
-    /// adding nothing, for an unknown template, faction or site, a point or radius that is not finite, a template that plans no one, or a ring with
-    /// no walkable point found. Serial phases only.
+    /// (<see cref="Platoon.ModSpawned"/>). Its purse starts at <paramref name="money"/>. With <paramref name="maxMembers"/> above 0 it has at
+    /// most that many members, then and whenever its squad is made again (<see cref="Platoon.MemberCap"/>, <see cref="SquadPlan.Capped"/>).
+    /// Returns the platoon id, or -1, adding nothing, for an unknown template, faction or site, a point or radius that is not finite, a template
+    /// that plans no one, or a ring with no walkable point found. Serial phases only.
     /// </summary>
     public int SpawnPlatoon(World world, int faction, string templateId, int homeSite, Vector2 around, float minRadius, float maxRadius,
-        long money = 0)
+        long money = 0, int maxMembers = 0)
     {
         if (faction < 0 || faction >= _data.Factions.Count || homeSite < 0 || homeSite >= _data.Sites.Count) return -1;
         if (!float.IsFinite(around.X) || !float.IsFinite(around.Y) || !float.IsFinite(minRadius) || !float.IsFinite(maxRadius)) return -1;
@@ -1409,7 +1428,7 @@ public sealed partial class PopulationSystem
         var template = SquadTemplate.From(record);
         int id = world.Platoons.PeekId;   // taken only once the spawn succeeds, so a refusal leaves the world as it was
         ulong key = Rng.Mix(SeedSalts.ModPlatoon ^ (ulong)id << 8 ^ (ulong)faction << 40);
-        var plan = SquadFactory.Plan(_data.Db, template, _settings.SquadSizeMultiplier, world.Seed, key, States);
+        var plan = SquadFactory.Plan(_data.Db, template, _settings.SquadSizeMultiplier, world.Seed, key, States).Capped(maxMembers);
         if (plan.TotalMembers == 0 || ModSpot(world, key, around, minRadius, maxRadius) is not { } spot) return -1;
 
         var (package, job) = PlatoonJobs.For(_data.Ai, template, _data.FactionId(faction));
@@ -1427,6 +1446,7 @@ public sealed partial class PopulationSystem
             Job = job,
             Money = Math.Max(0, money),
             ModSpawned = true,
+            MemberCap = Math.Max(0, maxMembers),
         });
         return id;
     }
@@ -1448,19 +1468,27 @@ public sealed partial class PopulationSystem
     /// Adds an animal at the supplied age, preserving the squad's unambiguous controller in Coop.
     /// </summary>
     public CharacterId SpawnIntoPlayerSquad(World world, int squadId, string recordId, Vector2 at, float age) =>
-        SpawnIntoPlayerSquad(world, squadId, recordId, at, null, age);
+        SpawnIntoPlayerSquad(world, squadId, recordId, at, null, new SpawnOptions(age));
 
     /// <summary>
     /// Adds a mod's character with an explicit controller in the squad's faction. Null inherits the squad's sole current controller;
     /// an empty or mixed-owner squad needs an explicit member. Invalid ownership or phase returns none before claiming a unique.
     /// </summary>
     public CharacterId SpawnIntoPlayerSquad(World world, int squadId, string recordId, Vector2 at, PlayerId? controller) =>
-        SpawnIntoPlayerSquad(world, squadId, recordId, at, controller, 1);
+        SpawnIntoPlayerSquad(world, squadId, recordId, at, controller, new SpawnOptions(1));
 
     /// <summary>
     /// Adds a character at an animal age with the same controller and authority checks as the default-age overload.
     /// </summary>
     public CharacterId SpawnIntoPlayerSquad(World world, int squadId, string recordId, Vector2 at, PlayerId? controller, float age)
+        => SpawnIntoPlayerSquad(world, squadId, recordId, at, controller, new SpawnOptions(age));
+
+    /// <summary>Trusted engine spawning options with normal Coop controller inheritance.</summary>
+    public CharacterId SpawnIntoPlayerSquad(World world, int squadId, string recordId, Vector2 at, SpawnOptions options)
+        => SpawnIntoPlayerSquad(world, squadId, recordId, at, null, options);
+
+    /// <summary>Trusted engine spawning options with an explicit squad controller.</summary>
+    public CharacterId SpawnIntoPlayerSquad(World world, int squadId, string recordId, Vector2 at, PlayerId? controller, SpawnOptions options)
     {
         if (world.Characters.Phase == TablePhase.Parallel) return CharacterId.None;
         if ((world.Players.RequiresExplicitControl || controller is not null)
@@ -1468,9 +1496,11 @@ public sealed partial class PopulationSystem
         if (world.Squads.Find(squadId) is not { } squad || !SquadManagement.PlayerSquads(world, squad.Faction).Contains(squad)) return CharacterId.None;
         if (!ModMemberController(world, squad, controller, out var owner)) return CharacterId.None;
         if (!float.IsFinite(at.X) || !float.IsFinite(at.Y) || !world.Walkability.IsWalkable(at.X, at.Y)) return CharacterId.None;
+
+        float age = options.Age;
         if (!float.IsFinite(age) || age < 0) return CharacterId.None;
         if (_data.Db.Find(recordId) is not { Type: FcsRecordType.Character or FcsRecordType.AnimalCharacter } record) return CharacterId.None;
-        if (PlayerSquadFull(world, squad)) return CharacterId.None;
+        if (!options.IgnoreCaps && PlayerSquadFull(world, squad)) return CharacterId.None;
         if (UniqueCharacters.IsUnique(record) && !world.Uniques.TryClaim(recordId)) return CharacterId.None;
 
         var built = ModMember(world, squad, record, at, age);
@@ -1533,7 +1563,7 @@ public sealed partial class PopulationSystem
     /// </summary>
     bool PlayerSquadFull(World world, Squad squad)
     {
-        var limits = _data.Bodies.Constants;
+        var limits = _data.Bodies;
         if (squad.Members.Count + (world.StoredPlayerRoles?.PendingCount(squad.Id) ?? 0) >= limits.MaxSquadSize) return true;
 
         return !squad.Uncounted && SquadManagement.CappedHeads(world, squad.Faction) >= limits.MaxFactionSize;

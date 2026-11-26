@@ -58,6 +58,12 @@ public sealed class SaveCaptureOptions
     /// beside the save, such as the weapon blood: docs/game/blood-decals.md "On weapons and gear").
     /// </summary>
     public Action<IReadOnlyDictionary<CharacterId, Hand>>? HandlesWritten { get; init; }
+
+    /// <summary>
+    /// Where the host draws a ground item dropped in play (<see cref="Items.GroundItem.Dropped"/>), by its id: the original saves a dropped item's
+    /// placed pose (docs/game/carry-loot.md "Dropped item placement"). Null, or a null answer (an item not drawn): its simulation pose is written.
+    /// </summary>
+    public Func<int, (Vector3 Position, Quaternion Rotation)?>? GroundPoses { get; init; }
 }
 
 /// <summary>
@@ -247,7 +253,7 @@ public static partial class SaveCapture
         if (world.SystemOf<Production.ProductionSystem>() is { } production)
             RockMachineSave.Write(game.Camera.Record, world, production);
         world.Systems.OfType<Combat.CombatSystem>().FirstOrDefault()?.WriteTurretShots(world, buildings);
-        var campItems = GroundItemSave.Write(game, world, data.Items);
+        var campItems = GroundItemSave.Write(game, world, data.Items, options.GroundPoses);
         return (outposts, buildings, campItems);
     }
 
@@ -455,9 +461,9 @@ public static partial class SaveCapture
 
         // The carry links (FUN_1406280a0 writes the partner's handle under `carrying`, the null one when it is not saved).
         foreach (var (state, partner) in pass.Carries)
-            (pass.Handles.TryGetValue(partner, out var hand) ? hand : Hand.Null).Write(state, "carrying");
+            WriteCarryPartner(state, pass.Handles.TryGetValue(partner, out var hand) ? hand : Hand.Null);
         foreach (var (state, partner) in pass.KeptCarries)
-            (pass.ColdHandles.TryGetValue(partner, out var kept) ? kept : Hand.Null).Write(state, "carrying");
+            WriteCarryPartner(state, pass.ColdHandles.TryGetValue(partner, out var kept) ? kept : Hand.Null);
 
         // The slaves' owners (FUN_1406280a0 writes the owner handle, character +0x328, under `slaver`); one not saved leaves the keys as written.
         foreach (var (state, owner) in pass.Slavers)
@@ -480,6 +486,16 @@ public static partial class SaveCapture
         {
             if (item.Written is { } record && pass.Handles.TryGetValue(owner, out var hand)) hand.Write(record, "ownedby");
         }
+    }
+
+    /// <summary>
+    /// Writes a character's <c>carrying</c> partner handle, clearing its <c>carrying</c> bool when the partner was not written to the save so no
+    /// record is left claiming to carry a null handle.
+    /// </summary>
+    static void WriteCarryPartner(FcsRecord state, Hand hand)
+    {
+        if (hand.IsNull) state.Bools["carrying"] = false;
+        hand.Write(state, "carrying");
     }
 
     #endregion
@@ -925,6 +941,10 @@ public static partial class SaveCapture
         stats ??= cold.Stats ?? link?.Stats;
         medical ??= cold.Medical ?? link?.Medical;
         WriteBody(sc, cold.RecordId, stats, medical, isNew, data, races);
+
+        // The code mods' fields of the STATS record, over the game's own keys (CharacterSaveFields).
+        if (sc.Stats is { } fieldsStats) CharacterSaveFields.Write(fieldsStats, cold, CharacterSaveRecord.Stats);
+
         if (isNew || cold.LookEdited) WriteAppearance(sc, cold, data.Db, races, replace: !isNew);
         // What it carries and wears, as it is now; items read from a save keep their records' other keys.
         if (cold.Inventory is { } inventory) builder.SetInventory(platoon, sc, SavedKit.FromInventory(inventory));
@@ -974,6 +994,9 @@ public static partial class SaveCapture
                     held.Source.Handle.Write(record, prefix);
             });
         }
+
+        // The code mods' fields, over the game's own keys of the record (CharacterSaveFields).
+        if (sc.Ai is { } fieldsAi) CharacterSaveFields.Write(fieldsAi, cold, CharacterSaveRecord.Orders);
 
         // A new record has no held keys of the save to leave as read: a captive of a save's platoon split into one of its own (#677).
         HeldSave.Write(g, cold, isNew ? null : link, world.Fixtures, buildings);
@@ -1031,6 +1054,13 @@ public static partial class SaveCapture
         if (!contract.Target.IsNone) s_memoryPass?.JobTargets.Add((platoon, AiSave.TargetKey, contract.Target));
         if (!contract.Employer.IsNone) s_memoryPass?.JobTargets.Add((platoon, AiSave.EmployerKey, contract.Employer));
     }
+
+    /// <summary>
+    /// Whether an NPC is written with a record of its own in a new platoon: one the population made, or one made from a save's platoon it has left
+    /// since (a captive split off its squad, <c>PopulationSystem.SplitCaptives</c>; a slave bought free or a character split off by dialogue,
+    /// <c>DialogueSystem.Separate</c>). Any other character of a save is written into its own platoon.
+    /// </summary>
+    static bool OwnRecord(World world, CharacterCold cold) => cold.Save is not { } link || world.Saved?.MemberOf(link) is { Gone: true };
 
     /// <summary>
     /// Holds back the target handles of the character's jobs on a character until every character has one (<see cref="MemoryPass.JobTargets"/>).
@@ -1394,6 +1424,11 @@ public static partial class SaveCapture
                 WriteCharacter(builder, world, data, options, clock, buildings, races, platoon, sc, m.Live, sc.OwnerFactionId,
                     squad?.Leader == m.Live, orders: false);
             }
+            else if (m.Cold is { } left && m.Position is { } leftAt)
+            {
+                WriteCharacter(builder, world, data, options, clock, buildings, races, platoon, sc, left, leftAt, m.Yaw, CharacterId.None,
+                    sc.OwnerFactionId, m.Leader, orders: false);
+            }
             else if (m.Position is { } at)
             {
                 WriteLeftCharacter(builder, world, data, clock, races, platoon, sc, m, at);
@@ -1402,7 +1437,8 @@ public static partial class SaveCapture
     }
 
     /// <summary>
-    /// A character of a saved platoon that left the world: written as it was when its platoon left (place, facing, body, bounties and kit).
+    /// A character of a saved platoon that left the world without a kept cold state: written with its place, facing, body, bounties, kit and cleared
+    /// ragdoll and carry keys.
     /// </summary>
     static void WriteLeftCharacter(SaveBuilder builder, World world, PopulationData data, SaveClock clock, Dictionary<string, RaceData?> races,
         SavePlatoon platoon, SaveCharacter sc, SavedMember m, Vector3 at)
@@ -1416,6 +1452,8 @@ public static partial class SaveCapture
             EntitySave.Write(g, m.Entity.IsNone ? EntitySave.Read(m.Source) : m.Entity);
             BountySave.Write(g, m.Bounties, data.Relations, clock, world.Tick, world.TickSeconds);
             RagdollSave.Write(g, null);   // its ragdoll went with it
+            g.Bools["carrying"] = false;
+            Hand.Null.Write(g, "carrying");
         }
 
         if (m.Inventory is { } inventory) builder.SetInventory(platoon, sc, SavedKit.FromInventory(inventory));
@@ -1698,10 +1736,9 @@ public static partial class SaveCapture
         }
 
         /// <summary>
-        /// Whether a character gets a record of its own here: one the population made, or one made from a save's platoon it has left since (a
-        /// captive split off its squad, <c>PopulationSystem.SplitCaptives</c>). Any other character of a save is written into its own platoon.
+        /// Whether a character gets a record of its own here (<see cref="SaveCapture.OwnRecord"/>).
         /// </summary>
-        bool OwnRecord(CharacterCold cold) => cold.Save is not { } link || _world.Saved?.MemberOf(link) is { Gone: true };
+        bool OwnRecord(CharacterCold cold) => SaveCapture.OwnRecord(_world, cold);
 
         /// <summary>
         /// Writes one squad in the world, with its platoon's state when it has one (else <c>dead</c> as <paramref name="declared"/>).

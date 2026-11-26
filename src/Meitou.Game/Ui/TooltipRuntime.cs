@@ -226,7 +226,7 @@ sealed class TooltipRuntime(PlayerInterface player)
                 // A game data record: its name (the original adds a town's faction, relations and residents; Meitou has the map's own tooltip for
                 // those).
                 return ItemRecordOf?.Invoke(p.GetValueOrDefault(UiTooltips.Data) ?? "") is { Name.Length: > 0 } record
-                    ? ([new(record.Name)], kind)
+                    ? ([new(record.ShownName())], kind)
                     : null;
             case "4":
                 // A map place: its rows, one per line, the value after a tab.
@@ -349,10 +349,10 @@ sealed class TooltipRuntime(PlayerInterface player)
             var line = lines[i];
             var area = layout.Rows[i].Area;
 
-            AddTipText(controls, prefix, "key", i, area, line.Key, "Left Top", line.KeyTone, meitou);
+            AddTipText(controls, prefix, "key", i, area, line.Key, "Left Top", line.KeyTone, meitou, line.KeyColour);
             float suffixWidth = line.Suffix.Length > 0 ? painter.MeasureText(TooltipFont, line.Suffix, player.Height, 0, minimum).Width : 0;
             AddTipText(controls, prefix, "value", i, area with { Width = Math.Max(0, area.Width - suffixWidth) }, line.Value, "Right Top",
-                line.ValueTone, meitou, valueColours is not null && i < valueColours.Count ? valueColours[i] : null);
+                line.ValueTone, meitou, valueColours is not null && i < valueColours.Count ? valueColours[i] ?? line.ValueColour : line.ValueColour);
             AddTipText(controls, prefix, "suffix", i, area, line.Suffix, "Right Top", line.SuffixTone, meitou);
         }
     }
@@ -572,14 +572,14 @@ sealed class TooltipRuntime(PlayerInterface player)
     /// or a rule, the turn-in line and the local faction's expiry. <paramref name="everyExpiry"/> (Meitou UI): each faction's expiry under its own
     /// rows instead, none for a prisoner.
     /// </summary>
-    static List<(string Key, string Value)> BountyRows(IReadOnlyList<Simulation.Crime.BountyLine> bounties, PrisonView? prison, bool everyExpiry)
+    List<(string Key, string Value)> BountyRows(IReadOnlyList<Simulation.Crime.BountyLine> bounties, PrisonView? prison, bool everyExpiry)
     {
         var rows = new List<(string, string)>();
 
         foreach (var bounty in bounties)
         {
             string tone = bounty.Local ? MainTag : GreyTag, wanted = bounty.Local ? "" : GreyTag;
-            rows.Add((tone + bounty.Faction, tone + Loc.Tr("c.{1,num}", bounty.Amount)));
+            rows.Add((tone + player.ShownFactionName(bounty.Faction), tone + Loc.Tr("c.{1,num}", bounty.Amount)));
             var crimes = bounty.Crimes.Split(", ", StringSplitOptions.RemoveEmptyEntries);
             if (crimes.Length > 0)
                 rows.Add((wanted + Loc.Tr("-Wanted For:") + " ", wanted + string.Join(", ", crimes.Take(4))));
@@ -642,8 +642,9 @@ sealed class TooltipRuntime(PlayerInterface player)
     /// <summary>
     /// The status lines of a slave (<c>FUN_1405d4260</c>, <b>Observed</b>; docs/game/ui-screens.md section 4): a title, "Slave" (state 1), "Escaped
     /// slave" (state 2) or "Ex-slave" (state 3), and its text naming the owner ("someone" without one); a player character's text ends with the hint
-    /// on the obedient-slave job (state 1) or on keeping the looks-like-a-slave level low (states 2 and 3). Engine choices: the hint is shown for
-    /// player characters, the title takes the Title colour and the text the Main one.
+    /// on the obedient-slave job (state 1) or on keeping the looks-like-a-slave level low (states 2 and 3); states 2 and 3 have the lie-low rows
+    /// between them (<see cref="LieLowRows"/>). Engine choices: the hint is shown for player characters, the title takes the Title colour and the
+    /// text the Main one.
     /// </summary>
     static List<(string Key, string Value)> SlaveRows(SlaveView slave, bool player)
     {
@@ -657,8 +658,35 @@ sealed class TooltipRuntime(PlayerInterface player)
             _ => Loc.Tr("A slave belonging to {1}. Not considered a person with rights, "
                 + "a slave works for his master until death and nothing more. {2}", owner, player ? SlaveHint() : ""),
         };
-        return [(TitleTag + SlaveTitle(slave.State), ""), (MainTag + text.TrimEnd(), "")];
+        return [(TitleTag + SlaveTitle(slave.State), ""), .. LieLowRows(slave), (MainTag + text.TrimEnd(), "")];
     }
+
+    /// <summary>
+    /// An escaped slave's or ex-slave's rows (<c>FUN_1405d4260</c>, <b>Observed</b> by decompile; docs/game/ui-screens.md section 4), each label in
+    /// Main after a <c>-</c>: Situation (Undiscovered in Good, else SEEN! in Bad while the recently-wanted marker runs), Looks like a slave (the
+    /// level x 100 as a float, Main) and Time remaining (the whole hours left to lie low, Main); none for a slave.
+    /// </summary>
+    static List<(string Key, string Value)> LieLowRows(SlaveView slave)
+    {
+        if (slave.State <= 1) return [];
+
+        string situation = slave.Seen
+            ? ProductionWindows.BadTag + Loc.Tr("Seen!").ToUpperInvariant()
+            : ProductionWindows.GoodTag + Loc.Tr("Undiscovered");
+        string looks = MainTag + Loc.Format("{1,num,p=6}%", slave.Looks * 100);
+        string left = MainTag + Loc.Plural("{1,num} hour", "{1,num} hours", slave.HoursLeft, slave.HoursLeft);
+        return
+        [
+            (LieLowLabel(Loc.Tr("Situation:")), situation),
+            (LieLowLabel(Loc.Tr("Looks like a slave:")), looks),
+            (LieLowLabel(Loc.Tr("Time remaining:")), left),
+        ];
+    }
+
+    /// <summary>
+    /// A lie-low row's label: Main, a <c>-</c>, then the game's word.
+    /// </summary>
+    static string LieLowLabel(string label) => MainTag + "-" + label;
 
     /// <summary>
     /// The slave title of <paramref name="state"/>: escaped (2), ex-slave (3), else slave.
@@ -830,6 +858,17 @@ sealed class TooltipRuntime(PlayerInterface player)
         public string ModTag { get; init; } = "";
 
         /// <summary>
+        /// Who holds the item and its index there (<see cref="InventoryItemView.Index"/>; -1 with no holder), for the mods' tooltip lines
+        /// (<see cref="UiItemTooltipContext.Owner"/>); null for an item no command can name (a trader's stock, a debug window's).
+        /// </summary>
+        public Simulation.Items.ItemOwner? Owner { get; init; }
+
+        /// <summary>
+        /// The item's index in <see cref="Owner"/>'s items; -1 without an owner.
+        /// </summary>
+        public int Index { get; init; } = -1;
+
+        /// <summary>
         /// The chance a take of the item goes unseen, for another faction's item its window's opener would steal
         /// (<see cref="InventoryItemView.StealChance"/>); null otherwise.
         /// </summary>
@@ -869,6 +908,7 @@ sealed class TooltipRuntime(PlayerInterface player)
         public static ItemTip Of(TradeItemView v) =>
             new(v.Record, v.Material, v.Name, v.Quantity, v.Weight, v.Quality, v.Company, v.Level, v.Charges, v.MaxCharges, v.StolenFrom, v, null)
             {
+                ModTag = v.ModTag,
                 Unique = v.Unique,
                 BagItems = v.BagItems,
                 StolenOwner = v.StolenOwner,
@@ -1034,7 +1074,8 @@ sealed class TooltipRuntime(PlayerInterface player)
         // A blueprint is titled with its research (BlueprintItem's first tooltip function, FUN_1407ab430): the name, "Research Blueprint", its state
         // and Tech Level (BlueprintRows); the requirement and unlock rows follow the prices.
         var research = ItemRecordOf?.Invoke(t.Company) is { Type: Data.Fcs.FcsRecordType.Research } r ? r : null;
-        string name = research?.Name ?? (t.Brief && model is not null ? model + " " + t.Name : t.Name);
+        string itemName = player.ShownItemName(t.Record, t.Name, t.ModTag);
+        string name = research?.ShownName() ?? (t.Brief && model is not null ? model + " " + itemName : itemName);
 
         // An empty bag: " (" + "empty" + ")" after its name (FUN_1407aa090).
         if (!t.Brief && t.BagItems == 0) name += " (" + Loc.Tr("empty") + ")";
@@ -1090,7 +1131,7 @@ sealed class TooltipRuntime(PlayerInterface player)
 
         // The record's description closes every other item's tooltip, with no blank row before it (the second tooltip function, FUN_14079f4d0 and its
         // overrides).
-        if (armour is null && record?.GetString("description") is { Length: > 0 } text)
+        if (armour is null && record?.GetShownString("description") is { Length: > 0 } text)
             lines.Add(new(text, "", TooltipTone.Ink, Paragraph: true));
         if (type == Data.Fcs.FcsRecordType.Weapon) lines.AddRange(WeaponTail(t, model));
 
@@ -1098,13 +1139,42 @@ sealed class TooltipRuntime(PlayerInterface player)
     }
 
     /// <summary>
-    /// The code mods' lines for the item (<see cref="UiRegistration.AddItemTooltipLines"/>), each a label and an optional value.
+    /// The code mods' lines for the item (<see cref="UiRegistration.AddItemTooltipLines"/>), each a label and an optional value: after the game's row
+    /// a line names (<see cref="UiItemTooltipLine.After"/>), else after the game's rows.
     /// </summary>
     void AddModRows(List<TooltipLine> lines, ItemTip t)
     {
-        var item = new UiItemTooltipContext(t.Record, t.Name, t.ModTag, t.Quantity, t.Level, t.Quality);
-        foreach (var line in player.ModItemTooltipLines(item)) lines.Add(new(line.Label, line.Value ?? ""));
+        bool first = !Equals(t, _modRowsShownFor);
+        _modRowsShownFor = t;
+        int game = lines.Count;
+        var placed = new List<(int At, TooltipLine Line)>();
+        foreach (var line in player.ModItemTooltipLines(t, first))
+        {
+            var row = new TooltipLine(line.Label, line.Value ?? "")
+            {
+                KeyColour = UiLineStyle.Ink(line.Style?.Label),
+                ValueColour = UiLineStyle.Ink(line.Style?.Value),
+            };
+            int at = line.After is { } after && game > 0 ? lines.FindLastIndex(game - 1, game, l => GameRowIs(l, after)) : -1;
+            if (at < 0) lines.Add(row);
+            else placed.Add((at + 1, row));
+        }
+
+        // From the last place up, so the places above keep their index; lines at one place keep their order.
+        foreach (var group in placed.GroupBy(p => p.At).OrderByDescending(g => g.Key))
+            lines.InsertRange(group.Key, group.Select(p => p.Line));
     }
+
+    /// <summary>
+    /// Whether <paramref name="row"/> is the game's row labelled <paramref name="label"/> (its key without the leading <c>-</c> of a price row).
+    /// </summary>
+    static bool GameRowIs(TooltipLine row, string label) => row.Key.AsSpan().TrimStart('-').SequenceEqual(label);
+
+    /// <summary>
+    /// The item tooltip the mods' lines were last asked for: a tooltip built again for an equal tip (each frame it shows) is not a first showing
+    /// (<see cref="UiItemTooltipContext.First"/>); another item's tooltip, or the item changed, is.
+    /// </summary>
+    ItemTip? _modRowsShownFor;
 
     /// <summary>
     /// A blueprint's research title and rows, then the grade line right under the name (a weapon's model, a crossbow's grade).
@@ -1182,7 +1252,7 @@ sealed class TooltipRuntime(PlayerInterface player)
     /// </summary>
     TooltipLine StolenRow(ItemTip t)
     {
-        var owner = t.StolenOwner ?? player.FactionName?.Invoke(t.StolenFrom);
+        var owner = t.StolenOwner ?? player.ShownFactionName(t.StolenFrom);
 
         return owner is { Length: > 0 }
             ? new("Stolen from:", owner, TooltipTone.Bad, TooltipTone.Bad)
@@ -1260,7 +1330,7 @@ sealed class TooltipRuntime(PlayerInterface player)
         // Then a blank row and the record's description; for a piece with a crafter's name another blank row, the heading and a paragraph naming
         // the smith and the player's faction (FUN_1407a33a0, Observed: docs/game/ui-screens.md "Item tooltip"). Paragraphs wrap at the tooltip's
         // width without widening it.
-        if (record?.GetString("description") is { Length: > 0 } description)
+        if (record?.GetShownString("description") is { Length: > 0 } description)
         {
             lines.Add(new(" "));
             lines.Add(new(description, "", TooltipTone.Title, Paragraph: true));
@@ -1268,11 +1338,11 @@ sealed class TooltipRuntime(PlayerInterface player)
 
         if (t.Crafter.Length > 0)
         {
-            string faction = player.PlayerFactionName?.Invoke() ?? "";
+            string faction = player.PlayerFactionName?.Invoke() ?? "", crafter = player.ShownName("character", "", t.Crafter);
             lines.Add(new(" "));
-            lines.Add(new(Loc.Tr("[Crafted by {1}]", t.Crafter), "", TooltipTone.Title));
-            lines.Add(new(t.Level >= 70 ? Loc.Tr("High quality armour crafted by the renowned smith {1} of {2}.", t.Crafter, faction)
-                : Loc.Tr("Crafted by the smith {1} of {2}.", t.Crafter, faction), "", TooltipTone.Title, Paragraph: true));
+            lines.Add(new(Loc.Tr("[Crafted by {1}]", crafter), "", TooltipTone.Title));
+            lines.Add(new(t.Level >= 70 ? Loc.Tr("High quality armour crafted by the renowned smith {1} of {2}.", crafter, faction)
+                : Loc.Tr("Crafted by the smith {1} of {2}.", crafter, faction), "", TooltipTone.Title, Paragraph: true));
         }
     }
 
@@ -1479,15 +1549,15 @@ sealed class TooltipRuntime(PlayerInterface player)
 
         if (t.Crafter.Length > 0)
         {
-            string faction = player.PlayerFactionName?.Invoke() ?? "";
-            yield return new("[" + Loc.Tr("Crafted by {1}", t.Crafter) + "]", "", TooltipTone.Main);
-            yield return new(t.Level >= 45 ? Loc.Tr("A masterful weapon crafted by the renowned smith {1} of {2}.", t.Crafter, faction)
-                : Loc.Tr("Crafted by the smith {1} of {2}.", t.Crafter, faction), "", TooltipTone.Ink, Paragraph: true);
+            string faction = player.PlayerFactionName?.Invoke() ?? "", crafter = player.ShownName("character", "", t.Crafter);
+            yield return new("[" + Loc.Tr("Crafted by {1}", crafter) + "]", "", TooltipTone.Main);
+            yield return new(t.Level >= 45 ? Loc.Tr("A masterful weapon crafted by the renowned smith {1} of {2}.", crafter, faction)
+                : Loc.Tr("Crafted by the smith {1} of {2}.", crafter, faction), "", TooltipTone.Ink, Paragraph: true);
         }
         else if (t.Company.Length > 0 && ItemRecordOf?.Invoke(t.Company) is { } company)
         {
-            yield return new("[" + Loc.Tr("Manufactured by") + " " + company.Name + "]", "", TooltipTone.Main);
-            if (company.GetString("company description") is { Length: > 0 } about)
+            yield return new("[" + Loc.Tr("Manufactured by") + " " + company.ShownName() + "]", "", TooltipTone.Main);
+            if (company.GetShownString("company description") is { Length: > 0 } about)
                 yield return new(about, "", TooltipTone.Ink, Paragraph: true);
         }
     }

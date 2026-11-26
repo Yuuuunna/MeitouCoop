@@ -754,7 +754,7 @@ public sealed class SecureServerPeer
                                 {
                                     var view = capturedView with
                                     {
-                                        Events = retainedEvents.Observe(capturedView.Events)
+                                        Events = retainedEvents.Observe(capturedView.Events, includeAdmittedSource: false)
                                     };
                                     if (!viewInitialized)
                                         return[(encodingPublisher.Capture(view, capture.Animations, capture.Destroyed), false)];

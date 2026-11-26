@@ -23,7 +23,7 @@ Not built, by design: the original's in-game level editor and fog editor (`Kensh
 - [launch-options](launch-options.md): every command-line option and environment variable
 - [launcher](launcher.md): Coop client selection, server entry, releases, mods and presets
 - [mod-sync](mod-sync.md): automatic server mod downloads, isolated client profiles and code consent
-- [feedback](feedback.md): the roadmap page, the in-game feedback button and its service, issue forms and the Haiku area labels
+- [feedback](feedback.md): the in-game feedback button and its service, issue forms and the Haiku area labels
 - [diagnostics](diagnostics.md): runtime switches, paired client/server incident packages, private collection and launcher retry
 - [macos-port](macos-port.md): running on MoltenVK, its constraints and fixes; the native Metal path next to it
 - [metal-backend](metal-backend.md): a native Metal path next to Vulkan - what the spike proved and what a second backend would need

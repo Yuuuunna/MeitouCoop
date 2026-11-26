@@ -93,6 +93,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
     public GameStatePublication Capture(PlayerWorldView view, IReadOnlyDictionary<ulong, AnimationPlaybackState>? animations = null, IReadOnlySet<ulong>? destroyedEntities = null)
     {
         WorldViewCodec.Validate(view);
+        view = ItemTagProjection.Capture(view);
         if (view.Snapshot.Characters.Count > 4096)
             throw new InvalidDataException("Recipient entity subscription exceeds protocol bound.");
         var source = new RecipientCaptureIdentity(view.World, view.Player, view.ConnectionGeneration);
@@ -702,7 +703,12 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
     /// <summary>Authenticated receive adapter's shared monotonic clock. Invoked after validating a
     /// publication clock and before applying any playback records, including staged initial entry.</summary>
     public Func<ulong, double, float, double>? ObservePresentationClock { get; set; }
-    public PlayerWorldView? View => _initialized && !_failed ? _view : null;
+    /// <summary>
+    /// Hydration is confined to output; raw replica items never retain a tag from an earlier definition table.
+    /// </summary>
+    readonly ItemTagProjection _itemTags = new();
+
+    public PlayerWorldView? View => _initialized && !_failed && _view is { } view ? _itemTags.Join(view) : null;
     public IReadOnlyDictionary<ulong, AnimationTimeline> AnimationTimelines => _entities.Where(p => p.Value.Animation is not null).ToDictionary(p => p.Key, p => p.Value.Animation!);
 
     public bool Apply(ReadOnlySpan<byte> frame)
@@ -999,6 +1005,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             RefreshCharacters();
             if (baseline)
             {
+                if (_collections.TryGetValue(1069, out var tags)) ItemTagCollection.RequireComplete(tags);
                 foreach (ushort field in GameComponentSchema.ViewFields.Select(f => f.Id).Concat(GameComponentSchema.SnapshotFields.Select(f => f.Id)))
                     if (!_revisions.ContainsKey((0, field)))
                         throw new InvalidDataException("Incomplete baseline global schema.");
@@ -1252,13 +1259,13 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         AdvancePresentation(tick);
         if (_view is null || !_initialized || _failed)
             return null;
-        return _view with
+        return _itemTags.Join(_view with
         {
             Snapshot = _view.Snapshot with
             {
                 Characters = _entities.OrderBy(p => p.Key).Select(p => Sample(p.Value, _presentedTick)).ToArray()
             }
-        };
+        });
     }
 
     public void AdvancePresentation(double tick)

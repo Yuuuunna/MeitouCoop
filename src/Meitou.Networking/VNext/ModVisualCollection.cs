@@ -6,17 +6,20 @@ namespace Meitou.Networking.VNext;
 /// <summary>
 /// One independently revisioned definition or reading. A shared definition version binds the two parts before a visual becomes usable.
 /// </summary>
-internal sealed record ModVisualPart(ModEffectView? Effect, ModGlowView? Glow, bool Definition, ulong DefinitionVersion)
+internal sealed record ModVisualPart(ModEffectView? Effect, ModGlowView? Glow, bool Definition, ulong DefinitionVersion,
+    ModTrailView? Trail = null, ModAudioView? Audio = null)
 {
     /// <summary>
     /// The authority's logical identity, independent of this part's key.
     /// </summary>
-    internal long Id => Effect?.Id ?? Glow?.Id ?? throw new InvalidDataException("Missing shared visual family.");
+    internal long Id => Effect?.Id ?? Glow?.Id ?? Trail?.Id ?? Audio?.Id ?? throw new InvalidDataException("Missing shared visual family.");
 
     /// <summary>
     /// Lowercase keys describe static definitions; uppercase keys describe their dynamic readings.
     /// </summary>
-    internal string Key => (Effect is not null ? Definition ? "e:" : "E:" : Definition ? "g:" : "G:")
+    internal string Key => (Effect is not null ? Definition ? "e:" : "E:"
+        : Glow is not null ? Definition ? "g:" : "G:"
+        : Trail is not null ? Definition ? "t:" : "T:" : Definition ? "a:" : "A:")
         + Id.ToString(CultureInfo.InvariantCulture);
 }
 
@@ -43,11 +46,13 @@ internal sealed class ModVisualCollection : IGameCollection
         PlayerWorldView view, IReadOnlyDictionary<string, byte[]>? previous)
     {
         var visuals = view.Snapshot.ModVisuals;
-        int count = checked(visuals.Effects.Length + visuals.Glows.Length);
+        int count = checked(visuals.Effects.Length + visuals.Glows.Length + visuals.Trails.Length + visuals.Audio.Length);
         if (count > 65536) throw new InvalidDataException("Shared visual collection exceeds its logical identity bound.");
         var result = new List<(string Key, byte[] Value)>(2 * count);
         foreach (var effect in visuals.Effects) Add(effect, null, previous, result);
         foreach (var glow in visuals.Glows) Add(null, glow, previous, result);
+        foreach (var trail in visuals.Trails) Add(null, null, previous, result, trail);
+        foreach (var audio in visuals.Audio) Add(null, null, previous, result, audio: audio);
         var keys = result.Select(pair => pair.Key).ToArray();
         _ = ValidateManifest(keys);
         return (new(true, true, keys), result);
@@ -57,10 +62,10 @@ internal sealed class ModVisualCollection : IGameCollection
     /// Emits adjacent definition/reading candidates. The comparison cache may omit the definition while its version is unchanged.
     /// </summary>
     static void Add(ModEffectView? effect, ModGlowView? glow, IReadOnlyDictionary<string, byte[]>? previous,
-        List<(string Key, byte[] Value)> result)
+        List<(string Key, byte[] Value)> result, ModTrailView? trail = null, ModAudioView? audio = null)
     {
-        string key = new ModVisualPart(effect, glow, true, 0).Key;
-        byte[] definition = ModVisualCodec.Encode(effect, glow, true, 0);
+        string key = new ModVisualPart(effect, glow, true, 0, trail, audio).Key;
+        byte[] definition = ModVisualCodec.Encode(effect, glow, true, 0, trail, audio);
         byte[]? old = previous?.GetValueOrDefault(key);
         ulong version;
         if (old is not null && ModVisualCodec.SameDefinition(definition, old))
@@ -74,7 +79,7 @@ internal sealed class ModVisualCollection : IGameCollection
             ModVisualCodec.SetDefinitionVersion(definition, version);
         }
         result.Add((key, definition));
-        result.Add((Partner(key), ModVisualCodec.Encode(effect, glow, false, version)));
+        result.Add((Partner(key), ModVisualCodec.Encode(effect, glow, false, version, trail, audio)));
     }
 
     /// <summary>
@@ -94,6 +99,8 @@ internal sealed class ModVisualCollection : IGameCollection
     {
         var effects = new List<ModEffectView>();
         var glows = new List<ModGlowView>();
+        var trails = new List<ModTrailView>();
+        var audio = new List<ModAudioView>();
         foreach (string key in state.Manifest.Keys)
         {
             if (!IsDefinition(key) || state.Items.GetValueOrDefault(key).Value is not ModVisualPart definition
@@ -101,13 +108,20 @@ internal sealed class ModVisualCollection : IGameCollection
             if (!definition.Definition || reading.Definition || definition.DefinitionVersion != reading.DefinitionVersion)
                 throw new InvalidDataException("Shared visual definition and reading do not match.");
             if (definition.Effect is { } effect && reading.Effect is { } effectState)
-                effects.Add(effect with { Tint = effectState.Tint, StartedAt = effectState.StartedAt, ExpiresAt = effectState.ExpiresAt });
+                effects.Add(effect with { Tint = effectState.Tint, Anchor = ModVisualCodec.WithScale(effect.Anchor, effectState.Anchor),
+                    StartedAt = effectState.StartedAt, ExpiresAt = effectState.ExpiresAt });
             else if (definition.Glow is { } glow && reading.Glow is { } glowState)
                 glows.Add(glow with { Colour = glowState.Colour, Strength = glowState.Strength,
-                    StartedAt = glowState.StartedAt, ExpiresAt = glowState.ExpiresAt });
+                    StartedAt = glowState.StartedAt, ExpiresAt = glowState.ExpiresAt, Mode = glowState.Mode, ThroughWalls = glowState.ThroughWalls });
+            else if (definition.Trail is { } trail && reading.Trail is { } trailState)
+                trails.Add(trail with { Anchor = ModVisualCodec.WithScale(trail.Anchor, trailState.Anchor),
+                    Style = trailState.Style with { Material = trail.Style.Material },
+                    StartedAt = trailState.StartedAt, ExpiresAt = trailState.ExpiresAt });
+            else if (definition.Audio is { } modulation && reading.Audio is { } audioState)
+                audio.Add(modulation with { Modulation = audioState.Modulation });
             else throw new InvalidDataException("Shared visual part families do not match.");
         }
-        return view with { Snapshot = view.Snapshot with { ModVisuals = new(effects.ToArray(), glows.ToArray()) } };
+        return view with { Snapshot = view.Snapshot with { ModVisuals = new(effects.ToArray(), glows.ToArray()) { Trails = trails.ToArray(), Audio = audio.ToArray() } } };
     }
 
     /// <summary>
@@ -128,7 +142,7 @@ internal sealed class ModVisualCollection : IGameCollection
     /// </summary>
     internal static string Partner(string key)
     {
-        if (key.Length < 3 || key[1] != ':' || key[0] is not ('e' or 'E' or 'g' or 'G')
+        if (key.Length < 3 || key[1] != ':' || key[0] is not ('e' or 'E' or 'g' or 'G' or 't' or 'T' or 'a' or 'A')
             || !long.TryParse(key.AsSpan(2), NumberStyles.None, CultureInfo.InvariantCulture, out long id) || id <= 0
             || id.ToString(CultureInfo.InvariantCulture) != key[2..])
             throw new InvalidDataException("Invalid shared visual part key.");
@@ -136,7 +150,7 @@ internal sealed class ModVisualCollection : IGameCollection
     }
 
     /// <summary>
-    /// The two lowercase prefixes identify definitions, never dynamic readings.
+    /// The lowercase family prefixes identify definitions, never dynamic readings.
     /// </summary>
-    internal static bool IsDefinition(string key) => key.Length > 0 && key[0] is 'e' or 'g';
+    internal static bool IsDefinition(string key) => key.Length > 0 && key[0] is 'e' or 'g' or 't' or 'a';
 }

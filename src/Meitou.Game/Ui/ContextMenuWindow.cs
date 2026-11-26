@@ -36,14 +36,37 @@ sealed class ContextMenuWindow(PlayerInterface player)
     internal static readonly Vector4 VerbHover = new(0.86f, 0.62f, 0.2f, 1);
 
     /// <summary>
+    /// The colour of an unavailable row's caption.
+    /// </summary>
+    internal static readonly Vector4 UnavailableInk = new(0.5f, 0.48f, 0.43f, 1);
+
+    /// <summary>
     /// A context menu: its title, where it opens and its verbs (caption and what it gives).
     /// </summary>
-    internal sealed record ContextMenu(string Title, Vector2 At, IReadOnlyList<(string Caption, Action Give)> Verbs);
+    internal sealed record ContextMenu(string Title, Vector2 At, IReadOnlyList<(string Caption, Action Give)> Verbs)
+    {
+        /// <summary>
+        /// The second menu the original opens with this one, beside it on the left (<c>ContextMenuGUI::show</c> with its last argument set): a
+        /// caged character's own rows beside its cage's (<see cref="CharacterMenu"/>); null for none.
+        /// </summary>
+        public ContextMenu? Beside { get; init; }
+    }
+
+    /// <summary>
+    /// The argument prefix of a row of the second menu (<see cref="ContextMenu.Beside"/>); the first menu's rows are their bare index.
+    /// </summary>
+    const string BesideRow = "beside:";
 
     /// <summary>
     /// The open menu; null for none.
     /// </summary>
     internal ContextMenu? OpenMenu;
+
+    /// <summary>
+    /// The target the code mods' rows were last asked for (<see cref="PlayerInterface.ModTargetVerbs"/>), for the menu being built; the next
+    /// <see cref="Menu"/> takes it, and a menu built for a press starts without one.
+    /// </summary>
+    internal UiMenuTarget? RowsTarget;
 
     /// <summary>
     /// A right press on a target that has verbs: its menu (built again when the hold ends), where, when, the hold that opens it and the order a quick
@@ -82,13 +105,19 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// chance shows 0 (<c>DAT_142133f28</c>, taken to be CONSTANTS <c>minimum lockpick chance</c>, <b>Observed</b>: the allowed test
     /// <c>FUN_1408ca120</c> compares with it).
     /// </summary>
-    internal string PickLockCaption(Vector3 at, int level, bool building)
-    {
-        if (LockChance(at, level) is not { } chance) return "Pick Lock";
-        if (building && chance < (player.SquadWindows.SquadLimits?.Invoke()?.MinimumLockpickChance ?? 0.05f))
-            chance = 0;
+    internal string PickLockCaption(Vector3 at, int level, bool building) =>
+        ShownLockChance(at, level, building) is { } chance ? WithChance("Pick Lock", chance * 100) : "Pick Lock";
 
-        return WithChance("Pick Lock", chance * 100);
+    /// <summary>
+    /// The pick chance (0..1) the Pick Lock row shows: <see cref="LockChance"/>, 0 for a <paramref name="building"/>'s lock below the minimum pick
+    /// chance; null with nobody selected.
+    /// </summary>
+    internal float? ShownLockChance(Vector3 at, int level, bool building)
+    {
+        if (LockChance(at, level) is not { } chance) return null;
+        if (building && chance < (player.SquadWindows.SquadLimits?.Invoke()?.Constants.MinimumLockpickChance ?? 0.05f)) return 0;
+
+        return chance;
     }
 
     /// <summary>
@@ -161,8 +190,69 @@ sealed class ContextMenuWindow(PlayerInterface player)
         var list = kept.Select((v, i) => (v, i)).OrderBy(x => OrderOf(x.v.Caption) ?? int.MaxValue).ThenBy(x => x.i).Select(x => x.v).ToList();
         if (offered is not null) list.AddRange(offered);
 
+        var target = RowsTarget;
+        RowsTarget = null;
+        if (player.HasModMenuRows) list = OverriddenRows(title, list, target);
+
         return list.Count == 0 ? null : new ContextMenu(title, at, list);
     }
+
+    /// <summary>
+    /// <paramref name="rows"/> as the code mods' row overrides change them (<see cref="UiRegistration.AddMenuRowOverrides"/>): captions replaced
+    /// (the chance column kept), colours set, rows left out.
+    /// </summary>
+    List<(string Caption, Action Give)> OverriddenRows(string title, List<(string Caption, Action Give)> rows, UiMenuTarget? target)
+    {
+        var selected = player.SelectedIds();
+        var kept = new List<(string Caption, Action Give)>(rows.Count);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var (caption, chance) = SplitChance(rows[i].Caption);
+            if (player.ModMenuRow(new UiMenuRowContext(title, caption, chance, i, target, selected)) is not { } over)
+            {
+                kept.Add(rows[i]);
+                continue;
+            }
+
+            if (over.Visible == false) continue;
+
+            string shown = over.Caption is { } replaced ? replaced + rows[i].Caption[caption.Length..] : rows[i].Caption;
+            kept.Add(Inked((shown, rows[i].Give), over.TextColour));
+        }
+
+        return kept;
+    }
+
+    /// <summary>
+    /// The menu of a character (<c>FUN_1407a6bc0</c>, <b>Verified</b> by decompile): a caged one is replaced by its cage, whose rows
+    /// (<see cref="FurnitureUse.CageMenu"/>: Lock or Unlock, Pick Lock, Use Tools, Use Strength, Set Free, its site's) make the first menu, and with
+    /// the cage's <c>occupant selection</c> the prisoner's own rows (<see cref="Verbs"/>, its shackles' Use Tools and Use Strength among them) the
+    /// second, beside it; any other character has its own rows. Null when neither menu has a row.
+    /// </summary>
+    internal ContextMenu? CharacterMenu(CharacterSnapshot target, Vector2 at)
+    {
+        string name = player.ShownName(target);
+        if (CageOf(target) is not { } cage) return Menu(name, at, Verbs(target));
+
+        // The cage's menu is built first: each Menu takes the code mods' rows target its own verbs set.
+        var cageMenu = player.Furniture.CageMenu(cage, at);
+        if (!cage.OccupantSelection || Menu(name, at, Verbs(target)) is not { } own) return cageMenu;
+
+        return (cageMenu ?? new ContextMenu("", at, [])) with { Beside = own };
+    }
+
+    /// <summary>
+    /// Whether <paramref name="target"/> has a menu (<see cref="CharacterMenu"/>), without building it: a row of its cage's or of its own.
+    /// </summary>
+    internal bool HasMenu(CharacterSnapshot target) => CageOf(target) is { } cage
+        ? player.Furniture.CageVerbs(cage).Count > 0 || cage.OccupantSelection && Verbs(target).Count > 0
+        : Verbs(target).Count > 0;
+
+    /// <summary>
+    /// The cage <paramref name="target"/> is held in; null when it is in none.
+    /// </summary>
+    CageSpot? CageOf(CharacterSnapshot target) =>
+        target.Prison?.CageId is { } id ? player.Session.CurrentSnapshot.Cages.FirstOrDefault(c => c.Id == id) : null;
 
     /// <summary>
     /// The verbs the selection has for a character (<c>FUN_1407a6bc0</c>, docs/game/ui-input.md "Context menu verbs"), in the original's labels.
@@ -250,70 +340,117 @@ sealed class ContextMenuWindow(PlayerInterface player)
             ));
         }
 
-        // Shift turns an order into a job (SquadPanel).
-        List<(string, Action)> rows = [.. verbs.Select(v => (v.Item1, player.SquadWindows.JobOrOrder(v.Item1, id, v.Item2)))];
+        // Shift turns an order into a job (SquadPanel); a medic verb no selected character has the kit for is unavailable.
+        List<(string, Action)> rows = [.. verbs.Select(v => KitVerb(v.Item1, player.SquadWindows.JobOrOrder(v.Item1, id, v.Item2)))];
         rows.AddRange(player.ModMenuVerbs(target));
         return rows;
     }
 
     /// <summary>
-    /// A caged character: Talk To (12) and Loot (26). Meitou points at an occupied cage with occupant selection as its occupant and shows one menu,
-    /// so the cage's own verbs come here (engine stand-ins for the original's cage menu beside the occupant's): Unlock or Lock the player's own cage
-    /// (78, 77), Pick Lock another faction's locked one (the prisoner its own, a mate from outside), Use Tools and Use Strength on it (285, 286, the
-    /// same), and once it is open Escape (207, the selected prisoner), Set Free (110), or Pick Up (225, a mate lifts it out; out of another
-    /// faction's cage a crime, locks.md "Cages and beds"); Stealth KO (228) out of any cage but the player's.
+    /// A medic verb (First Aid, Repairs, Splint Injuries) made unavailable (<see cref="Available"/>) when no selected character has its kit at hand
+    /// (<see cref="CharacterSnapshot.HasMedkit"/>, <see cref="CharacterSnapshot.HasSplintKit"/>: what the order's start would refuse with "I don't
+    /// have a medkit." or "I don't have a splint kit."); other verbs as they are.
+    /// </summary>
+    (string, Action) KitVerb(string caption, Action give) => caption switch
+    {
+        "First Aid" or "Repairs" => Available(caption, give, player.Selected().Any(c => c.HasMedkit)),
+        "Splint Injuries" => Available(caption, give, player.Selected().Any(c => c.HasSplintKit)),
+        _ => (caption, give),
+    };
+
+    /// <summary>
+    /// A row the selection cannot carry out now, with the setting on (<see cref="PlayerInterface.GreyUnavailableVerbs"/>): drawn greyed; a plain
+    /// click does nothing, a Shift click gives the row's own action (which turns an order into its job). Meitou only: the original draws and gives
+    /// every row alike.
+    /// </summary>
+    sealed class UnavailableVerb(PlayerInterface player, Action give)
+    {
+        /// <summary>
+        /// The row chosen: its action with Shift held, else nothing.
+        /// </summary>
+        public void Choose()
+        {
+            if (player.SlowModifier) give();
+        }
+    }
+
+    /// <summary>
+    /// A row as it is when <paramref name="available"/> or the setting is off, else its unavailable form (<see cref="UnavailableVerb"/>).
+    /// </summary>
+    internal (string Caption, Action Give) Available(string caption, Action give, bool available) =>
+        available || !player.GreyUnavailableVerbs ? (caption, give) : (caption, new UnavailableVerb(player, give).Choose);
+
+    /// <summary>
+    /// Whether a row's action is an unavailable row's (<see cref="Available"/>), itself or under its colour (<see cref="Inked"/>).
+    /// </summary>
+    static bool IsUnavailable(Action give) => give.Target is UnavailableVerb || give.Target is InkedVerb inked && IsUnavailable(inked.Give);
+
+    /// <summary>
+    /// A row whose caption takes a colour of its own (a code mod's row's <see cref="UiMenuVerb.Colour"/>, a row override's): choosing it gives its
+    /// action.
+    /// </summary>
+    sealed class InkedVerb(Vector4 ink, Action give)
+    {
+        /// <summary>
+        /// The caption's colour.
+        /// </summary>
+        public Vector4 Ink { get; } = ink;
+
+        /// <summary>
+        /// The row's own action.
+        /// </summary>
+        public Action Give { get; } = give;
+
+        /// <summary>
+        /// The row chosen: its own action.
+        /// </summary>
+        public void Choose() => Give();
+    }
+
+    /// <summary>
+    /// <paramref name="row"/> with its caption in <paramref name="colour"/> (RGB clamped to 0..1, alpha 1; null or not finite: as it is).
+    /// </summary>
+    internal static (string Caption, Action Give) Inked((string Caption, Action Give) row, Vector4? colour)
+    {
+        if (colour is not { } c || !float.IsFinite(c.X + c.Y + c.Z)) return row;
+
+        var ink = new Vector4(Math.Clamp(c.X, 0, 1), Math.Clamp(c.Y, 0, 1), Math.Clamp(c.Z, 0, 1), 1);
+        var give = row.Give.Target is InkedVerb inked ? inked.Give : row.Give;
+        return (row.Caption, new InkedVerb(ink, give).Choose);
+    }
+
+    /// <summary>
+    /// A row's caption colour: greyed when unavailable, its own (<see cref="Inked"/>), else <paramref name="ink"/>.
+    /// </summary>
+    static Vector4 RowInk(Action give, Vector4 ink) =>
+        IsUnavailable(give) ? UnavailableInk : give.Target is InkedVerb inked ? inked.Ink : ink;
+
+    /// <summary>
+    /// A caged character's own rows (<c>FUN_1407a6bc0</c>'s imprisoned branch; the cage's lock, pick, force and site rows are its cage's menu beside
+    /// these, <see cref="CharacterMenu"/>): Talk To (12) and Loot (26); once the cage is open Escape (207, the selected prisoner), else Set Free (110)
+    /// out of the player's own cage (locked too) and Pick Up (225, a mate lifts it out; out of another faction's cage a crime, locks.md "Cages and
+    /// beds"); Stealth KO (228) out of any cage but the player's.
     /// </summary>
     void PrisonerVerbs(List<(string, Action)> verbs, CharacterSnapshot target, PrisonView prison, IReadOnlyList<CharacterId> selection, bool down)
     {
         var id = target.Id;
+        bool selected = selection.Contains(id);
         if (!down) AddTalkVerb(verbs, target);
 
         // 26 unless it is the player's and selected: Trade for the player's own, else Loot (a pickpocket while it is awake).
-        if (target.CanOpenInventory && !(target.IsPlayer && selection.Contains(id))) verbs.Add(InventoryVerb(target));
+        if (target.CanOpenInventory && !(target.IsPlayer && selected)) verbs.Add(InventoryVerb(target));
 
         bool ownCage = prison.CageOwner == player.Session.ActiveFaction;
 
-        // The player's own cage has Unlock (78) or Lock (77) by its lock (FUN_1407a6bc0), worked from outside.
-        if (ownCage && prison.CageId is { } own)
-        {
-            verbs.Add((prison.Locked ? "Unlock" : "Lock",
-                () => player.Say(new DoorLockOrder([], own, !prison.Locked) { Tick = player.Session.CommandTick })));
-        }
+        // Set Free is the occupant's row only in the player's own cage (another faction's has it in the cage's menu); never for a dead or knocked-out
+        // one (Set Free wants a conscious target, precondition 125). The own cage frees its prisoner while locked too (the release unlocks it).
+        if (ownCage && !selected && !down && target.CarriedBy.IsNone)
+            verbs.Add(("Set Free", () => player.Say(new SetFreeOrder([], id) { Tick = player.Session.CommandTick })));
 
-        if (prison.Locked)
-        {
-            if (!down && !ownCage)
-            {
-                verbs.Add((prison.LockLevel < 0 ? "Pick Lock" : PickLockCaption(target.Position, prison.LockLevel, false),
-                    () => player.Say(new PickLockOrder(selection, id) { Tick = player.Session.CommandTick })));
-            }
-
-            // Another faction's locked cage also has Use Tools and Use Strength (285, 286; FUN_1407a6bc0 tests the lock and owner, not the occupant),
-            // worked from outside or by the prisoner on its own.
-            if (prison.CageId is { } cage && !ownCage)
-            {
-                verbs.Add(("Use Tools", () => player.Say(new ForceLockOrder([], cage, LockForce.Tools) { Tick = player.Session.CommandTick })));
-                verbs.Add(("Use Strength", () => player.Say(new ForceLockOrder([], cage, LockForce.Strength) { Tick = player.Session.CommandTick })));
-            }
-
-            // The player's own cage frees its prisoner while locked too (the release unlocks it); never a dead or knocked-out one (Set Free wants a
-            // conscious target, precondition 125).
-            if (!selection.Contains(id) && !down && target.CarriedBy.IsNone && ownCage)
-                verbs.Add(("Set Free", () => player.Say(new SetFreeOrder([], id) { Tick = player.Session.CommandTick })));
-        }
-        else if (selection.Contains(id))
-        {
-            if (!down)
-                verbs.Add(("Escape", () => player.Say(new GetOutOrder(player.SelectedIds()) { Tick = player.Session.CommandTick })));   // every selected one (FUN_1407f9e20)
-        }
-        else if (target.CarriedBy.IsNone)
-        {
-            // The pointer picks the occupant over the open cage, so its Set Free verb must be available here too (#435).
-            if (!down)
-                verbs.Add(("Set Free", () => player.Say(new SetFreeOrder([], id) { Tick = player.Session.CommandTick })));
-
-            verbs.Add(PickUpVerb(target));
-        }
+        // Once the cage is open: Escape for the selected prisoner (every selected one, FUN_1407f9e20), else a mate lifts it out.
+        if (!prison.Locked && selected && !down)
+            verbs.Add(("Escape", () => player.Say(new GetOutOrder(player.SelectedIds()) { Tick = player.Session.CommandTick })));
+        if (!prison.Locked && !selected && target.CarriedBy.IsNone) verbs.Add(PickUpVerb(target));
 
         // 228 when neither the prisoner nor its cage is the player's (FUN_1407a6bc0's imprisoned row), so a Rebirth pole's slave too (#757).
         if (!ownCage) AddStealthKoVerb(verbs, target, selection);
@@ -609,6 +746,17 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// </summary>
     internal List<(string Caption, Action Give)> ContainerVerbs(ContainerSpot container)
     {
+        var verbs = GameContainerVerbs(container);
+        var target = new UiMenuTarget(UiMenuTargetKind.Container, container.Record, container.Position) { Id = container.Id, Record = container.Record };
+        verbs.AddRange(player.ModTargetVerbs(target));
+        return verbs;
+    }
+
+    /// <summary>
+    /// A container's own verbs (<see cref="ContainerVerbs"/>, without the code mods' rows).
+    /// </summary>
+    List<(string Caption, Action Give)> GameContainerVerbs(ContainerSpot container)
+    {
         var verbs = new List<(string, Action)>();
         if (player.SelectedIds().Count == 0) return verbs;
 
@@ -645,6 +793,17 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// the building. A locked one also has Use Tools, Use Strength and Smash (285, 286, 226: <see cref="Meitou.Simulation.Locks.ForceLockOrder"/>).
     /// </summary>
     internal List<(string Caption, Action Give)> DoorVerbs((DoorPick Door, bool Locked) pick)
+    {
+        var verbs = GameDoorVerbs(pick);
+        var target = new UiMenuTarget(UiMenuTargetKind.Door, Loc.Tr("Door"), pick.Door.Position) { Id = pick.Door.Id };
+        verbs.AddRange(player.ModTargetVerbs(target));
+        return verbs;
+    }
+
+    /// <summary>
+    /// A door's own verbs (<see cref="DoorVerbs"/>, without the code mods' rows).
+    /// </summary>
+    List<(string Caption, Action Give)> GameDoorVerbs((DoorPick Door, bool Locked) pick)
     {
         var verbs = new List<(string, Action)>();
         if (player.SelectedIds().Count == 0) return verbs;
@@ -693,21 +852,27 @@ sealed class ContextMenuWindow(PlayerInterface player)
     {
         if (player.Picking.PickWhere(p, _ => true) is not { } id) return false;
 
-        return ContextPressOn(p, CharacterMenu, quick);
+        return ContextPressOn(p, PickedMenu, quick);
 
-        ContextMenu? CharacterMenu(Vector2 at) =>
-            player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { } target ? Menu(target.Name, at, Verbs(target)) : null;
+        ContextMenu? PickedMenu(Vector2 at) =>
+            player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { } target ? CharacterMenu(target, at) : null;
     }
 
     /// <summary>
-    /// A right press on a target whose <paramref name="menu"/> has verbs (true): the hold timer starts, the menu opens after <paramref name="hold"/>
+    /// A right press on a target whose <paramref name="build"/> has verbs (true): the hold timer starts, the menu opens after <paramref name="hold"/>
     /// seconds (<see cref="ContextHoldSeconds"/> by default) and <paramref name="quick"/> waits for the release.
     /// </summary>
-    internal bool ContextPressOn(Vector2 p, Func<Vector2, ContextMenu?> menu, Action? quick, double hold = ContextHoldSeconds)
+    internal bool ContextPressOn(Vector2 p, Func<Vector2, ContextMenu?> build, Action? quick, double hold = ContextHoldSeconds)
     {
-        if (menu(p) is null) return false;
+        ContextMenu? Fresh(Vector2 at)
+        {
+            RowsTarget = null;
+            return build(at);
+        }
 
-        _contextPending = (menu, p, System.Diagnostics.Stopwatch.GetTimestamp(), hold, quick);
+        if (Fresh(p) is null) return false;
+
+        _contextPending = (Fresh, p, System.Diagnostics.Stopwatch.GetTimestamp(), hold, quick);
         return true;
     }
 
@@ -767,6 +932,14 @@ sealed class ContextMenuWindow(PlayerInterface player)
     {
         var menu = OpenMenu;
         OpenMenu = null;
+
+        // A row of the second menu names it by its prefix.
+        if (argument.StartsWith(BesideRow, StringComparison.Ordinal))
+        {
+            menu = menu?.Beside;
+            argument = argument[BesideRow.Length..];
+        }
+
         if (menu is not null && int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int i) && i < menu.Verbs.Count)
             menu.Verbs[i].Give();
     }
@@ -785,37 +958,53 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// <summary>
     /// The menu as the original lays it out: a floating panel an eighth of the screen wide, the name on top, a button per verb, beside the cursor and
     /// kept on screen. When a verb has a chance, every button keeps the layout's width and the chance shows beside it as "N%", red at 0 to green at
-    /// 100 (<c>ContextMenuGUI::show</c>); else the buttons fill the row.
+    /// 100 (<c>ContextMenuGUI::show</c>); else the buttons fill the row. The second menu (<see cref="ContextMenu.Beside"/>) has its right edge where
+    /// the first's left edge is (<c>FUN_1407a7fe0</c>: the position kept on screen, then its own width taken off, <b>Observed</b>); a menu with no row
+    /// is not shown.
     /// </summary>
     internal void AddContextMenu(List<UiControl> controls)
     {
         if (OpenMenu is not { } menu) return;
 
+        float w = MathF.Max(200, player.Width * 0.125f);
+        float x = Math.Clamp(menu.At.X + 12, 0, Math.Max(0, player.Width - w));
+        if (menu.Verbs.Count > 0) AddMenuPanel(controls, menu, x, w, "context-", "");
+        if (menu.Beside is { Verbs.Count: > 0 } beside) AddMenuPanel(controls, beside, x - w, w, "context-beside-", BesideRow);
+    }
+
+    /// <summary>
+    /// One menu's panel at <paramref name="x"/>, <paramref name="w"/> wide, its controls named with <paramref name="names"/> and its rows'
+    /// arguments with <paramref name="rows"/>.
+    /// </summary>
+    void AddMenuPanel(List<UiControl> controls, ContextMenu menu, float x, float w, string names, string rows)
+    {
         // Kenshi_ContextMenu: Root 0.125 x 0.0685 of the screen for the title and one option, the title 47.3 % of that height, an option the rest; in
         // an option the button at x 0.0208 w 0.7917 and the Value box at x 0.8125 w 0.1875, both y 0.0513 h 0.8974.
-        float w = MathF.Max(200, player.Width * 0.125f), full = MathF.Max(64, player.Height * 0.0685185f);
+        float full = MathF.Max(64, player.Height * 0.0685185f);
         float titleH = full * 0.472973f, optionH = full - titleH, h = titleH + optionH * menu.Verbs.Count + 6;
-        float x = Math.Clamp(menu.At.X + 12, 0, Math.Max(0, player.Width - w)), y = Math.Clamp(menu.At.Y, 0, Math.Max(0, player.Height - h));
+        float y = Math.Clamp(menu.At.Y, 0, Math.Max(0, player.Height - h));
         var ink = new Vector4(0.86f, 0.82f, 0.71f, 1);
         bool chances = menu.Verbs.Any(v => SplitChance(v.Caption).Chance is not null);
         float buttonW = chances ? w * 0.791667f : w * (1 - 2 * 0.0208333f);
-        controls.Add(new("context-menu", "Widget", new(x, y, w, h), "", "", "Kenshi_FloatingPanelSkin", true, new Dictionary<string, string>(),
+        controls.Add(new(names + "menu", "Widget", new(x, y, w, h), "", "", "Kenshi_FloatingPanelSkin", true, new Dictionary<string, string>(),
             new(0.1f, 0.09f, 0.08f, 0.94f), ink, Pickable: true));
-        controls.Add(new("context-title", "TextBox", new(x + 6, y + 2, w - 12, titleH), menu.Title, "", "", true,
+        controls.Add(new(names + "title", "TextBox", new(x + 6, y + 2, w - 12, titleH), menu.Title, "", "", true,
             new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Center" }, default, ink));
 
         for (int i = 0; i < menu.Verbs.Count; i++)
         {
             var (caption, chance) = SplitChance(menu.Verbs[i].Caption);
             float rowY = y + titleH + i * optionH + optionH * 0.0512821f, rowH = optionH * 0.897436f;
-            controls.Add(new($"context-verb-{i}", "Button", new(x + w * 0.0208333f, rowY, buttonW, rowH), Loc.Tr(caption),
+            var rowInk = RowInk(menu.Verbs[i].Give, ink);
+            string row = i.ToString(CultureInfo.InvariantCulture);
+            controls.Add(new($"{names}verb-{row}", "Button", new(x + w * 0.0208333f, rowY, buttonW, rowH), Loc.Tr(caption),
                 "meitou:context", "Kenshi_Button1Skin", true,
                 new Dictionary<string, string> { ["FontName"] = "Kenshi_PaintedTextFont_Medium", ["TextAlign"] = "Center" },
-                default, ink, HoverColour: VerbHover, Pickable: true, Argument: i.ToString(CultureInfo.InvariantCulture)));
+                default, rowInk, HoverColour: VerbHover, Pickable: true, Argument: rows + row));
             if (chance is not { } c) continue;
 
             float p = Math.Clamp(c * 0.01f, 0, 1);
-            controls.Add(new($"context-chance-{i}", "TextBox", new(x + w * 0.8125f, rowY, w * 0.1875f, rowH),
+            controls.Add(new($"{names}chance-{row}", "TextBox", new(x + w * 0.8125f, rowY, w * 0.1875f, rowH),
                 c.ToString("0", CultureInfo.InvariantCulture) + "%", "", "", true,
                 new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Center" }, default,
                 new Vector4(1 - p, p, 0, 1)));
@@ -830,14 +1019,11 @@ sealed class ContextMenuWindow(PlayerInterface player)
     internal bool OpenSceneMenu(string kind, Vector3 near)
     {
         CloseContextMenu();
+        if (kind == "character") return OpenSceneCharacterMenu(near);
+
         var snap = player.Session.CurrentSnapshot;
         (string Title, Vector3 At, List<(string Caption, Action Give)> Verbs)? found = kind switch
         {
-            "character" => snap.Characters
-                .Where(c => !c.IsPlayer)
-                .OrderBy(c => Vector3.DistanceSquared(c.Position, near))
-                .Select(c => (c.Name, c.Position, Verbs(c)))
-                .FirstOrDefault(),
             "door" => snap.DoorPicks
                 .OrderBy(d => Vector3.DistanceSquared(d.Position, near))
                 .Select(d => (Loc.Tr("Door"), d.Position, DoorVerbs((d, snap.Doors.GetValueOrDefault((d.Building, d.Door)).Locked))))
@@ -856,6 +1042,25 @@ sealed class ContextMenuWindow(PlayerInterface player)
 
         OpenMenu = Menu(f.Title, px, f.Verbs);
         Console.WriteLine($"scene     menu {kind} '{f.Title}' at {f.At.X:0}, {f.At.Z:0}: {string.Join(" | ", f.Verbs.Select(v => v.Caption))}");
+        return OpenMenu is not null;
+    }
+
+    /// <summary>
+    /// The harness's character menu (<see cref="OpenSceneMenu"/>): that of the character nearest <paramref name="near"/> not of the player's, with
+    /// the second menu beside it (<see cref="CharacterMenu"/>); each menu's title and rows are printed.
+    /// </summary>
+    bool OpenSceneCharacterMenu(Vector3 near)
+    {
+        var target = player.Session.CurrentSnapshot.Characters.Where(c => !c.IsPlayer).MinBy(c => Vector3.DistanceSquared(c.Position, near));
+        if (target is null || player.Project(target.Position) is not { } px) return false;
+
+        OpenMenu = CharacterMenu(target, px);
+        for (var menu = OpenMenu; menu is not null; menu = menu.Beside)
+        {
+            string rows = string.Join(" | ", menu.Verbs.Select(v => v.Caption));
+            Console.WriteLine($"scene     menu character '{menu.Title}' at {target.Position.X:0}, {target.Position.Z:0}: {rows}");
+        }
+
         return OpenMenu is not null;
     }
 }

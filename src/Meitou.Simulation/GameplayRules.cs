@@ -31,11 +31,35 @@ public sealed record GameplayRules
     public bool Decapitation { get; init; } = true;
     public bool AdvancedRagdolls { get; init; } = true;
     public int? AttackSlots { get; init; } = null;
+    /// <summary>
+    /// Optional authority faction cap; null keeps the content's game constant.
+    /// </summary>
+    public int? MaxFactionSize { get; init; }
+    /// <summary>
+    /// Optional authority squad cap; null keeps the content's game constant.
+    /// </summary>
+    public int? MaxSquadSize { get; init; }
+    /// <summary>
+    /// Optional authority led squad cap; null keeps the content's game constant.
+    /// </summary>
+    public int? MaxSquads { get; init; }
     public int HarpoonLimit { get; init; } = 60;
     public bool LateDefences { get; init; } = false;
     public bool GunnerFacesBarrel { get; init; } = true;
     public bool PunchReachFix { get; init; } = true;
     public bool BenchFacingFix { get; init; } = true;
+    /// <summary>
+    /// Positions a sitter using a bed clip at the fixture's use node.
+    /// </summary>
+    public bool SeatBedFix { get; init; } = true;
+    /// <summary>
+    /// Attributes ground item theft to the item's actual owner.
+    /// </summary>
+    public bool PickUpTheftFix { get; init; } = true;
+    /// <summary>
+    /// Stops guards arresting targets they have lost sight of.
+    /// </summary>
+    public bool ArrestLostFix { get; init; } = true;
     /// <summary>
     /// Uses animal moves for natural weapons whose item category would choose an unavailable person animation.
     /// </summary>
@@ -130,11 +154,17 @@ public sealed record GameplayRules
             Decapitation = bodies?.Decapitation ?? true,
             AdvancedRagdolls = bodies?.AdvancedRagdolls ?? true,
             AttackSlots = combat?.AttackSlots,
+            MaxFactionSize = bodies?.MaxFactionSize,
+            MaxSquadSize = bodies?.MaxSquadSize,
+            MaxSquads = bodies?.MaxSquads,
             HarpoonLimit = combat?.StuckLimit ?? 60,
             LateDefences = combat?.LateDefences ?? false,
             GunnerFacesBarrel = combat?.GunnerFacesBarrel ?? true,
             PunchReachFix = combat?.PunchReachFix ?? true,
             BenchFacingFix = world.BenchFacingFix,
+            SeatBedFix = world.SeatBedFix,
+            PickUpTheftFix = world.PickUpTheftFix,
+            ArrestLostFix = world.SystemOf<Crime.ArrestSystem>()?.Settings.LostFix ?? true,
             AnimalMovesFix = combat?.AnimalMovesFix ?? true,
             TurretAssault = combat?.TurretAssault ?? true,
             PrisonPoseFix = world.PrisonPoseFix,

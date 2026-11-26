@@ -32,6 +32,27 @@ public sealed class BuildMenu(IReadOnlyList<BuildingBuildData> catalog)
     public IReadOnlyList<BuildingBuildData> Catalog { get; } = catalog;
 
     /// <summary>
+    /// The first building of <see cref="Catalog"/> in each category, made on first use.
+    /// </summary>
+    Dictionary<string, string>? _firstOfCategory;
+
+    /// <summary>
+    /// The string id of the first building of <see cref="Catalog"/> in <paramref name="category"/>, the record the category's text is asked under
+    /// (<see cref="BuildingBuildData.CategoryField"/>); null when none has it.
+    /// </summary>
+    public string? FirstOfCategory(string category)
+    {
+        if (_firstOfCategory is null)
+        {
+            var first = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var b in Catalog) first.TryAdd(b.Category, b.Id);
+            _firstOfCategory = first;
+        }
+
+        return _firstOfCategory.GetValueOrDefault(category);
+    }
+
+    /// <summary>
     /// The categories with a member the set unlocks, by name in byte order (the original keeps them in a <c>std::map</c> of names,
     /// <c>FUN_1404e4480</c>).
     /// </summary>
@@ -81,7 +102,7 @@ public sealed class BuildMenu(IReadOnlyList<BuildingBuildData> catalog)
 /// the town gives none; <paramref name="PublicDay"/> / <paramref name="PublicNight"/> are the state's flags; <paramref name="Turret"/> marks a town's
 /// turret building (<c>TownBuilding.Turret</c>); <paramref name="Pieces"/> are the furniture standing in it that a click selects
 /// (<c>TownBuilding.Pieces</c>), none after it is emptied or ruined; <paramref name="Machine"/> marks a town's building whose record supports
-/// production, research or crafting (<c>ProductionSystem.TownWork</c>).
+/// production, research or crafting (<c>ProductionSystem.TownWork</c>). The name, type, town and owner are display text supplied by mods.
 /// </summary>
 public sealed record WorldBuildingInfo(
     string Name,
@@ -110,6 +131,11 @@ public sealed class BuildServices
     /// </summary>
     public required Func<string, string> ItemName { get; init; }
     /// <summary>
+    /// Record <paramref name="id"/>'s name (<see cref="ItemName"/>) as the mods' text sources show it (<see cref="ShownText.Record"/>); display
+    /// only.
+    /// </summary>
+    public string ShownName(string id) => ShownText.Record(id, ItemName(id));
+    /// <summary>
     /// A BUILDING's description text.
     /// </summary>
     public required Func<string, string> Description { get; init; }
@@ -117,6 +143,11 @@ public sealed class BuildServices
     /// A BUILDING's parts laid out at the origin with no rotation (the same list for the same record).
     /// </summary>
     public required Func<string, IReadOnlyList<PlacedMesh>> Parts { get; init; }
+    /// <summary>
+    /// A BUILDING's usage node markers laid out at the origin with no rotation (<see cref="UseNodeMarkerLayout"/>; the same list for the same
+    /// record).
+    /// </summary>
+    public Func<string, IReadOnlyList<PlacedMesh>> UseNodeMarkers { get; init; } = _ => [];
     /// <summary>
     /// The game's saved picture of a BUILDING (<c>data/icons/buildings</c>), null when none: the window then shows the renderer's drawing.
     /// </summary>

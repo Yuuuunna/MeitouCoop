@@ -26,6 +26,10 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     ulong _soundFloor, _floaterFloor;
     bool _soundsEnabled;
     ulong _eventHighWater;
+    /// <summary>
+    /// Reliable event retention is released only after the audio consumer has accepted every queued sound, including stop controls.
+    /// </summary>
+    ulong _acknowledgedEvents;
     bool _eventBaseline, _floatersEnabled = true;
     PlayerWorldView? _view;
     RemotePresentationFrame? _presentationFrame;
@@ -160,10 +164,29 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             _soundFloor = _connection.State.View?.Events.HighWater ?? _eventHighWater;
         _soundsEnabled = enabled;
         if (!enabled)
+        {
             _sounds.Clear();
+            AcknowledgeConsumedPresentationEvents();
+        }
     }
 
-    public bool TryDequeueSound(out SoundEvent sound) => _sounds.TryDequeue(out sound);
+    public bool TryDequeueSound(out SoundEvent sound)
+    {
+        bool found = _sounds.TryDequeue(out sound);
+        AcknowledgeConsumedPresentationEvents();
+        return found;
+    }
+
+    /// <summary>
+    /// While audio stalls, the existing 4096-event/256 KiB journal bound fails explicitly instead of silently dropping stop events.
+    /// </summary>
+    void AcknowledgeConsumedPresentationEvents()
+    {
+        if (!_eventBaseline || _sounds.Count != 0 || _eventHighWater <= _acknowledgedEvents) return;
+        _connection.AcknowledgePresentationEvents(_eventHighWater);
+        _acknowledgedEvents = _eventHighWater;
+    }
+
     public void SelectFaction(int faction)
     {
         if (_view?.Factions.Any(f => f.Faction == faction) != true)
@@ -260,8 +283,6 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             if (_eventBaseline && _soundsEnabled)
                 foreach (var item in presentationEvents.Sounds.Where(e => e.Id > _eventHighWater && e.Id > _soundFloor).OrderBy(e => e.Id))
                 {
-                    if (_sounds.Count == 128)
-                        _sounds.Dequeue();
                     _sounds.Enqueue(item.Value);
                 }
 
@@ -276,7 +297,7 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             ReceiveCombatVisuals(presentationEvents);
             _eventHighWater = Math.Max(_eventHighWater, presentationEvents.HighWater);
             _eventBaseline = true;
-            _connection.AcknowledgePresentationEvents(_eventHighWater);
+            AcknowledgeConsumedPresentationEvents();
             if (_chosenFaction is { } faction && !next.Factions.Any(f => f.Faction == faction))
                 _chosenFaction = null;
             _selection.RemoveAll(id => !next.Roles.Any(r => r.Character == id && r.Available && !r.Dead));

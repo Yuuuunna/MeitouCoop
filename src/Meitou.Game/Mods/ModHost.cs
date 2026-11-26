@@ -184,6 +184,60 @@ public sealed class ModHost
     }
 
     /// <summary>
+    /// Attaches a new player interface for the mods' <see cref="ModInterface"/>s; on the host's thread.
+    /// </summary>
+    internal void AttachInterface(IModInterfaceHost host) => _registry.Interface.Attach(host);
+
+    /// <summary>
+    /// Whether a mod registered a per-frame callback.
+    /// </summary>
+    public bool WantsFrames => _registry.Frames.Count > 0;
+
+    /// <summary>
+    /// Hands <paramref name="frame"/> to every mod's per-frame callback, in load order, on the host's thread; one that throws is logged and not
+    /// called again.
+    /// </summary>
+    public void DeliverFrame(ModFrame frame)
+    {
+        foreach (var view in _registry.Frames)
+        {
+            if (view.Faulted) continue;
+            try
+            {
+                view.Run(frame);
+            }
+            catch (Exception e)
+            {
+                view.Faulted = true;
+                Console.Error.WriteLine($"mod       {view.Owner}: frame callback disabled: {e.GetType().Name}: {e.Message}");
+                CodeModFaults.Tell(view.Owner, e);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Tells every mod's save-written listener, in load order, that the save folder <paramref name="folder"/> was written; on the host's thread. One
+    /// that throws is logged and not called again.
+    /// </summary>
+    public void TellSaveWritten(string folder)
+    {
+        foreach (var listener in _registry.SavesWritten)
+        {
+            if (listener.Faulted) continue;
+            try
+            {
+                listener.Run(folder);
+            }
+            catch (Exception e)
+            {
+                listener.Faulted = true;
+                Console.Error.WriteLine($"mod       {listener.Owner}: save-written listener disabled: {e.GetType().Name}: {e.Message}");
+                CodeModFaults.Tell(listener.Owner, e);
+            }
+        }
+    }
+
+    /// <summary>
     /// The mods' display-only effects (docs/modding.md "Visual effects"), played by the host once a frame.
     /// </summary>
     internal ModEffects Effects => _registry.Effects;
@@ -192,6 +246,46 @@ public sealed class ModHost
     /// The mods' display-only glows (docs/modding.md "Glow"), handed to the renderer by the host once a frame.
     /// </summary>
     internal ModGlows Glows => _registry.Glows;
+
+    /// <summary>
+    /// The mods' display-only ribbon trails (docs/modding.md "Trails"), sampled and handed to the particles by the host once a frame.
+    /// </summary>
+    internal ModTrails Trails => _registry.Trails;
+
+    /// <summary>
+    /// The mods' active playback audio modulations (docs/modding.md "Audio modulation"), attached to <see cref="Game.Audio.WwisePlayer"/>.
+    /// </summary>
+    internal ModAudioModulations AudioModulations => _registry.AudioModulations;
+
+    /// <summary>
+    /// A mod registered a projectile feed: the host then compares the shown snapshots' bolts every frame.
+    /// </summary>
+    public bool WantsProjectiles => _registry.ProjectileFeeds.Count > 0;
+
+    /// <summary>
+    /// The bolts' changes since the last frame to every mod's projectile feed, in load order, on the host's thread; a feed that throws is logged
+    /// and gets no more.
+    /// </summary>
+    public void DeliverProjectiles(IReadOnlyList<ProjectileEvent> changes)
+    {
+        if (changes.Count == 0) return;
+
+        foreach (var feed in _registry.ProjectileFeeds)
+        {
+            if (feed.Faulted) continue;
+
+            try
+            {
+                feed.Run(changes);
+            }
+            catch (Exception e)
+            {
+                feed.Faulted = true;
+                Console.Error.WriteLine($"mod       {feed.Owner}: projectile feed disabled: {e.GetType().Name}: {e.Message}");
+                CodeModFaults.Tell(feed.Owner, e);
+            }
+        }
+    }
 
     /// <summary>
     /// Whether a mod arranges the faction tab's list.
@@ -220,6 +314,64 @@ public sealed class ModHost
             }
         }
         return rows;
+    }
+
+    /// <summary>
+    /// Whether a mod registered a placement rule.
+    /// </summary>
+    public bool HasPlacementRules => _registry.PlacementRules.Count > 0;
+
+    /// <summary>
+    /// Whether any mod's placement rule lifts <paramref name="failure"/> for <paramref name="ask"/>, on the host's thread; one that throws is logged,
+    /// skipped and asked no more.
+    /// </summary>
+    public bool WaivePlacement(PlacementAsk ask, Data.Gameplay.Construction.PlacementFailure failure)
+    {
+        foreach (var rule in _registry.PlacementRules)
+        {
+            if (rule.Faulted || rule.Rule.Waive is not { } waive) continue;
+
+            try
+            {
+                if (waive(ask, failure)) return true;
+            }
+            catch (Exception e)
+            {
+                Fault(rule, e);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The first mod's refusal text for <paramref name="ask"/>, in load order; null when none refuses.
+    /// </summary>
+    public string? RefusePlacement(PlacementAsk ask)
+    {
+        foreach (var rule in _registry.PlacementRules)
+        {
+            if (rule.Faulted || rule.Rule.Refuse is not { } refuse) continue;
+
+            try
+            {
+                if (refuse(ask) is { } text) return text;
+            }
+            catch (Exception e)
+            {
+                Fault(rule, e);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Turns off a placement rule that threw, with a log line.
+    /// </summary>
+    static void Fault(ModPlacementRule rule, Exception e)
+    {
+        rule.Faulted = true;
+        Console.Error.WriteLine($"mod       {rule.Owner}: placement rule disabled: {e.GetType().Name}: {e.Message}");
+        CodeModFaults.Tell(rule.Owner, e);
     }
 
     /// <summary>
@@ -718,6 +870,8 @@ public sealed class ModHost
             if (context.HasHarmony) context.Harmony.UnpatchAll(context.Id);
             _registry.Effects.Drop(context.Id);
             _registry.Glows.Drop(context.Id);
+            _registry.Trails.Drop(context.Id);
+            _registry.AudioModulations.Drop(context.Id);
             if (options.SharedVisuals) CurrentWorld()?.ModVisuals.RemoveOwner(context.Id);
             TellDependenciesItFailed(mod);
             throw;
@@ -978,14 +1132,22 @@ public sealed class ModHost
     /// Registers the mods' interface extensions with a new interface, each with its mod's folder (null when unknown); one that throws is logged and
     /// skipped.
     /// </summary>
-    public List<IDisposable> RegisterUi(Func<IUiExtension, string?, IDisposable> register)
+    public List<IDisposable> RegisterUi(Func<IUiExtension, string?, IDisposable> register) =>
+        RegisterUi((extension, folder, _) => register(extension, folder));
+
+    /// <summary>
+    /// Registers the mods' interface extensions with a new interface, each with its mod's folder and translations (null when unknown); one that
+    /// throws is logged and skipped.
+    /// </summary>
+    public List<IDisposable> RegisterUi(Func<IUiExtension, string?, Localisation.ModTranslations?, IDisposable> register)
     {
         var registrations = new List<IDisposable>();
         foreach (var extension in _registry.Ui)
         {
             try
             {
-                registrations.Add(register(extension, _registry.UiFolders.GetValueOrDefault(extension)));
+                var texts = _registry.UiTexts.GetValueOrDefault(extension);
+                registrations.Add(register(extension, _registry.UiFolders.GetValueOrDefault(extension), texts));
             }
             catch (Exception e)
             {
@@ -1020,7 +1182,11 @@ public sealed class ModHost
     }
 
     /// <summary>Runs world-ready callbacks with their context bound to this completed world, including restore candidates.</summary>
-    public void TellReady(World world, bool fromSave) => InWorldScope(world, () => world.TellReady(fromSave));
+    public void TellReady(World world, WorldStart start) => InWorldScope(world, () =>
+    {
+        _registry.AudioModulations.InitializeWorld(world);
+        world.TellReady(start);
+    });
 
     void InWorldScope(World world, Action operation)
     {

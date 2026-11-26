@@ -96,7 +96,7 @@ public static class NpcTrade
             long price = market.StackPrice(unit, player, Trader.None, seller);
             if (world.TradePriceFilters.Active)
             {
-                var deal = new TradeDeal(world.Tick, unit.Record, 1, false, table.IdOf(buyer), owner?.Id ?? -1);
+                var deal = new TradeDeal(world.Tick, unit.Record, 1, false, table.IdOf(buyer), owner?.Id ?? -1) { Item = unit };
                 price = world.TradePriceFilters.Pass(world, deal, price);
             }
             if (price < 0 || (shared ? funds?.Money ?? 0 : purse?.Money ?? 0) < price) return NpcSale.Failed;

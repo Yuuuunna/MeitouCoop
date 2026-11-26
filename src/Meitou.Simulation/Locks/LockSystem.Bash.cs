@@ -50,8 +50,9 @@ public sealed partial class LockSystem
     /// phase crosses <see cref="BashBlowProgress"/>. An animal swings its own attack technique's clip (<see cref="CombatSystem.AnimalBashSeconds"/>,
     /// <c>FUN_140887420</c>) and restarts it at <see cref="AnimalRestartProgress"/>.
     /// </summary>
-    bool BashBlowLands(CharacterCold c, float dt)
+    bool BashBlowLands(CharacterCold c, long tick, float dt)
     {
+        c.BashSwing = tick;
         float own = Combat?.AnimalBashSeconds(c) ?? 0;
         bool lands = own > 0 ? BlowLands(c.BashTime, dt, own, out float phase, AnimalRestartProgress * own)
                 : BlowLands(c.BashTime, dt, BashClipSeconds, out phase);
@@ -192,7 +193,7 @@ public sealed partial class LockSystem
             Crimes.SetPending(world, s, Crime.CrimeCode.Burglary, door.Owner, CharacterId.None, Crime.CrimeSystem.MinTimer);
 
         if (c.BashTime < 0) c.BashTime = 0;
-        if (!BashBlowLands(c, world.TickSeconds)) return;
+        if (!BashBlowLands(c, world.Tick, world.TickSeconds)) return;
 
         // A break's only sound is the door's Break (Task_BashDoor posts no unlock sound), played by the host's door sounds.
         if (Hit(world, door, c))
@@ -226,18 +227,17 @@ public sealed partial class LockSystem
 
     /// <summary>
     /// One tick of an owner at its locked door: the lock is worked for <see cref="LockWorkSeconds"/> (Task_UnlockDoor, 0.3 per game second), then
-    /// cleared with the unlock sound and the door starts opening (row 122 / 72), and the pursuit carries on. Others standing at the leaf do not
-    /// stop the work (the bash's ray test is Task_BashDoor's own).
+    /// cleared with the unlock sound and the door starts opening (row 122 / 72, <see cref="UnlockAndOpen"/>), and the pursuit carries on. Others
+    /// standing at the leaf do not stop the work (the bash's ray test is Task_BashDoor's own).
     /// </summary>
     void UnlockOwn(World world, int s, CharacterCold c, Fixture door)
     {
         if (c.BashTime < 0) c.BashTime = 0;
         c.BashTime += world.TickSeconds;
+        StampLockWork(world, c, c.BashTime, locking: false);
         if (c.BashTime < LockWorkSeconds) return;
 
-        world.Fixtures.SetLocked(door, false);
-        FixtureRegistry.OpenDoor(door);
-        world.EmitSound(SoundKind.Unlocked, s, world.Characters.Next[s].Position);
+        UnlockAndOpen(world, s, c, door);
         StopBashing(world.Characters, s, c);
     }
 
@@ -313,8 +313,9 @@ public sealed partial class LockSystem
 
     /// <summary>
     /// Takes <paramref name="damage"/> (the clamped f) x <see cref="ProgressPerDamage"/> material units off a door's
-    /// <see cref="Fixture.DoorProgress"/> (a fraction of its <see cref="Fixture.DoorTarget"/>, as the repair adds); at 0 it breaks: unlocked and
-    /// opened. True when it broke.
+    /// <see cref="Fixture.DoorProgress"/> (a fraction of its <see cref="Fixture.DoorTarget"/>, as the repair adds); at 0 or below it breaks: unlocked
+    /// and opened, the progress left where the blow took it (<c>FUN_14029d690</c> does not clamp it, so its panel reads the door damaged). True when
+    /// it broke.
     /// </summary>
     static bool Damage(World world, Fixture door, float damage)
     {
@@ -325,7 +326,6 @@ public sealed partial class LockSystem
         world.HasFloaterSink) world.EmitFloater(Floater.BuildingHit(door.Position, (int)damage));
         door.DoorProgress -= damage * ProgressPerDamage / door.DoorTarget;
         if (door.DoorProgress > 0) return false;
-        door.DoorProgress = 0;
         if (door.Lock is { } l) l.Locked = false;
         door.DoorBroken = true;
         FixtureRegistry.OpenDoor(door);
@@ -759,17 +759,16 @@ public sealed partial class LockSystem
     }
 
     /// <summary>
-    /// Its own door's lock worked on the way (Task_UnlockDoor, 0.3 per game second): cleared with the unlock sound, the door opened, and the walk
-    /// goes on.
+    /// Its own door's lock worked on the way (Task_UnlockDoor, 0.3 per game second): cleared with the unlock sound, the door opened
+    /// (<see cref="UnlockAndOpen"/>), and the walk goes on.
     /// </summary>
     void UnlockOnTheWay(World world, int s, CharacterCold c, Fixture door)
     {
         c.BashTime += world.TickSeconds;
+        StampLockWork(world, c, c.BashTime, locking: false);
         if (c.BashTime < LockWorkSeconds) return;
 
-        world.Fixtures.SetLocked(door, false);
-        FixtureRegistry.OpenDoor(door);
-        world.EmitSound(SoundKind.Unlocked, s, world.Characters.Next[s].Position);
+        UnlockAndOpen(world, s, c, door);
         WalkOn(world.Characters, s, c);
     }
 
@@ -789,7 +788,7 @@ public sealed partial class LockSystem
 
         if (Crimes is not null && door.Owner >= 0 && door.Owner != c.Faction)
             Crimes.SetPending(world, s, Crime.CrimeCode.Burglary, door.Owner, CharacterId.None, Crime.CrimeSystem.MinTimer);
-        if (!BashBlowLands(c, world.TickSeconds) || !Hit(world, door, c)) return;
+        if (!BashBlowLands(c, world.Tick, world.TickSeconds) || !Hit(world, door, c)) return;
 
         world.Fixtures.Touch(door);
         WalkOn(table, s, c);

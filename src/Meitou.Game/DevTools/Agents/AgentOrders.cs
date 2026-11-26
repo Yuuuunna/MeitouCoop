@@ -929,10 +929,10 @@ sealed class AgentOrders(PlayerInterface player)
 
         var query = ControlBuildQuery(host, data, x, z, yawDegrees, out var position, out var rotation);
 
-        var failure = PlacementCheck.Evaluate(query);
+        var failure = PlacementCheck.Evaluate(query, out var refusal);
         if (failure != PlacementFailure.None)
         {
-            message = $"refused: {PlacementCheck.Message(failure)} ({failure}) at {x:0.#} {z:0.#}";
+            message = $"refused: {PlacementCheck.Message(failure, refusal)} ({failure}) at {x:0.#} {z:0.#}";
             return false;
         }
         var who = ControlOrderers();
@@ -1151,7 +1151,8 @@ sealed class AgentOrders(PlayerInterface player)
             return false;
         }
 
-        player.Say(new QueueResearch(o.Id) { Tick = player.Session.CommandTick });
+        player.Say(new QueueResearch(o.Id)
+        { Tick = player.Session.CommandTick, Faction = player.Session.ActiveFaction, QueueRevision = player.Session.CurrentSnapshot.Research.QueueRevision });
         message = $"research queued: {o.Name} ({o.Id}){(o.Paid || o.Affordable ? "" : "; its cost is not held by the benches, so it may not start")}";
         return true;
     }

@@ -52,6 +52,14 @@ public sealed record DismissCommand(CharacterId Character) : SquadCommand;
 public sealed record SetSquadUncounted(int Squad, bool On, string? Owner = null) : SquadCommand;
 
 /// <summary>
+/// A code mod gives a squad of the player's faction its own squad AI options (<paramref name="Options"/>: the flags its members follow in place of
+/// the player's faction-wide ones, sit, sleep, ditch, heal, help, rescue, feed and shoot first among them), or null to follow the player's again
+/// (<see cref="Squad.OwnOptions"/>). <paramref name="Owner"/>: the mod's manifest id, so a load without the mod gives the squad the player's options
+/// again (one that names none keeps the noted one). Meitou only.
+/// </summary>
+public sealed record SetSquadOptions(int Squad, Player.SquadAi? Options, string? Owner = null) : SquadCommand;
+
+/// <summary>
 /// A code mod gives a squad of the player's faction its own purse (<paramref name="Own"/>, <see cref="Squad.OwnPurse"/>) or ends it, pouring what
 /// is left into the player's money. <paramref name="Owner"/>: the mod's manifest id, so a load without the mod ends it the same way (one that
 /// names none keeps the noted one). Meitou only.
@@ -151,12 +159,13 @@ public static class SquadManagement
     internal static void Apply(World world, PopulationData? data, SquadCommand command)
     {
         // Only trusted host code sets mod-owned flags; clients never impersonate a mod owner.
-        if (command is SetSquadUncounted or SetSquadPurse or SetSquadDormant)
+        if (command is SetSquadUncounted or SetSquadOptions or SetSquadPurse or SetSquadDormant)
         {
             if (command.Issuer is not null) return;
             switch (command)
             {
                 case SetSquadUncounted uncounted: SetUncounted(world, uncounted); break;
+                case SetSquadOptions options: SetOptions(world, options); break;
                 case SetSquadPurse purse: SetPurse(world, purse); break;
                 case SetSquadDormant dormant: SetDormant(world, dormant); break;
             }
@@ -167,7 +176,7 @@ public static class SquadManagement
             : command is MoveToSquadCommand or DismissCommand ? FactionPermission.AssignCharacters : FactionPermission.ManageSquads;
         if (world.CommandFaction(command, permission) is not { Index: >= 0 } state) return;
         int faction = state.Index;
-        var constants = data?.Bodies.Constants;
+        var bodies = data?.Bodies;
         void Notice(string text) => world.Post(command.Issuer ?? PlayerId.Local, text);
         switch (command)
         {
@@ -175,7 +184,7 @@ public static class SquadManagement
                 if (data is null || !float.IsFinite(create.At.X) || !float.IsFinite(create.At.Y) || !float.IsFinite(create.At.Z)) return;
 
                 // The original counts the squad boxes against `max squads` (FUN_140491b50).
-                if (LedSquads(world, faction).Count >= constants!.MaxSquads)
+                if (LedSquads(world, faction).Count >= bodies!.MaxSquads)
                 {
                     Notice("Maximum number of squads reached.");
                     return;
@@ -211,7 +220,7 @@ public static class SquadManagement
                 KeepActive(world);
                 break;
             case MoveToSquadCommand move:
-                Move(world, faction, constants?.MaxSquadSize ?? int.MaxValue, move);
+                Move(world, faction, bodies?.MaxSquadSize ?? int.MaxValue, move);
                 break;
             case ReorderSquadCommand reorder:
                 if (Own(world, faction, reorder.Squad) is not { } moved) return;
@@ -257,6 +266,20 @@ public static class SquadManagement
         squad.Uncounted = command.On;
         if (!command.On) squad.UncountedOwner = null;
         else if (command.Owner is { Length: > 0 } owner) squad.UncountedOwner = owner;
+    }
+
+    /// <summary>
+    /// Gives a squad of the player's faction its own squad AI options or gives it the player's again, noting the mod that set them.
+    /// </summary>
+    static void SetOptions(World world, SetSquadOptions command)
+    {
+        if (ModSquad(world, command, command.Squad) is not { } squad) return;
+        if (!MayChange(squad.OptionsOwner, command.Owner)) return;
+
+        squad.OwnOptions = command.Options;
+        if (command.Options is not null) world.Squads.OwnOptionsSeen = true;
+        if (command.Options is null) squad.OptionsOwner = null;
+        else if (command.Owner is { Length: > 0 } owner) squad.OptionsOwner = owner;
     }
 
     /// <summary>
@@ -362,6 +385,25 @@ public static class SquadManagement
     }
 
     /// <summary>
+    /// Gives the player's squad AI options back to every squad whose own a code mod set when that mod is not running now (<paramref name="running"/>:
+    /// whether a mod id runs). Between ticks after a load, before the first. Returns how many.
+    /// </summary>
+    public static int DropUnownedOptions(World world, Func<string, bool> running)
+    {
+        int dropped = 0;
+        foreach (var squad in world.Squads.All)
+        {
+            if (squad.OptionsOwner is not { } owner || running(owner)) continue;
+
+            squad.OwnOptions = null;
+            squad.OptionsOwner = null;
+            dropped++;
+        }
+
+        return dropped;
+    }
+
+    /// <summary>
     /// The player's squad of id <paramref name="id"/> that the player leads; null when there is none.
     /// </summary>
     static Squad? Own(World world, int faction, int id) => world.Squads.Find(id) is { Independent: false } s && Mine(world, faction, s) ? s : null;
@@ -396,7 +438,7 @@ public static class SquadManagement
                     dead.Members.Add(id);
                     cold.SquadId = dead.Id;
                     moved = true;
-                    world.PostFaction(faction, DeathMessage(cold));
+                    world.PostFaction(faction, DeathMessage(cold, world.ShownName(cold)));
                 }
                 if (moved) Relead(table, squad);
             }
@@ -405,17 +447,17 @@ public static class SquadManagement
 
     /// <summary>
     /// The death handler's message for a character of the player's faction (<c>FUN_1407a6200</c>, docs/game/factions-squads-towns.md "The
-    /// player's dead"), chosen by the body as it died: blood loss, else starvation, else plain death.
+    /// player's dead"), chosen by the body as it died: blood loss, else starvation, else plain death; <paramref name="name"/> is its name as shown.
     /// </summary>
-    static string DeathMessage(CharacterCold cold)
+    static string DeathMessage(CharacterCold cold, string name)
     {
         if (cold is { Medical: { } medical, Race: { } race })
         {
             float capacity = MedicalState.BloodCapacity(race, cold.Stats?.Strength ?? 50, medical.HasStatsObject, medical.ScaleK, medical.ScaleZ);
-            if (medical.Blood <= -capacity) return Loc.Tr("{1} has died from blood loss.", cold.Name);
-            if (medical.Hunger <= 0) return Loc.Tr("{1} has died from starvation.", cold.Name);
+            if (medical.Blood <= -capacity) return Loc.Tr("{1} has died from blood loss.", name);
+            if (medical.Hunger <= 0) return Loc.Tr("{1} has died from starvation.", name);
         }
-        return Loc.Tr("{1} is dead.", cold.Name);
+        return Loc.Tr("{1} is dead.", name);
     }
 
     /// <summary>

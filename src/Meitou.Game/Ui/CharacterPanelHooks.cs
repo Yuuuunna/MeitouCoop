@@ -7,13 +7,85 @@ namespace Meitou.Game.Ui;
 /// with a press and no value is one button across the line, captioned with the label. A line with a press draws no bar. <paramref name="Tooltip"/>
 /// (null: none) shows over the line. A press runs on the host's thread and changes the world only by queueing commands.
 /// </summary>
-public sealed record UiCharacterLine(string Label, string? Value = null, float? Bar = null, string? Tooltip = null, Action? Press = null);
+public sealed record UiCharacterLine(string Label, string? Value = null, float? Bar = null, string? Tooltip = null, Action? Press = null)
+{
+    /// <summary>
+    /// The line's colours and icon (<see cref="UiLineStyle"/>); null: the panel's own look.
+    /// </summary>
+    public UiLineStyle? Style { get; init; }
+
+    /// <summary>
+    /// The line is a divider: a rule across its row in the stats labels' colour (or <see cref="UiLineStyle.Label"/>), between the game's stats and
+    /// the lines after it; its label may be empty and its value, bar, tooltip and press are not used.
+    /// </summary>
+    public bool Divider { get; init; }
+}
 
 /// <summary>
 /// A button an extension adds beside the character's jobs list (<see cref="UiRegistration.AddJobPanelButtons"/>): its caption, its tooltip (null:
 /// none) and what pressing it does (on the host's thread; it changes the world only by queueing commands).
 /// </summary>
-public sealed record UiJobButton(string Caption, string? Tooltip, Action Press);
+public sealed record UiJobButton(string Caption, string? Tooltip, Action Press)
+{
+    /// <summary>
+    /// The button shows lit (the skin's selected state), as for the tab a character is on.
+    /// </summary>
+    public bool Lit { get; init; }
+
+    /// <summary>
+    /// The MyGUI skin the button is drawn with instead of the game's neutral <c>Kenshi_Button1Skin</c> (a skin the interface's resources hold); null
+    /// or an unknown skin: the neutral one.
+    /// </summary>
+    public string? Skin { get; init; }
+
+    /// <summary>
+    /// A press plays no click (the mod plays one itself when it wants, <c>ModContext.PostInterfaceSound</c>).
+    /// </summary>
+    public bool Silent { get; init; }
+
+    /// <summary>
+    /// The caption's colour and an icon (a marker) before it (<see cref="UiLineStyle"/>: <c>Label</c> and <c>Icon</c>; <c>Value</c> unused); null:
+    /// the panel's look.
+    /// </summary>
+    public UiLineStyle? Style { get; init; }
+}
+
+/// <summary>
+/// How the job panel buttons are placed (<see cref="UiRegistration.AddJobPanelButtons(Func{UiCharacterContext, IEnumerable{UiJobButton}}, UiJobButtonLayout)"/>).
+/// </summary>
+public enum UiJobButtonArrangement
+{
+    /// <summary>
+    /// In rows above the jobs list, which starts that many job rows lower.
+    /// </summary>
+    Rows,
+
+    /// <summary>
+    /// In columns left of the jobs list, which starts that many columns further right.
+    /// </summary>
+    Columns,
+}
+
+/// <summary>
+/// The job panel buttons' layout: <paramref name="Arrangement"/>, at most <paramref name="PerLine"/> buttons in a row (or a column; 1 to
+/// <see cref="CharacterPanelHooks.MaxButtons"/>), and for columns each column's width in job rows (<paramref name="ColumnWidth"/>, 0.5 to 6).
+/// </summary>
+public sealed record UiJobButtonLayout(UiJobButtonArrangement Arrangement = UiJobButtonArrangement.Rows, int PerLine = 4, float ColumnWidth = 1.5f)
+{
+    /// <summary>
+    /// One row above the list, four buttons wide (the layout without a mod's choice).
+    /// </summary>
+    public static UiJobButtonLayout Default { get; } = new();
+
+    /// <summary>
+    /// The layout as used: <see cref="PerLine"/> and <see cref="ColumnWidth"/> clamped (a width not finite is the default's), an unknown
+    /// arrangement rows.
+    /// </summary>
+    internal UiJobButtonLayout Clamped() => new(
+        Enum.IsDefined(Arrangement) ? Arrangement : UiJobButtonArrangement.Rows,
+        Math.Clamp(PerLine, 1, CharacterPanelHooks.MaxButtons),
+        float.IsFinite(ColumnWidth) ? Math.Clamp(ColumnWidth, 0.5f, 6) : Default.ColumnWidth);
+}
 
 /// <summary>
 /// What an extension's character panel lines and job panel buttons get: the character the panel shows, the snapshot it is laid out from, the tick
@@ -67,7 +139,7 @@ sealed class CharacterPanelHooks
     /// <summary>
     /// The most buttons the extensions together add beside the jobs list.
     /// </summary>
-    public const int MaxButtons = 4;
+    public const int MaxButtons = 9;
 
     /// <summary>
     /// Wraps an extension's press (its owner, what it is, the press) so a throw is reported and a removed extension's press does nothing.
@@ -83,6 +155,11 @@ sealed class CharacterPanelHooks
     /// The button sources, with their owners, in registration order.
     /// </summary>
     readonly List<(string Owner, Func<UiCharacterContext, IEnumerable<UiJobButton>> Source)> _buttons = [];
+
+    /// <summary>
+    /// The layouts the button sources asked for, with their owners, in registration order; the first is used.
+    /// </summary>
+    readonly List<(string Owner, UiJobButtonLayout Layout)> _layouts = [];
 
     /// <summary>
     /// The extensions (and what of theirs) left out past a limit, each reported once.
@@ -107,7 +184,16 @@ sealed class CharacterPanelHooks
     /// <summary>
     /// Adds <paramref name="owner"/>'s button source.
     /// </summary>
-    public void AddButtons(string owner, Func<UiCharacterContext, IEnumerable<UiJobButton>> source) => _buttons.Add((owner, source));
+    public void AddButtons(string owner, Func<UiCharacterContext, IEnumerable<UiJobButton>> source, UiJobButtonLayout? layout = null)
+    {
+        _buttons.Add((owner, source));
+        if (layout is not null) _layouts.Add((owner, layout.Clamped()));
+    }
+
+    /// <summary>
+    /// The buttons' layout: the first registered source's that gave one, else <see cref="UiJobButtonLayout.Default"/>.
+    /// </summary>
+    public UiJobButtonLayout ButtonLayout => _layouts.Count > 0 ? _layouts[0].Layout : UiJobButtonLayout.Default;
 
     /// <summary>
     /// Removes <paramref name="owner"/>'s sources.
@@ -116,6 +202,7 @@ sealed class CharacterPanelHooks
     {
         _lines.RemoveAll(s => s.Owner == owner);
         _buttons.RemoveAll(s => s.Owner == owner);
+        _layouts.RemoveAll(l => l.Owner == owner);
     }
 
     /// <summary>
@@ -133,9 +220,10 @@ sealed class CharacterPanelHooks
         Collect(_buttons, context, MaxButtons, "job panel buttons", ValidButton, (owner, b) => ShownButton(owner, b, guard), report);
 
     /// <summary>
-    /// Whether a line has a label and, when it has a bar, a finite one.
+    /// Whether a line has a label (or is a divider) and, when it has a bar, a finite one.
     /// </summary>
-    static bool ValidLine(UiCharacterLine? l) => l is not null && !string.IsNullOrWhiteSpace(l.Label) && (l.Bar is not { } bar || float.IsFinite(bar));
+    static bool ValidLine(UiCharacterLine? l) =>
+        l is not null && (l.Divider || !string.IsNullOrWhiteSpace(l.Label)) && (l.Bar is not { } bar || float.IsFinite(bar));
 
     /// <summary>
     /// Whether a button has a caption and a press.
@@ -147,11 +235,13 @@ sealed class CharacterPanelHooks
     /// </summary>
     static UiCharacterLine ShownLine(string owner, UiCharacterLine line, PressGuard guard)
     {
+        if (line.Divider) return new UiCharacterLine("") { Divider = true, Style = UiLineStyle.Shown(line.Style) };
+
         string label = UiHost.OneLine(line.Label);
         string? value = string.IsNullOrWhiteSpace(line.Value) ? null : UiHost.OneLine(line.Value);
         float? bar = line.Bar is { } b ? Math.Clamp(b, 0, 1) : null;
         var press = line.Press is null ? null : guard(owner, "character panel line " + label, line.Press);
-        return new UiCharacterLine(label, value, bar, Tooltip(line.Tooltip), press);
+        return new UiCharacterLine(label, value, bar, Tooltip(line.Tooltip), press) { Style = UiLineStyle.Shown(line.Style) };
     }
 
     /// <summary>
@@ -160,7 +250,13 @@ sealed class CharacterPanelHooks
     static UiJobButton ShownButton(string owner, UiJobButton button, PressGuard guard)
     {
         string caption = UiHost.OneLine(button.Caption);
-        return new UiJobButton(caption, Tooltip(button.Tooltip), guard(owner, "job panel button " + caption, button.Press));
+        return new UiJobButton(caption, Tooltip(button.Tooltip), guard(owner, "job panel button " + caption, button.Press))
+        {
+            Lit = button.Lit,
+            Skin = string.IsNullOrWhiteSpace(button.Skin) ? null : button.Skin,
+            Silent = button.Silent,
+            Style = UiLineStyle.Shown(button.Style),
+        };
     }
 
     /// <summary>

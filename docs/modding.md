@@ -86,8 +86,8 @@ push none). The fork uses a separate package identity from upstream `Meitou.Refe
 For `net11.0` (standard builds) and `net10.0` (legacy macOS builds), its `assemblies/<framework>/ref/` folder holds the compiler's reference
 assemblies of `MeitouClient`, `Meitou.Simulation`, `Meitou.Core`, `Meitou.Data`, `Meitou.Modding`, `Meitou.Networking` and `Meitou.Runtime` (their public API; the internals two of them keep for the game's tools and tests stay out of a
 mod's reach) beside the game's own builds of its other managed libraries (`0Harmony`, Bepu, DotRecast, Silk.NET and the rest), which the
-compiler needs for any member typed in one of them. The Meitou assemblies carry the release's version like the game's: .NET binds a mod
-only to an assembly of at least the version it was compiled against, so a mod does not load on a release older than the package it was built against.
+compiler needs for any member typed in one of them. The Meitou assemblies carry the release's version like the game's; the game binds a mod
+to its own assemblies whatever version the mod was compiled against ([Loading](#loading)), so `gameVersion` is what ties a mod to releases.
 The game never loads these copies: the Meitou ones are reference assemblies .NET refuses to run, and the libraries are always taken from
 the game ([Loading](#loading)). The Metal backend's types (macOS builds only) are not in the package.
 
@@ -131,7 +131,10 @@ is the consent, as in RimWorld: the game loads every enabled code mod's code, wi
 
 - One non-collectible `AssemblyLoadContext` per mod (`ModLoadContext`), loaded once at startup; no unload or hot reload.
 - Resolution by simple name: an assembly on the game's trusted platform list (`Meitou.*`, the framework, Bepu, `0Harmony`) comes from
-  the game even when the mod folder has a copy; anything else comes from the mod folder, so
+  the game whatever version the mod asks for and even when the mod folder has a copy. .NET's default binding refuses a request above the
+  game's version with `Could not load file or assembly ... cannot find the file specified`: a mod built against an unstamped local build
+  (`MeitouClient` 1.0.0.0) on a 0.x release (**Observed**: issue #1294, StackSort on v0.22.2; a mod built against 1.0.0.0 then loads on a
+  0.22.2 build). A member the game lacks then fails where it is bound ([Versioning](#versioning)). Anything else comes from the mod folder, so
   two mods may ship different versions of a library. Listing a game assembly in `assemblies` refuses the mod. Native libraries resolve from the mod folder first.
 - Between the two: an assembly a declared dependency exports comes from that dependency's context, so a framework loads once
   ([dependencies](modding-dependencies.md#assembly-resolution)).
@@ -257,10 +260,16 @@ holds refuses the second mod.
     bone's frame, the offset scaled with the character.
   - `Weapon(characterId)`: the melee weapon the character holds drawn (the gear blood's blade, docs/game/blood-decals.md "On weapons and
     gear"): origin at the weapon mesh's hilt end, +Y along the blade, X across its width, stretch = weapon length / 8.5.
+    `Weapon(characterId, offset, turn = null)` moves and turns that frame, the offset in its units times the stretch (`(0, 6, 0)` is 6/8.5
+    of the way to the tip on any weapon; `Scaled` / `Sized` leave the place alone; not yet checked in the game).
   - `Building(id, offset = default, turn = null)`: a player-built or nest building of the snapshot (`WorldSnapshot.Buildings`,
     `NestBuildings`, by `BuildingSnapshot.Id`), its origin and turn. Town buildings of the level data and furniture are not covered (no
     host-side lookup by id); worn items are skinned to the skeleton and have no frame of their own: use a `Bone` (e.g. `Bip01 Spine2`).
-  - `.Scaled(stretch)` on any anchor overrides its stretch, in (0, 100].
+  - `Projectile(id, offset = default, turn = null)`: a bolt (`ProjectileSnapshot.Id`, from the projectile feed below) where it is drawn,
+    in flight or stuck in the ground: origin at its nose, +Y along its flight. Gone once the bolt leaves the snapshot.
+  - `.Scaled(stretch)` on any anchor overrides its stretch, in (0, 100]; `.Sized(factor)` multiplies the stretch (the anchor's own, a
+    blade's, or `Scaled`'s), in (0, 100], so an effect grows with a level while keeping the blade fit; `.Pulsing(amount, seconds)` swings
+    that size by `amount` in [0, 1) either way once every `seconds` in [0.05, 60], from the effect's start.
   The system's origin is at the anchor, its axes turned to the anchor's frame; the stretch is a uniform system scale, as Particle Universe's
   (`ParticleSimulation.Stretch`: it multiplies the system's `scale` and `scale_velocity`, so every place, shape, particle size, speed and
   affector reach, and the technique's position; 1 changes nothing). A blade system authored along its +Y with its origin at the
@@ -271,24 +280,61 @@ holds refuses the second mod.
   the world; while the anchor cannot be located (character not drawn, weapon sheathed, building
   gone, unknown bone) it pauses (its emission stops) and starts again where the anchor is, for the seconds left. `PlayEffect(effect, point,
   ...)` and `PlayEffect(effect, characterId, bone = null, ...)` are `At` and `Bone` (null: `Bip01 Spine2`). Each `PlayEffect` is a new
-  burst; `KeepEffect(effect, anchor, seconds, tint = null)` is the mod's one for that effect and anchor: called again before it ends it is
-  renewed to `seconds` from then, not restarted (another tint restarts it), so a mod keeps an aura up by re-calling within 30 s;
+  burst; `KeepEffect(effect, anchor, seconds, tint = null)` is the mod's one for that effect and anchor (its scale, `Scaled` / `Sized` /
+  `Pulsing`, aside): called again before it ends it is renewed to `seconds` from then, not restarted, taking the new scale in place (another
+  tint restarts it), so a mod keeps an aura up by re-calling within 30 s and makes it flare after a hit by re-calling with a larger size;
   `StopEffect(effect, anchor)` ends it (its particles live out). Requests queue and start at the next frame, after the hit feed, through the
   renderer's own bursts (`ParticleRenderer.Burst`, as the blood and dust do): at most 16 started a frame, 64 alive (playing or paused) and
-  128 waiting. A bad request (unknown id; anchor kind, point, offset or turn not usable; no character or bone; no building id; stretch,
-  lifetime or tint out of range; full queue; a call off the host's thread) returns false and is dropped, logged once per mod and reason.
-  On a graphical host, call it only on the host's thread (hit feed, UI, key actions, debug rows), never from a tick system. The simulation
-  never reads it, so the state hash is untouched; a new world drops all effects, and a mod that fails
+  128 waiting. A bad request (unknown id; anchor kind, point, offset or turn not usable; no character or bone; no building id; a negative
+  bolt id; stretch, size, pulse, lifetime or tint out of range; full queue; a call off the host's thread) returns false and is dropped,
+  logged once per mod and reason.
+  Call it only on the host's thread (host-side callbacks: hit feed, UI, key actions, debug rows), never from a tick system. The simulation
+  never reads it, so the state hash is untouched; without code mods the frame skips it; a new world drops all effects, and a mod that fails
   its `Initialize` loses its own. **Verified** by `ModVisualEffectsTests` (order, tint, lifetime, caps, rejection logging, a dropped mod's
   effects; each anchor kind's frame; pause and resume; keep, renew and stop; the old overloads; kept-local particles following the burst; the
-  stretch scaling places, sizes and speeds) against a recording sink and frame source.
+  stretch scaling places, sizes and speeds) against a recording sink and frame source. The bolt anchor, `Sized`, `Pulsing` and the renewal in
+  place are **Observed** by a scratch program against a recording sink (2026-11-23), not in the game.
+- **Trails:** `KeepTrail(EffectAnchor anchor, TrailStyle style, seconds)` on `ModContext` keeps a display-only ribbon trail (as Ogre's
+  `RibbonTrail`) on any anchor above, sampled each frame where the anchor is drawn. `TrailStyle`: `Span` 0 (default) is a ribbon through the
+  anchor's point facing the camera, `Width` (default 2) wide at the head and `EndWidth` (null: the same) at the tail; `Span` above 0 is a
+  band swept by the anchor's +Y from its origin that far times its stretch (on `Weapon`, 8.5 reaches the tip: a blade trail); `Seconds`
+  (default 0.3, up to 5) is how long a place stays; `Colour` (rgb up to 4, alpha 0 to 1) at the head fades to `EndColour` (null: the same,
+  alpha 0) at the tail; `Material` names a particle material (an Ogre `.material` of the particles, base game or a mod's) for its texture,
+  blend and colour, null for Meitou's soft additive streak. The texture's v runs across the trail and u along it (0 head, 1 tail, one value
+  per piece); a name the particles do not have draws Meitou's streak. `seconds` (up to 30) is how long it keeps taking places; renewed by
+  the same mod and anchor (scale aside) it takes the new style and scale in place; `StopTrail(anchor)` stops it taking places (what it drew
+  fades out). While the anchor is not drawn the trail takes nothing and starts a new run when it is back (no piece across the gap). At most
+  64 trails at once and 64 places each; drawn after the bolt tracers in the particles' pass (`ParticleRenderer.Ribbons`, a quad on its own
+  axes per piece), depth tested, unlit, Vulkan only (the Metal loop draws no mod effects). Host thread only, validated and logged once per
+  mod and reason (anchor problems as `PlayEffect`'s, a style out of range, lifetime, more than 64, off the host's thread); the simulation
+  never reads it; a new world drops all trails, a mod that fails its `Initialize` loses its own. These host-thread limits describe client-local
+  requests; authority trails use the shared presentation contract below, including clients without a running local callback. Engine API,
+  not in the original. **Observed** by a scratch program against a stand-in frame source (pieces per sample, band span, fade, gaps, stop,
+  caps, rejection logging; the drawn quad's size and facing), not in the game. `CharacterSnapshot.Attacking` (a melee swing of its own in
+  progress, the combat system's attack technique playing, from the published tick) lets a mod keep a blade trail only while swinging, e.g.
+  `KeepTrail(EffectAnchor.Weapon(id, new(0, 7, 0)), style, 0.2f)` renewed each frame it is set (not yet checked in the game).
+- **Projectile feed:** `AddProjectileFeed(view)` on `ModContext`: once a frame on the host's thread, `view` gets the bolts' changes
+  between the shown snapshots (`ProjectileEvent`: id, `ProjectileChange` `Fired` / `Landed` / `Gone`, shooter, position, direction, speed,
+  `live ammo` mesh), in the snapshot's order, then the gone ones by id; a bolt first seen stuck is `Fired` then `Landed`; `Gone` covers a
+  bolt that struck a body (the hit feed has the hit), ran out or was cleared, with its last seen place. Read from the published snapshot, so
+  the simulation never sees it and nothing is hashed; frames that show the same snapshot get nothing, and a bolt shot and gone between two
+  shown snapshots is never told. A new world (load, new game) is taken as it is, telling nothing of its bolts already there. The list is
+  reused: copy what you keep. A throw is logged with the mod id and that feed gets no more. Without a feed the host does not compare
+  snapshots. Engine API, not in the original; **Observed** by a scratch program over hand-made snapshot lists.
   **Observed** (Coop source): dedicated-server mod callbacks publish validated requests through `World.ModVisuals`; `HasEffect` resolves the
-  configured particle scripts without a renderer. Stable ids, anchors, tint and simulation start/expiry times are replicated only to interested
-  recipients. Renewals and stops change these sparse records; particle pools, bone motion and fades stay local. Clients show authority effects
+  configured particle scripts without a renderer. Stable ids, anchors (including projectile identity, size and pulse), glow/tint mode,
+  through-wall tint, trail style and simulation start/expiry times are replicated only to interested recipients. Stable definitions and absolute
+  changing readings are separate; a reading is usable only with its matching definition version. Renewals and stops change these sparse records;
+  particle pools, bone motion, pulse sampling and ribbon points stay local. Clients show authority effects
   even without a local mod callback. A newly received short burst catches up emission and its living tail; expired history in the initial
   baseline is not replayed. Catch-up follows the current anchor because historical bone frames are unavailable. Kept emitters retain identity
   across renewals. The existing renderer capacities apply locally, without a network rate limit. Remote UI requests stay on that client;
-  combat hit feeds execute on the authority and are not delivered again to remote interface mods. Requests are transient and are not saved.
+  combat hit feeds execute on the authority and are not delivered again to remote interface mods. Trails start sampling at the current visible
+  anchor: a late join or return to visibility does not recreate historical ribbon points. Normal expiry leaves sampled tails to finish;
+  early withdrawal removes the request's units, and replacing the world or presentation epoch clears every authority unit, including retired
+  tails. Vulkan has the particle/ribbon and character glow/through-wall tint rendering paths; the upstream Metal loop has no corresponding
+  mod-visual renderer entry. Audio modulation and posted sounds use the common audio path on either backend. Requests are transient and are not saved.
+  Headless projectile feeds sample the settled authority source once per simulation tick; remote frame callbacks see only the authorized snapshot.
 - **Glow:** `Glow(GlowTarget target, colour, seconds, strength = 1)` on `ModContext` makes a target give off light of its own (display
   only). Targets (`GlowTarget`): `Character(characterId)`, the whole drawn character (body, worn items, what it holds); `Weapon(characterId)`,
   the blade of the melee weapon it holds drawn (from 0.3 of the weapon mesh to the tip, the gear blood's mapping, docs/game/blood-decals.md
@@ -307,6 +353,17 @@ holds refuses the second mod.
   replace, stop, expiry, rejection logging, drop, clear; which parts each target lights; the packing).
   Coop routes authority glows through the same recipient-filtered request state as effects; clients derive the 0.25 s fade from server times.
   Local interface glows can overlay them without publishing a command or changing another player's view.
+- **Tint:** `Tint(GlowTarget target, colour, seconds, amount = 1, throughWalls = false)` on `ModContext` blends the target's own surface colour
+  (its albedo) towards `colour` (each channel 0 to 1) by `amount` (0 to 1) before it is lit, as the original Vital Sense's `coloroverride`
+  (**Observed** from its shipped shaders). It shares the glow's store: one glow or tint a target, each replacing the other, the same fade,
+  lifetime, caps, `StopGlow` and rules. Packed in the same bytes: a tint's colour bytes stay at most 254 (a glow's brightest channel is
+  always 255), its share in the level byte's low 7 bits, the blade mask as for a glow. `throughWalls` (a whole-character target only, at
+  most 64 characters) also draws the character, tinted, where the scene hides it (the original's `overrideDepth`, which drew the skin at
+  depth 0): it is drawn alone into a mask as the hover outline's characters are (`CharacterRenderer.DrawHoverMasks`), and where the
+  scene's depth is nearer, the mask's colour half-blended towards the tint at the tint's share is laid over the finished picture; no outline,
+  nothing where it is seen. One mask per tint colour, at most 8 colours a frame (later ones are left out); Vulkan only. Rejected (logged
+  once): a colour or amount above 1, through walls on another target or past 64 characters. **Observed**: the packing, validation and
+  shader compilation by a scratch program; not seen drawn in the game.
 - Drawing **Observed** in `--duel` through forced glows and effects, not a mod's call: `Character` lit one duellist whole in cyan (body and
   armour; at strength 1 it washes out the texture) while `Weapon` lit only the other's drawn katana blade, its hilt and back scabbard not;
   `kenshi_fire1_small` kept on `Bone(..., "Bip01 Head")` and on `Weapon` burned over the heads and at the hands, following both duellists.
@@ -326,6 +383,16 @@ holds refuses the second mod.
   combat, and must answer from the world and the hit alone. The one-punch debug cheat ignores the packet but keeps a cancel. Hits on doors
   and walls are not filtered. A filter that throws or breaks the packet's rule is undone for that hit, logged and disabled for that world;
   faulted registrations enter the state hash. Without a filter no payload is made.
+- **Hit reactions:** a registered system implementing `IBlowReactionFilter` (`Meitou.Simulation.Combat`) is asked `Reaction(World, in
+  BlowReactionAsk)` for each melee blow and bolt that lands on a victim it leaves on its feet (a downed victim is not asked): the tick, the
+  `CombatHitSource`, attacker and victim, sequence and blow as in `CombatHit`, the `HitDamage` after armour, its stagger damage (cut + blunt +
+  pierce + extra stun), the victim's stumble threshold and `Kind` as the game picked it: `Heavy` past the threshold, else `Light` for a blow and
+  `None` for a bolt (only a heavy bolt staggers). It answers the `BlowReactionKind` to use: `None` (swing, defence and task go on), `Light` (the
+  swing and defence cut off, a small stumble unless one plays) or `Heavy` (the big stumble, which knocks back); more kinds may come. Filters run
+  serially where the hit lands, in system order, each seeing the earlier one's answer, and must answer from the world and the ask alone. A throw
+  or an answer that is no kind keeps the reaction and disables the filter for that world; the fault enters the state hash. Engine API, not in
+  the original. **Observed** by a scratch run (not in the repo): an unchanged answer keeps hash and log, `None` for every hit changes the duel
+  the same on 1 and 4 threads, an invalid answer is asked once and hashed.
 - **Combat speed:** a registered system implementing `ICombatSpeedFilter` (`Meitou.Simulation.Combat`) is asked `Rate(World, in
   CombatSpeedAsk)` for every attack and block play rate the game computes (`CombatSystem` rate: a swing's or a block's start, the chase
   lead, the HUD's figures): the tick, the character, `Kind` (`Attack` or `Block`; dodges play at 1 and are not asked) and the rate after the
@@ -335,7 +402,10 @@ holds refuses the second mod.
   filter is still asked for the rest of that tick and not from the next, and the fault (its first tick) enters the state hash. Without a filter
   nothing is asked. Engine API, not in the original. **Verified** by `CombatSpeedFilterTests` (a duel: attack and block rates asked, an unchanged
   answer leaves log and hash as they were on 1 and 4 threads, a doubled attack rate halves the swing; a NaN answer is asked in one tick only and
-  hashed).
+  hashed). Two more kinds, same rules: `Reload`, asked as 1 when a crossbow reload starts (the reload takes the game's time divided by the
+  answer), and `Projectile`, a bolt's flight speed in units a second, asked as the shot is fired and for the aim's lead (turrets are not asked).
+  **Observed** by a scratch run (not in the repo): both asked, an unchanged answer keeps hash and timing on 1 and 4 threads, a doubled reload
+  rate and a halved bolt speed move the first hit earlier and later.
 - **Armour:** a registered system implementing `IArmourFilter` (`Meitou.Simulation.Combat`) is asked `Piece(World, in ArmourAsk)` for each
   armour piece a character wears, every time a hit (melee, bolt, execution) is about to go through its stack: the tick, the hit's source, the
   wearer, the worn `ItemInstance` the piece was built from (`Fighter.ArmourItems`, same order as `Fighter.Armour`; null for a piece made
@@ -354,6 +424,42 @@ holds refuses the second mod.
   and must not change characters or other world state in the call. One that throws is logged and disabled for that world, and the fault enters
   the state hash. Without an observer no payload is made. Engine API, not in the original. **Verified** by `CombatDefenceObserverTests`
   (a duel: one report per logged block or dodge, the same on 1 and 4 threads, the run unchanged; a throwing observer called once, its fault hashed).
+  A registered system implementing `ICombatDefenceFilter` is asked `Defence(World, in DefenceChoiceAsk)` each time a melee fighter decides how
+  to meet a blow on its way: the tick, defender, attacker, sequence and blow, the blow's side (technique direction), whether the defender is
+  stumbling, the game's block and dodge chances in percent (an armed fighter rolls the block, one that cannot block the dodge) and `Technique`,
+  the game's pick as an index into `CombatSystem.Techniques` (-1 none). It answers the technique to use: -1 (no defence, none tried again for a
+  while, as after a failed roll) or a block or dodge technique, a block that is not a dodge only for a defender that can block. Filters run in
+  system order, each seeing the earlier one's answer, in the combat act phase on any thread and concurrently: quick, thread-safe, a pure read of
+  the ask and of world state the tick has settled; state of its own about a defender only from that defender's asks (each defender chooses on
+  one thread). A throw or an answer against the rule keeps the technique; the filter is still asked for the rest of that tick, not from the
+  next, and the fault (its first tick) enters the state hash. Engine API, not in the original. **Observed** by a scratch run (not in the repo):
+  an unchanged answer keeps hash and log and is asked the same on 1 and 4 threads; -1 stops every block and dodge; always the dodge technique
+  turns every stopped blow into a dodge, the same on 4 threads; an out-of-range answer is asked in one tick and hashed.
+- **Target choice:** a registered system implementing `ITargetScoreFilter` (`Meitou.Simulation.Combat`) is asked `Score(World, in
+  TargetScoreAsk)` for every candidate the game scores (`TargetScore.Score`; a dropped one is not asked): the tick, chooser, target, `Kind`
+  (`TargetChoiceKind`: `Fight` a fighter's own choice, `Join` the attacker of a protectee or another joiner's pick, `Look` the aggro look,
+  `Assault`; more may come), the `TargetCandidate` facts and the score. It answers the score to use; the best wins. Filters run in system
+  order, each seeing the earlier one's answer, on any thread and concurrently: quick, thread-safe, a pure read of the ask and of world state the
+  tick has settled. A throw or a non-finite answer keeps the score; the filter is still asked for the rest of that tick, not from the next, and
+  the fault enters the state hash. `TargetCandidate.ChooserHasTarget` is true in a fighter's own choice while it fights someone (the original's
+  `AI::chooseBestAttackTarget` given a valid old target), false in the other choices; no engine score reads it. The ask's `CombatMode` is the
+  original's last flag of that call (`FUN_14059e300` param_7, the range clamp: set by the in-fight chooser only, **Verified**), true for `Fight`;
+  `LawEnforcer` its flag before (param_6, which adds a term from the candidate's state broadcast `+0xa0`, **Observed**), false in every
+  kind, as Meitou scores no such term. Engine API, not in the original.
+  **Observed** by a scratch run (not in the repo; a 1-against-2 fight, `Fight` asks only): an unchanged answer keeps hash and log and is asked
+  the same on 1 and 4 threads; lowering one candidate's score changes the pick, the same on 4 threads; a throw or a NaN or infinite answer keeps
+  the scores, is asked in one tick and is hashed.
+- **Engagements:** a registered system implementing `ICombatEngageFilter` (`Meitou.Simulation.Combat`) is asked `Allows(World, in EngageAsk)`
+  whether a fighter may take on a target: the tick, attacker, target, `Kind`, whether the target is the player's pick (an attack order the
+  player gave, or the current target such an order named) and whether the fight is a defence. `EngageKind.Start` is every fight start
+  (`CombatSystem`'s single start: the player's order, a defence, a goal's or squad's join, an arrest, an NPC order's assault, a loaded attack
+  order), asked serially once the game's own tests pass; refused, the fighter does not fight. `Choice` is every candidate of a target choice (a
+  fighter choosing whom to fight next, `CombatSystem.BestAttackerOf` for a joiner), asked on any thread; refused, it is passed over for the next
+  best. More kinds may come. Filters run in system order until one refuses; quick, thread-safe, a pure read of the ask and of world state the
+  tick has settled. A throw allows that ask; the filter is still asked for the rest of that tick, not from the next, and the fault enters the
+  state hash. Without a filter nothing is asked. Engine API, not in the original. **Observed** by a scratch run (not in the repo): allowing all
+  keeps hash and log on 1 and 4 threads with the same asks; refusing all leaves a duel without a blow; refusing one side's start leaves it
+  without a swing; a throwing filter is asked in one tick, the duel as without it, the fault hashed.
 - **Trade prices:** a registered system implementing `ITradePriceFilter` (`Meitou.Simulation.Trading`) is asked
   `Price(World, in TradeDeal, long price)` for every price the game asks: the trade window's stack and unit prices and the coins it takes,
   and an NPC shopper's purchase from a building's stock. The deal names the tick, the item record, the units, whether the customer sells,
@@ -362,6 +468,7 @@ holds refuses the second mod.
   price the earlier ones left. A buy-back (undoing a trade of the open window) keeps its coins and is not asked. A filter must be a pure
   read, since the same price is asked again for the window and the payment; one that throws or answers a negative price is undone for that
   price and disabled for that world, and the fault enters the state hash. Without a filter nothing is built. Engine API, not in the original.
+  `TradeDeal.Item` is the priced item itself (the window's stack, the shopper's unit; its `ModTag`, quality, level and maker), read only.
 - **Sales:** a registered system implementing `ITradeObserver` (`Meitou.Simulation.Trading`) receives `Traded(World, in TradeSale)` once for
   every completed item deal, after the money and the goods moved: an NPC shopper's purchase of one unit from a building's stock or a shop counter
   the player built (`TradeSaleKind.Shopping`), and the trade window's buys and sells (`WindowBuy`, `WindowSell`), a click or an item dragged
@@ -391,7 +498,46 @@ holds refuses the second mod.
   (a build order's materials) asks it between ticks on the host's thread, with the coming tick's number. One that throws is answered as allowing
   for the rest of that tick and is not asked from the next tick on; the fault enters the state hash. Without a filter nothing is asked. Engine
   API, not in the original.
-- **World ready:** a registered system implementing `IWorldReady` receives `Ready(World, bool fromSave)` once, between ticks before the first:
+- **Ditch items:** a registered system implementing `IDitchItemFilter` (`Meitou.Simulation.Items`) is asked `Keeps(World, in DitchItemAsk)`
+  (tick, carrier, `DitchKind`, item) for each carried item the game's automatic carry-off would take (`DitchKind.Resources`: the collection of
+  Ditch all resources 242, the excess-loot store search of 114 and a town errand's ditch; more kinds may come). True keeps that item with its
+  carrier: no storage is looked for or filled for it, and the trip goes on for the rest. Unlike Storage use it is asked per item, so a mod keeps
+  some goods of a trip. The collection is read by the AI's planning on worker threads, so a filter must be quick, thread-safe and a pure read of
+  the ask and settled world state; filters run in system order, the first keep wins. A throw answers "carry it off" for the rest of that tick,
+  the filter is not asked from the next, and the fault enters the state hash. Without a filter nothing is asked. Engine API, not in the original.
+- **Inventory arrange:** a registered system implementing `IInventoryArrangeFilter` (`Meitou.Simulation.Items`) is asked
+  `Arrange(World, in InventoryArrangeAsk)` before every arrange the game runs: a window's ARRANGE (a character's main grid or worn bag, a
+  machine's or container's storage, the trade window's stock; `InventoryArrangeReason.Button`), making room for a held item going back
+  (`MakeRoom`) and the trade window's stock grid being built (`StockShown`); more reasons may come. The ask names the tick, the root inventory,
+  its window (`ItemOwner`: a character, `Stock`, a machine's or container's site), the reason and the grids (`ArrangeGrid`: a grid and its
+  section, `main` and/or `backpack_content`). It answers null (the next filter's, finally the game's arrange) or an `InventoryArrangement` of
+  `ItemPlacement(item, x, y, rotated = null)`: every item of the grids placed once, in its own grid, inside it and overlapping none; the
+  grids' items are then listed in placement order after their other sections' items, as the game's arrange lists them.
+  `InventoryArrangement.MergeFirst` has the engine merge the grids' partial stacks first (the game's top-up, each stack topping up those before
+  it in list order) and ask the same filter again with `Merged` set; a null answer then undoes the merge. Filters run serially in system order
+  until one arranges. A filter must be a pure read; one that throws or answers an invalid arrangement (or `MergeFirst` twice) is undone for that
+  arrange, which the next filter or the game then makes, and is disabled for that world; the fault enters the state hash. Without a filter
+  nothing is built. `InventoryCommands.Arrange(world, root, owner, reason, bag = null)` is that arrange (both grids, or only the bag or only the
+  main grid), for a mod's own button too; `Arrange(root)` and `Arrange(root, bag)` stay the game's and never ask the filters. Engine API, not in
+  the original. **Observed** with a scratch program (placement, order, rotation, each invalid answer, throw, merge, hash, inert without a
+  filter); no test yet.
+- **Storage priority:** a registered system implementing `IStoragePriority` (`Meitou.Simulation.Items`) is asked `Priority(World, CharacterId who,
+  string storage, StorageUse use, string? record)` at the same searches as `IStorageFilter`, for each storage the filters allow, and answers a
+  `StoragePriority`: `Forbidden`, `Low`, `Deferred`, `Normal` (the default), `Preferred`, `Important`, `High`, `Critical`. The search takes the
+  highest priority and, among equals, the storage it takes without one (the nearest, its own tie rule); `Forbidden` passes the storage over as a
+  refusal does. Take and put are asked apart, so a store can be the last place things are put and the first they are taken from (put `Low`, take
+  `Critical`: an overstock store). Systems combine as: any `Forbidden` wins, else the first answer other than `Normal` in system order (mods in
+  load order); an answer outside the levels counts as `Normal`. The player sets each storage's own put and take level on its panel
+  (`Machine.PutPriority`, `Machine.TakePriority`, saved with the building, [save](formats/save.md)): its `Forbidden` wins too, and a level other than
+  `Normal` comes before the systems' answers, which apply where the player left a storage at `Normal`. A squad's kept ditch trip keeps its storage while it still takes something (only
+  `Forbidden` ends it). `world.StorageRank(who, storage, use, record)` gives the filters' and priority systems' combined answer (`Forbidden` for
+  a refusal), so a mod ranks its own storage picks as the game's searches do. Same threading, paused-order and fault rules as `IStorageFilter`;
+  one that throws answers `Normal`. Without a priority system or a storage's own level every search is the original's. Engine API, not in the
+  original.
+- **World ready:** a registered system implementing `IWorldReady` receives `Ready(World, bool fromSave)` once, between ticks before the first
+  (`world.Start` then says how: `WorldStartKind.NewGame`, `Load` or `Import`, with `SaveFolder` the full path of the save read, null for a new
+  game; `Unknown` for a world the game host did not start; not saved, hashed or read by the engine, so a mod reads a file of its own or the
+  original mod's beside the save there):
   after a save has loaded (`IModSaveData.Read` done and settings of mods no longer running dropped; an import counts as a save) or a new game has
   placed the player's characters (`fromSave` false), once that world is the running one, so the context's `Enqueue`, `Tick` and `PostSound` reach
   it. Systems are told in system order (mods in load order); one may change the world as a serial phase does, so a mod sets its unsaved runtime
@@ -404,7 +550,8 @@ holds refuses the second mod.
   a body (not the take-all loot, NPCs' own looting or money). The report names the tick,
   the taker, the owning faction (-1 none), the character taken from (none for a container or machine), the site ("" for a character), the
   item record, the units and whether the taker was caught (the goods stayed). It includes takes the game makes no crime of, such as the
-  player's own characters taking from a container of the player's faction, so a mod can judge them by its own law. Observers are called in
+  player's own characters taking from a container of the player's faction or out of the player's own machines (a storage's grid or a
+  machine's output, by drag or click; owner the player's faction), so a mod can judge them by its own law or track where goods went. Observers are called in
   system order once the goods have moved (the units that moved) or the taker was caught; they may read the world and change their own state,
   and gameplay changes go through commands.
   One that throws is disabled for that world and the fault enters the state hash. Without an observer nothing is built. Engine API, not in
@@ -413,11 +560,12 @@ holds refuses the second mod.
   change the crime rules make to a character's pending crime or bounties ([rules](simulation.md#crimes-and-bounties)), by `CrimeEventKind`:
   `Pending`, a crime set on a culprit (every code the game sets, among them the assaults it notices: an unprovoked attack order, an NPC's landed
   blow or aimed bolt, a stealth knock-out swing, a hit between the police and another); `Witnessed`, the first witness to react; `Booked`, a bounty
-  raised (a witness's or a fence's booking, or a dialogue line assigning one: the speaker is the witness, the line's amount is added, and the code
-  and victim are those of the target's pending crime, which the line marks booked, if it has one); `Lapsed`, a pending crime ended, booked or not
+  raised (a witness's or a fence's booking, a dialogue line assigning one: the speaker is the witness, the line's amount is added, and the code
+  and victim are those of the target's pending crime, which the line marks booked, if it has one; or a mod's `AssignBounty`, below: no witness
+  and no crime); `Lapsed`, a pending crime ended, booked or not
   (its timer ran out, a crime of another code replaced it, or the character was recruited, bought free, dismissed or stored off screen with its
   squad, the dead with it); `Expired`, a bounty run out; `Cleared`, a bounty removed otherwise (a fine or a bail paid, a release from prison,
-  dialogue, the debug menu). Each once: a crime already pending with the same code is only refreshed and not reported again, and an assault by a
+  dialogue, the debug menu, a mod's `ClearBounty`). Each once: a crime already pending with the same code is only refreshed and not reported again, and an assault by a
   culprit with another crime pending only raises that crime's timer. So every `Pending` is followed by one `Lapsed` unless the character leaves the
   world first (a body that decays or is unloaded, a squad despawned: its crime goes with it; a dead character's crime otherwise stays frozen), and
   every bounty raised in the world is `Booked` before it is `Expired` or `Cleared`; an ending is per faction entry, so several bookings may precede
@@ -433,7 +581,12 @@ holds refuses the second mod.
   character free normally arrive this way, as do character trades, squad commands (a dismissal), a theft by hand and a fence's sale while paused.
   Observers may read the world and change their own hashed state, and gameplay changes go through commands. One that throws is disabled for that
   world and the fault enters the state hash. Without an observer no event is built. `CrimeSystem.BookingsOf(tick)` still lists the tick's bookings
-  that had a witness (the arrest system's trigger). Engine API, not in the original.
+  that had a witness (the arrest system's trigger). `CrimeSystem.AssignBounty(world, character, faction, amount)` adds a bounty as dialogue's
+  assigned one does (the original's own step, which a new NPC's rolled bounty also takes): under the faction's booking faction (its `legal
+  system`, else itself when it books bounties), the time of the last raise stamped, so it lasts 0.04 hours per cat and for ever from 10000; no
+  pending crime is touched and no message posted. It returns the entry's new amount, -1 for an amount of 0 or less, a character not in the world
+  or a faction with no booking faction. `CrimeSystem.ClearBounty(world, character, faction)` removes that entry and returns its amount (0:
+  none); relations and recognition stay. Both are for serial phases and `IWorldReady`, once per event. Engine API, not in the original.
 - **Items used up:** a registered system implementing `IItemUseObserver` receives `ItemUsedUp(World, in ItemUsed)` inside the step that
   used an item, once the item has changed: the tick, the `ItemUseKind`, the item record's string id, the user (none for a machine, a
   research order or an upgrade pulling from the building's own stock), the building it went into or came from (a construction, machine or
@@ -477,7 +630,9 @@ holds refuses the second mod.
   crime, already cleared); a body loaded dead is never reported. Callbacks may read the world and change their own hashed state, and must not
   change characters or other world state (gameplay changes go through commands). One that throws, or that removes the dead character itself,
   is logged and disabled for that world (the removal it made stands, and is not made twice); faulted registrations enter the state hash.
-  Without an observer no payload is made and no death watch is kept. Engine API, not in the original.
+  Without an observer no payload is made and no death watch is kept. Engine API, not in the original. A mod that kills a character itself
+  reports the death with its killer and site at once with `Deaths.Report(world, victim, killer, site)` (serial phases; nothing for a character
+  not dead or already reported; else the sweep reports it with no killer).
 - **Experience:** a registered system implementing `IExperienceFilter` (`Meitou.Simulation.Bodies`) is asked `Gain(World, in ExperienceGain)` for
   every experience gain the game makes to one of a character's own stats in the world (every `XpService` entry: combat, injuries, ranged and
   turrets, moving, sneaking, assassination, thievery, lockpicking, building, machine work, training dummies, first aid, mass combat) and for a
@@ -498,23 +653,119 @@ holds refuses the second mod.
   naming that skill trains into it (`meitou skill`, Weapon types below) passes the filters; only the game's own stats do. A filter that throws,
   or answers an amount that is negative or not finite, leaves that gain as it came and is logged once; it is still asked for the rest of that
   tick and not from the next, and the fault (with its tick) enters the state hash. Without a filter nothing is bound or built. Engine API, not in
-  the original.
+  the original. The gain also carries `Level` (the stored level before it) and `Cap`: the core curve's top (101, or a training dummy's level;
+  the curve adds amount x ((cap - level) / cap)^2), or for an amount added straight the level from which no raise is taken (first aid's 100,
+  mass combat's infinity). A filter that overrides the default method `Adjust(World, in ExperienceGain)` returns the gain to make: its amount
+  and cap are taken (a cap above 0, else a fault as above), and the hold rules then use that cap, so a level cap above 101 trains on its own
+  curve. The default `Adjust` is `Gain`'s amount with the cap unchanged.
+- **Need rates:** a registered system implementing `INeedRateFilter` (`Meitou.Simulation.Bodies`) is asked `Rate(World, in NeedRateAsk)` for
+  each body update's rate of a need of every character in the world: the tick, the character, `NeedKind` (`Hunger`: the race's hunger rate
+  times the situation factor, the multiplier on hours / (starvation time x hunger time option) the hunger meter loses; more kinds may come)
+  and the rate. It answers the rate to use; the HUD's hunger figure is asked too. Runs in the parallel body step: quick, thread-safe, a pure
+  read of the ask, the character's own state and world state the tick has settled. A throw or an answer that is negative or not finite keeps
+  the rate; the filter is still asked for the rest of that tick and not from the next, and the fault enters the state hash. Without a filter
+  nothing is asked. Engine API, not in the original.
+- **Combat reads** (`Meitou.Simulation.Combat` / `Bodies`; pure reads of the settled tick, any thread): `CombatSystem.AttackSkill(world, slot)`
+  (the melee attack skill every blow is contested with: the fist rating unarmed, else trained melee attack plus the gear's and weapon's attack
+  bonus, indoors modifier, less the dust penalty), `MeleeDefence(world, slot, guard)` (the block contest's defence) and `EffectiveDodge(world,
+  slot, guard)` (the original's `CharStats::getDodge`: stored dodge plus the gear's dodge term, through encumbrance and legs, the guard bonus for
+  a guarding unarmed fighter), null for no fighter; `CharacterFacts.UnderMeleeAttack(world, slot)`, the original's
+  `isLiterallyUnderMeleeAttackRightNowForSure` (Character `+0x2b0`, **Verified** getter decompile `FUN_140333cd0`): an immediate threat within
+  40, the AI's states 16, 39 and 158. Engine API.
+- **Medical reads** (`MedicalState`, `Meitou.Simulation.Bodies`; pure reads as of the last medical tick, any thread), named after the original's
+  `MedicalSystem` tests ([character-stats](game/character-stats.md#medical-tests)): `ProbablyDying`, `CanGetUpWakeUp`, `ReallyHungry`,
+  `CanKick`; `isCrippled` is `Crawling`, `isInBloodlossTrauma` is `BloodKo`. The original's extra blood loss has no counterpart. Engine API.
+- **Health changes:** a registered system implementing `IHealthChangeObserver` (`Meitou.Simulation.Bodies`) receives `HealthChanged(World, in
+  HealthChange)` for every change of a body part's flesh, stun, bandage or splint (`HealthValue`, the part's index in `MedicalState.Parts`) or
+  of the blood (part -1) of a character in the world, whatever made it, with before and after and a `HealthChangeKind`: `Hit` (melee, bolt,
+  execution, a martial artist's punch on itself), `Body` (bleeding, blood regained, healing, stun recovering, a wound worsening), `FirstAid`
+  (bandage, wound closing, splint), `Environment` (acid water and ground, acid rain, burning, gas, dust), `Eaten`, `Rack`, or `Other` (any
+  change no step names: debug commands, dialogue, a mod's own change, off-screen recovery). One step's changes to one value are told as one.
+  Calls run serially once per tick after the slow world and the deaths' sweep, in slot order, each character's changes in the order its steps
+  made them, or as the character leaves the world (a character coming back is taken in afresh, its off-screen changes not told); a character's
+  first look tells nothing. Callbacks may read the world and change their own hashed state, not characters or other world state. A throw
+  disables the observer for that world, and the fault enters the state hash. Without an observer nothing is looked at. Engine API, not in the
+  original. **Observed** by a scratch run (not in the repo): a duel's changes are the same list on 1 and 4 threads, and its hash and log are
+  unchanged by the observer.
+  `CrimeSystem.StealRoll(World, CharacterId thief, CharacterId watcher, float chance, int faction, CharacterId victim)` runs the game's steal
+  roll for a mod's own theft (serial phases): the watcher (none or gone: nobody) misses the thief when a draw falls under `chance` (0 always
+  caught, 1 or more never); caught, the game's outcome follows (a watcher in bed may only speak, else it gets up, says event 8 and remembers the
+  thief, which gets a Theft, timer 30, against `faction` with `victim`), and thievery XP as for the game's own rolls. It sets no pending crime
+  first (`SetPending` does). True when caught. **Observed** by a scratch run (not in the repo): the same result, pending crime and hash as the
+  private roll called as the Disarm port called it, at chances 0, 0.5 and 1.
+- **Removals:** a registered system implementing `IRemovalVeto` (`Meitou.Simulation.Bodies`) is asked `Keep(World, in RemovalAsk)` before the
+  engine takes a character, body or platoon out of the world for a `RemovalKind`: `CorpseDecayed` (12 game hours), `CorpseUnloaded` (in a zone
+  not loaded), `PlatoonDespawned` (a platoon the population does not keep leaves the loaded world: despawned as it unloads, or thinned member by
+  member; kept, it unloads with its characters stored and a knocked-out member in the zones holds it loaded, as for a kept one) and
+  `PlatoonOrphaned` (an off-screen platoon not kept and not wanted counts towards its 60 s despawn; kept, the timer starts again); more kinds
+  may come. `RemovalAsk.Platoon` is the platoon's id (`world.Platoons.Find`) for a platoon kind, -1 otherwise, and `Character` none. True keeps
+  it this time; it is asked again when the rule would take it next. Vetoes run in system order until one keeps it: serially for the corpse kinds
+  and `PlatoonDespawned`, on any thread for `PlatoonOrphaned` (the off-screen step is parallel), so a veto is quick, thread-safe and a pure read
+  of the ask and of world state the tick has settled. A throw lets the removal go ahead; the veto is still asked for the rest of that tick, not
+  from the next, and the fault enters the state hash. A squad stored off screen takes its dead with it, unasked. Engine API, not in the
+  original. **Observed** by a scratch run (not in the repo) of the roaming town without kept roamers: a veto keeping nothing keeps the hashes on
+  1 and 4 threads; keeping `PlatoonDespawned` stores the leaving platoons' characters; keeping both kinds stops the orphan timer, the same
+  hashes and asks on 1 and 4 threads; a throwing veto is asked once and hashed.
+- **Part maximum:** a registered system implementing `IPartMaxFilter` (`Meitou.Simulation.Bodies`) is asked `Max(World, in PartMaxAsk)` for each
+  body part of each character at the start of its body step, before its medical tick: the tick, character, part index, its LOCATIONAL_DAMAGE id
+  and `HealthPart.StoredMaxHp` (base x multiplier x scale - wear, the original's `HealthPartStatus::maxHealth` `FUN_140296c70`, **Verified**).
+  The answer holds as a factor on the stored maximum until the next step, and `HealthPart.MaxHp` (the medical tick, hits, the health panel,
+  every reader) returns it: a getter-only bonus, as a hook on the original's `maxHealth` (Limb Toughness's mode 0); what is saved stays the
+  game's terms. Not asked for a stored maximum of 0 or below. Filters run in system order, each seeing the earlier answer, in the parallel body
+  step: quick, thread-safe, a pure read. A throw or an answer not finite and above 0 keeps the maximum; the filter is still asked for the rest
+  of that tick, not from the next, and the fault enters the state hash. Without a filter nothing is asked and the factor is 1. Engine API.
+- **Bed search:** a registered system implementing `IBedFilter` (`Meitou.Simulation.Locks`) is asked `Allows(World, in BedAsk)` by the bed search
+  (`FixtureRegistry.FindBed`: the go-to-bed goals, rescue, the bed orders' spare bed): the tick, sleeper, bed fixture id, its building and owner
+  faction and `Allowed`, the game's verdict; it answers whether the bed may be taken. For a player character every free, reachable bed in reach
+  is asked, so a filter admits one the game refuses (a rented inn bed, another faction's), weighed as an ally's (0.01 before the material,
+  indoor and walls factors); for anyone else only the beds the game takes, which a filter may refuse. Filters run in system order, each seeing
+  the earlier answer, on any thread (the think searches too): quick, thread-safe, a pure read. A throw keeps the answer; the filter is still
+  asked for the rest of that tick, not from the next, and the fault enters the state hash. Without a filter nothing is asked. Engine API.
+- **Sleep clock:** `CharacterCold.BedUsedHours` is the game hours of the last update of a bed the character lay in (status `+0xc0`, stamped by
+  `Task_UseBed`'s update, which row 98's desire reads; **Observed** as the original's last-slept time): hours since it slept are
+  `world.GameHours - BedUsedHours`. Derived, not saved (0 after a load until it sleeps).
+- **Items created:** a registered system implementing `IItemCreatedObserver` (`Meitou.Simulation.Items`) receives `Created(World, in
+  ItemCreated)` for each item the world makes of an `ItemCreatedKind`: `Loot` (a camp's ground items, a town's artifacts for its buildings'
+  containers), `Crafted` (a bench's finished item, `Character` the crafter), `ShopStock` (each unit and special item of a shop's fill, before
+  it is stacked; `Squad` the shop's squad, -1 for a home stocked without one) and `SpawnEquipment` (a new character's kit and what it holds,
+  once it is in the world); more kinds may come. `Place` (`ItemCreatedPlace`), `Site` and `Town` say where loot went: `Ground` (a camp's
+  items, `Town` the camp's town site) or `Container` (a town artifact, told once it is in its stock box: `Site` the box's fixture id, `Town` the
+  town's site index); other kinds are `None`, "" and -1. The observer may set the item's `ModTag` (units tagged apart do not stack), a `Loot`
+  item's `Level` (its grade, e.g. a chance to lift it) and its own hashed state, and nothing else. Calls run serially in system order in the step that made the item. A throw disables the observer and enters the
+  state hash. Without an observer nothing is walked. Engine API, not in the original.
 - **Faction list:** `ArrangeFactionList(arrange)` arranges the Overview's Faction tab: `arrange` gets the rows the tab would show
   (`FactionListRow`: faction, name, the player's relation), sorted by name, and returns the rows to show, in order. It can reorder, rename
   (names go through the translation catalog like the tab's own), leave out, or add headings (faction -1: the name alone, no number or bar),
   for example to group factions under another. It runs on the host's thread whenever the tab is drawn, so it must not touch the world; mods chain in
   load order. A throw or a null is logged and that arranger is not called again.
+- **Placement rules:** `AddPlacementRule(rule)` changes where build mode lets the player place a building. `rule.Waive(ask, failure)` may
+  lift one of the game's own reasons for refusing a ghost (`PlacementFailure`: inside only, too close to a building, uneven ground, a building
+  not owned, and the rest), and the check goes on to its next step; the town block (`TooCloseToTown`) is never asked about, since
+  the simulation applies it again on Confirm, nor is research. `rule.Refuse(ask)` may refuse a ghost the game allows, with the mod's own text as
+  build mode's message (`PlacementFailure.RefusedByMod`). `PlacementAsk` gives the building's build data, the ghost's position and turn, the
+  building it stands in or on (null outdoors), the floor and whether it is a wall piece. A reason any mod lifts is lifted; a refusal by any mod
+  stands. Asked on the host's thread for every ghost build mode shows (each frame it moves, each piece of a wall line, and the test channel's
+  `build`), so it must be cheap and must not touch the world; with no rule registered the check is unchanged. A rule that throws is logged and
+  not asked again. What a lifted reason allows is the mod's to answer for: furniture placed outdoors stands with no parent building, and
+  whatever reads indoors (rain on farms and rain collectors, lights, beds) treats it as outdoors. Engine API, not in the original.
 - **Combat moves:** `AddCombatMove(source)`: `source(world, id, tick)` answers a `CombatMove` (a `CombatTechnique` and its progress, 0 to
-  1) or null, and the animation plays the first answer, in load order, as the character's technique (`CombatSystem.ModMove`). It is asked
+  1) or null, and the animation plays the first answer, in load order, as the character's technique (`CombatSystem.ModMove`);
+  `CombatMove.Clip(animation, progress)` plays any ANIMATION clip instead, by record name (else string id), e.g. `medic` (the first-aid
+  kneel) or `squat T` (the crouch), its time the progress times its length, as the crossbow's poses are. It is asked
   only when the game plays nothing of its own: not while the character attacks, blocks or dodges, is stunned or stumbling, holds a crossbow
   pose, is down, carried or getting up (as of the last finished tick). The move is animation only: it lands no blow, nobody blocks it, and
   the combat system may start its own swing over it at any tick. A technique the animation library has no clip for plays nothing. The
   source runs in the animation's parallel step for every stepping character, and the move enters the world: its layers are hashed and a
   relocating clip's root motion moves the character. So it must be cheap, thread-safe, read-only and deterministic: answer from state the
   tick has already settled (its own system's serial step, the last finished tick), never from call order or caches that change the answer,
-  and never call `ModMove` itself. A throw, a move without a technique or a progress that is not finite is a fault: logged once with the mod
-  id; the source still answers for the rest of that tick and answers nothing in that world from the next tick on, and the fault enters the
-  state hash.
+  and never call `ModMove` itself. A throw, a move without a technique or animation, or a progress that is not finite is a fault: logged
+  once with the mod id; the source still answers for the rest of that tick and answers nothing in that world from the next tick on, and the
+  fault enters the state hash. The clip path is **Observed** by a scratch program (answer, clamp, fault, hash), not seen in the game.
+  `CombatSystem.ModMoveBlockOf(world, id)` says whether the game keeps a move off the character now (`ModMoveBlock`: `None` (a move plays),
+  `Gone`, `Attacking`, `Reacting` (block, dodge, hit), `RangedPose`, `Carried`, `GettingUp`, `Down`, `Stumbling`, `Stunned`), by the
+  animation's own tests on the last finished tick; read only, any phase. A mod whose clip stands for work (a repair) polls it from its
+  system and cancels the work when it is not `None`: the game replaced the clip or cut it short. Another mod's earlier answer is not told.
+  Engine API, not yet checked in a running world.
 - **Dialogue codes:** `AddDialogueCondition(code, handler)` and `AddDialogueEffect(code, handler)`, named from FCS data in a
   DIALOG_ACTION's `condition name` / `action name`. A condition gets `DialogueCheck` (world, speaker, the subject `who` picked, the
   condition) with `Matches(bool)` and `Compare(double)` that apply the vanilla value and `compare by` rules; it only reads (it also runs
@@ -558,6 +809,18 @@ holds refuses the second mod.
   stats, look, trade, looting, locks), and shows in the character and loot windows as a copy of the belt slot at (`x`, `y`) layout pixels
   (UI scale 1) from the window's top-left corner, clipped to the window: the mod picks a free spot; the window does not grow. Animals get none.
   Saves keep the section name ([save](formats/save.md#compatibility-exceptions)). Races' `no hats`-style closing never applies.
+  Init options: `MaxItems` (1 to its cells, default 1) above 1 makes it hold that many items, each at its footprint in the slot's cells as
+  the weapon sections do, one unit each. `Secondary = true` makes it a second section for `fcsSlot`'s items, any slot but 0, 7 and 12 (the
+  game's hat 3 and belt 14 too, several secondaries per slot allowed): it takes them only by an explicit move (drag, loot window) and the game
+  never puts an item there itself (equipping, picking up, an NPC's kit go to the slot's own section). `RollFromClothing = true`: a generated
+  character rolls one more ARMOUR of `fcsSlot` from its CHARACTER `clothing` list after the game's slots (mod slots in registration order),
+  as the game rolls a clothing slot, worn in this section; without such a slot the rolls are the game's. Engine API, not in the original.
+- **Layout replacements:** `AddLayoutReplacement(layout, file)` on `ModContext` (`ModLayouts`, `src/Meitou.Game/Ui`) makes the interface read
+  its MyGUI layout `layout` (a file name such as `Kenshi_InventoryCharacterWindow.layout`; `.layout` may be left out) from `file` (an existing
+  `.layout`, relative to the mod's folder or full) wherever it loads it (screens, HUD, row layouts), for the process. One mod per layout, the
+  first in load order; a later one's is logged and left out. A mod slot whose section names a widget of the character window takes that
+  widget's place (its corner; the slot keeps its cell size) instead of its `X`/`Y`. The layout must keep the widgets the game binds by name;
+  missing ones behave as in a UI mod's layout. Engine API, not in the original. Not seen in a running game.
 - **Wear rules:** `AddWearRule((item, race, animal) => bool)` (`WearRules`, `src/Meitou.Data/Gameplay`) answers "may a wearer of this race
   wear this item?" with the item's record id, the wearer's RACE id and whether it is an animal, after the item's own `races` / `races exclude`
   lists pass ([RaceLimiter](game/ui-screens.md#6-inventory-trade-dialogue-build)). False refuses the item wherever those lists are checked:
@@ -683,6 +946,11 @@ holds refuses the second mod.
   put back the stock `fcs.def` and so remove the lines (add them again). The editor keeps a field `fcs.def` does not declare through a load and a
   save, so a record keeps its fields when someone without the lines saves it, unless its Cleanup window's "Remove deprecated fields" is run ([FCS
   data](formats/fcs-mod.md#editor-and-undeclared-fields)). Without the editor, write the records with `FcsWriter` (`src/Meitou.Data/Fcs`).
+- **Character refresh:** `CharacterRefresh.Refresh(context.Population, cold, kind)` (`Meitou.Simulation.Bodies`) makes a character's derived
+  state again after a mod changed what it is made from: `CharacterRefreshKind.Equipment` the fighter from the inventory (guard and encumbrance
+  kept), the drawn weapon following the new kit, the worn gear's colours and the look, as every engine path that moves worn items does (a
+  piece broken, taken off or put on by a mod); `Look` the look alone. Serial phases only (a system's `Inputs` or serial step, `IWorldReady`). A
+  character without an inventory is left as it is. Engine API.
 - **Bone anchors:** `CharacterCold.DrawAnchor = new DrawAnchor(carrier, bone, offset, rotation)` draws a character on another's named bone
   as the renderer poses the carrier in the drawn frame (a rider on a mount; the rule and its limits:
   [character-renderer](character-renderer.md#bone-anchors-meitou-engine-choice)); null removes it. Set it in the tick from the mod's own
@@ -741,7 +1009,8 @@ holds refuses the second mod.
   `WorldSnapshot.ModJobOffers`; `AddJob` carries the displayed site's and root's revisions. The authority rechecks the offer, building,
   current faction and each character's control grant before assigning it.
   `AddJobOffer(new ModJobOffer(type, buildings, caption, takers))` (engine API, not in the original; after the type's `AddJobType`, one offer per
-  type) lets the player give such a job: the menu of a finished building of the player's faction whose record is in `buildings` (the one with
+  type) lets the player give such a job: the menu of a finished building of the player's faction (any faction's with
+  `Owners = ModJobOwners.Any`; the mod decides what using another's costs) whose record is in `buildings` (the one with
   its Dismantle, [ui-input](game/ui-input.md#context-menu-verbs); a built bed's too, a cage's own rows not) ends with `caption`, translated as
   the game's rows, for a selection holding a character `takers` allows (`ModJobTakers.People`, `Animals` or both), an animals-only selection
   included. Choosing it, Shift or not, queues the game's `AddJob`, which tests the building again and gives each selected living player
@@ -749,9 +1018,10 @@ holds refuses the second mod.
   mod checks the job's building as it checks that the job is listed; the same building changes nothing); the jobs switch turns on and the
   character plans again. Refused: a type the mod has not claimed, a second offer for a type, no building, a blank one or one that is no
   BUILDING of the loaded data, a caption that is blank, over 32 characters, holds a control character or is the label of one of the game's
-  verbs, takers that are none or other than people and animals. **Observed** (2026-11-22, scratch world with a headless interface): an
-  animals-only selection is shown the row and takes the job, a person selected with it does not for an animals offer, a second building moves
-  the job in its place between two game jobs, and another record's, another faction's or an unfinished building gives nothing.
+  verbs, takers that are none or other than people and animals, an `Owners` that is neither. **Observed** (2026-11-22, scratch world with a
+  headless interface): an animals-only selection is shown the row and takes the job, a person selected with it does not for an animals offer, a second building moves
+  the job in its place between two game jobs, and another record's, another faction's (for the default `Owners`) or an unfinished building
+  gives nothing.
 - **Item use:** `AddItemUse(record, handler)`, one mod per item record string id. A right click on such an item in a player character's own
   inventory window (or its bag), with no other character's window open and no trade, runs `handler(ItemUse)` (world, user, item, that
   character's inventory) in the player system's serial step, before the click would equip or move it (`ItemUses`, `src/Meitou.Simulation/Player`),
@@ -768,9 +1038,10 @@ holds refuses the second mod.
   **Verified** by `ModHookTests` (synthetic world): the click and its guards (stale tag, locked on), fall-through, tag stacking, hash and save key.
 - **Persistence:** a mod system implementing `IModSaveData` (`Write`/`Read(Stream)`) is saved under its name in the mod's sidecar file
   ([save](formats/save.md#mod-data)), captured between ticks with the save and restored right after `SaveLoader.Load`, before the first
-  tick. `Read` runs only when the save has data for the system. Coop binds the mod context to the save or restore candidate throughout both
-  callbacks; strict server failures abort that operation. Claimed world-state values use the same sidecar and strict restore path.
-  Vanilla save files stay byte-exact. Data kept per character is keyed by the
+  tick. `Read` runs only when the save has data for the system. Coop binds callbacks to the save or restore candidate; strict server failures abort that operation. Claimed world-state values use the same sidecar. Vanilla save files stay byte-exact. `AddSaveWritten(folder => ...)` on
+  `ModContext` is told the full path of each save folder once the game has written it (Save window, quicksave, autosave), on the host's thread
+  while a tick may be in flight (it must not touch the world), so a mod writes a file of its own beside the save; a throw is logged and the
+  listener is not called again. The folder a load or import read is `world.Start.SaveFolder` (World ready). Data kept per character is keyed by the
   characters' lasting ids (Character ids, below), not by `CharacterId`, which is new for every world.
 - **Character ids:** `world.LastingIds.GetOrGive(character)` gives a character a `LastingId` (a non-zero 64-bit value) the first time any mod asks
   and returns the same one after: it stays with the character for life, across saves and loads, squad moves, recruiting, being taken captive and
@@ -791,6 +1062,21 @@ holds refuses the second mod.
   `IWorldReady` run, an NPC when its platoon is made. A character the save does not write loses its id, which is never given again. An import starts
   with none. Until a mod asks (or a save with ids loads) nothing is held, hashed or written; then the ids enter the state hash. Engine API, not in
   the original.
+- **Character save fields:** `world.SaveFields` (`CharacterSaveFields`, `Meitou.Simulation.Saving`) keeps a mod's per-character values in
+  the vanilla save, under keys of its choosing (an original plugin's own, so a save taken to the original keeps them):
+  `SetInt`/`SetFloat`/`SetBool`/`SetString(character, CharacterSaveRecord, key, value)` and `Remove`, read back with `Int`/`Float`/`Bool`/
+  `String` (null: none). `CharacterSaveRecord.Orders` is the character's GAMESTATE_AI `ai` record (the original's `OrdersReceiver`),
+  `CharacterSaveRecord.Stats` its STATS record (an original plugin's `kills`, `kos`, `limbs` floats; **Observed** written into a captured
+  save and read from a loaded one, 2026-11-24 scratch check); more records may come. A value set or removed is written into the record
+  with every save, after the game's own keys; a key not set reads what the
+  loaded save held (while the character keeps its link to that save: read at World ready and set what you keep). The game's keys (orders: `jobs`,
+  `pjob<i>`, `pjobT<i>…`, `tjob<i>`, `tjobP<i>`, `tjobT<i>…`; stats: the 44 floats every saved STATS record has, the
+  [STATS record keys](formats/save.md#compatibility-exceptions); both: `meitou …`; `CharacterSaveFields.IsEngineKey`) throw, as does a set in a
+  parallel phase or during a save; set values are hashed. Without a set value nothing is hashed or written. Engine API, not in the original.
+- **Work sites:** `WorldSnapshot.WorkSites` lists, once each, every site a living player character's job names (`WorkSiteSnapshot`: `Id` as
+  jobs and commands name it, BUILDING `Record`, `Name`, `Kind`, `Owner`, `Position`): `WorkSiteKind.Building` (also in `Buildings`),
+  `ResourceNode` (a rock mined in place), `TownMachine`, `TrainingDummy` and `Seat`; more kinds may come. The same list instance is handed out
+  while unchanged. Engine API, not in the original.
 - **Interface:** `AddUi(IUiExtension)`: namespaced styles, controls, actions, overrides and slot contributions (`UiSlots`), registered
   with each new interface (`ConfigurePlayerInterface`, Vulkan and Metal). A picture from the mod's folder is an image node:
   `new UiNode(id, UiNodeKind.Image) { Image = Path.Combine(context.Folder, "face.png") }`; a CHARACTER record's portrait is
@@ -801,6 +1087,111 @@ holds refuses the second mod.
   disappears or is disabled; meanwhile the interface's keys go to it, as for a window's box. Each change of its text runs `Action` with
   the new text in `UiActionContext.Text` (empty for clicks on other nodes). `Text` is the box's text: whenever the node's differs the box
   takes it, so a mod stores the text its action gets and echoes it, or sets another (empty to clear). Engine API, not in the original.
+  A node's own looks override its style without registering one: `TextScale` (above 0, at most `UiHost.MaxTextScale`, 8), `TextColour`,
+  `Opacity` (0 to 1, multiplied into its fill, picture, skin and text and into its children's; a transparent node still takes the pointer) and,
+  on an image, `ImageCrop` (`UiImageCrop.Pixels(x, y, w, h)` or `UiImageCrop.Uv(u0, v0, u1, v1)`, not for a portrait). Inline `#RRGGBB` tags
+  colour a node's text after them (`##` is a #), as in the game's texts. A non-finite or out-of-range look leaves the contribution out and is
+  reported, as a non-finite placement is. `Animated` lays the overlay out every frame while the node shows (fades), instead of at least 20 times
+  a second. A contribution to `UiSlots.Overlay` whose root sets `ShowWithHudHidden` is also drawn while the interface is hidden (F7, not the
+  cinema's clean picture or recorded frames), laid out every frame with no bindings, without input or portraits. Pointer events:
+  `Pointer` (`UiPointerEvents` flags `Release`, `Drag`, `Wheel`, `Hover`) makes the node's `Action` get them besides the left press, all through
+  `UiActionContext`: `Kind` (`UiEventKind`: `Press`, `Text`, `Release`, `Drag`, `Wheel`, `Enter`, `Leave`, `Submit`), `Node` (the asking node's id),
+  `Position`, `Start` (the press), `Delta` (since the last drag event), `Wheel` (steps, above 0 up) and `Over` (for a drag or release, the
+  topmost overlay node's id under the pointer, a drop target). A left press on a node or a child is held by the nearest one asking for
+  `Release` or `Drag` (while held the world does not see the pointer), which gets each move and the release wherever it happens; the wheel and
+  hover go to the nearest asking. `Buttons` gives the nearest asking node the presses of the other buttons (right, middle, extra) as `Press`
+  with `UiActionContext.Button` (the left for every other press); such a press is then the node's, not the game's (no context menu, no
+  order). A window is made draggable by adding `Delta` to its placement. `UiNodeKind.ScrollView` lays out its
+  children by its flow shifted by its offset and clipped to it; while they overflow it shows a `Kenshi_ScrollBarV`-skinned bar (14 pixels, at
+  its right, unless `ScrollBar` is false); the wheel over it or a child that does not take the wheel, the arrows (`ScrollStep`, 24 pixels),
+  the track (a page) and the thumb scroll it. Its offset is kept by the extension and node id across frames and clamped to its content, and
+  is forgotten when the extension is disposed. `registration.ScrollOffset(nodeId)` reads it (pixels from the top of the content, as last laid
+  out or set; 0 for one never scrolled) and `registration.ScrollTo(nodeId, offset)` sets it (finite; below 0 is 0; the next layout clamps it to
+  the content), on the host's thread, for the extension's own scroll views (a screen control's too, which takes no wheel or bar input). A text
+  box whose node sets `Focus` takes the keys when it shows with it and did not the frame before (so a node kept set focuses once; not a
+  disabled box), the caret at the end; Enter in a mod's text box lets go of the keys and runs its `Action` as `Submit` with its text. Events run
+  on the host's thread like any action; a throw is reported each time and leaves the press held until the release. With no overlay node
+  nothing changes. Engine API, not in the original. **Observed** (scratch program, headless UiHost and MyGuiScreenHost): `Buttons`,
+  `ScrollTo`/`ScrollOffset` with clamping, `Focus` once per request and `Submit`; no test, not seen in a running game.
+  `Tint` (RGBA, each 0 to 1) is multiplied into a node's picture (image, portrait) and skin, as MyGUI's `Widget::setColour`; its text keeps
+  `TextColour`. `PortraitOf = characterId` on an image node draws that character's live portrait as the squad bar does (current gear and
+  pose): the cell the host already draws it in (squad bar, squads screen, character trade row), else a free one after those and before the
+  conversation's; a character not in the snapshot or past the free cells shows nothing. A root of `UiSlots.Overlay` picks its layer with
+  `Layer` (`UiOverlayLayer`): `Hud` (default: over the HUD, under the windows), `Back` (under the HUD and windows, over the name tags,
+  floaters and speech; the original's `Back` layer) or `Popup` (over the windows, under the right-click menu and tooltips); input follows the
+  drawing order. `UiFrameContext.Measure(text, font, scale)` (also `UiScreenContext.Frame`) answers a caption's size in pixels as the painter
+  draws it at that `TextScale` (widest line, lines' height), zero on a host without a painter. Engine API, not in the original. **Observed**
+  only by building; not seen in a running game.
+- **Fallback fonts:** `registration.AddFallbackFont(path)` (`UiRegistration`, in `IUiExtension.Register`) adds a TrueType or OpenType font
+  file that every interface text draws a character from when its own font lacks it (Chinese, Japanese or other scripts, symbols, letters with
+  marks the game's fonts do not have), after the files added before, ahead of the font's substitute glyph; the font's own glyph still comes
+  first, also outside its `Codes` in Faithful mode. A relative path is in the mod's folder; a full path may name a file elsewhere, such as one
+  of the Kenshi folder's language fonts (`locale/zh_CN/gui/fonts/TTDaHeiJ.ttf` under it). The glyph is drawn at the text's size and hinting
+  (its own hinting failures do not change the font's); the line height and baseline stay the font's own, and no kerning applies between
+  fallback glyphs. False when the file does not exist or was added already; a file FreeType cannot open, or one with no outlines, is skipped
+  for every font and logged once. Text drawn before is drawn again with it. Kept for the process. Cost: once per character and font size the first time it is drawn, nothing for characters
+  the game's font has. With none added nothing changes. Engine API, not in the original.
+- **Interface actions:** `context.Interface` (`ModInterface`) acts on the game's screens from the host's thread (a UI action, key action, menu
+  row, hit feed): `OpenScreen(ModScreen kind, ScreenTarget target)` opens `CharacterEditor` (a recruit's edit, free with race and gender kept,
+  of `target.Characters`; false while no listed character is in the snapshot yet, so a mod opening it on a character made this tick tries again
+  on later frames, or while an editor or a modal screen is open), `Overview` (tab `target.Tab`: 0 map, 1 faction, 2 research, 3 crafting, 4
+  squads) or `Build` (build mode, as B); `IsOpen(kind)` and `ScreenBounds(kind)` (the window's last placed rectangle in pixels, null while
+  closed) read them; `BuildEntries()` lists the build window's buildings in its own order (`UiBuildEntry`: BUILDING id, name, category, group,
+  group index; none while it is closed), `BuildChoice` is the building it holds chosen and `ChooseBuild(id)` chooses one as clicks on its
+  category, group and variant (false when the window is closed or does not list it). A call off the host's thread or without an interface
+  answers false, empty or null and is logged once per mod and problem. Display state only: nothing enters the state hash or a save. New
+  `ModScreen` kinds are added at the end. Engine API, not in the original.
+- **Game speed:** `context.Interface` also sets the game clock through the speed buttons' and pause key's own path, on the host's thread as
+  above. `Speed` (0 while paused by the player), `Paused` (no ticks run: the player, a menu or the loading pause) and `Speeds` (1 and the
+  player's two fast speeds) read it; `SetSpeed(speed)` is a speed button (0 the pause button; above `MaxSpeed`, 20, refused); `Pause(true)` is
+  the pause key's pause (the speed it resumes at is stored) and `Pause(false)` its resume (only while the speed is 0). `HoldPause()` returns a
+  `ModPauseHold` for a mod's window: the first hold of all mods keeps the player's speeds, each hold pauses the game when it runs, and
+  releasing the last (`Release()` or `Dispose()`) puts the kept speeds back while the game is still paused, so a speed the player chose
+  meanwhile stays; a new session drops the holds (`Held` false). Refused calls answer false, 0, none or null. The clock decides only how
+  many fixed ticks a frame runs, so speed never changes a tick's result or the state hash. Engine API, not in the original. **Observed**
+  with a scratch program against a stub interface (speeds, pause and resume, nested holds, a player's speed kept, a new session, off-thread
+  refusal); no test yet.
+- **Screen controls:** in `Register`, `registration.AddScreenControls(screen, anchorWidget, placement, context => node)` adds a `UiNode` tree
+  to a faithful screen (its id as the interface registers it, e.g. `stats`, `inventory`, `dialogue`, `bench`, or its kind: a pinned inventory
+  is `inventory`) or the HUD (`UiScreens.Hud`; the time controls are `TimeMoneyPanel`), laid out against the arranged widget named
+  `anchorWidget` by `UiAnchorPlacement`: `Inside` its rectangle (clipped to it), or in a rectangle of its size just `Above`, `Below`, `Left` or
+  `Right` of it (clipped to the screen only, so it may lie outside the window). The node's `Placement`, flow and styles work as in the overlay; it
+  is drawn over the screen after its own controls, and a node's `Action` names an action of `RegisterAction`, run on a click (the screen's
+  click sound first). A node (or a parent) asking `Pointer` `Release` or `Drag` holds a left press as on the overlay: its press runs at the
+  button's down without the click sound, then each move (`Delta`) and the release reach the holder wherever the pointer goes (`Over` names
+  overlay nodes only), and the screen sees none of it (no window drag); `Buttons` works as on the overlay. The wheel, hover and a scroll view's
+  bar are the overlay's only. `UiScreens.ItemCells` as the anchor builds once per item cell of a character window (inventory, bag, limbs, loot), at
+  most 128 cells per source and frame, with `Item` set; `UiScreens.Portraits` on the HUD builds once per squad bar portrait shown (anchor: its
+  picture, clipped to the bar's page), with `Character` the member. On the overview anchored to `MapImage`, `Anchor` is the whole map image
+  (it pans and zooms) and `Map` (`UiWorldMapView`, see "World map input") is set while the Map tab shows. `UiScreenContext` gives `Screen`, `Kind`, `AnchorWidget`, `Anchor` (the arranged
+  rectangle), `Character` (a character window's own, the stats window's selected, the NPC talked to, the HUD's selected or lead; null for
+  none), `Building` (a machine or storage window's site id), `Item` (`UiScreenItem`: the holder, an `ItemOwner`, and the `InventoryItemView`),
+  `Snapshot`, `Tick`, `Enqueue` (from an action), `Frame` (registered controls), `Widget` (`UiScreenWidget`: the anchor's name, type, caption,
+  action, argument, rectangle and enabled state as arranged) and `State` (see "Screen overrides"). Return null to add nothing. Nothing shows while the
+  screen is closed or its layout lacks the widget (a UI mod's), and without a source the screens are as before. A text box node works as on
+  the overlay (see "Interface"). The
+  source runs on the host thread each time the screen is arranged (each frame it is open), so it must be cheap and must not touch the world.
+  At most 256 controls of all sources per screen (the rest left out, logged once per screen); a source that throws or lays
+  out a node not finite is logged once and dropped; an action that throws is logged. Engine API, not in the original. **Observed** with the
+  installed HUD and stats layouts headless (placement, clicks, disposal); no test yet, not seen in a running game.
+  `UiScreens.SquadCells` on the overview builds once per squad box its Squads tab shows (anchor: the box's root widget, at most 128), with
+  `UiScreenContext.Squad` the squad's id (as `SquadView.Id`). Not seen in a running game.
+- **Screen overrides:** in `Register`, `registration.AddScreenOverrides(screen, widgetPattern, context => override)` changes a faithful screen's
+  or the HUD's own widgets (screen as for screen controls). Each time the screen is arranged, after its own content and before the extensions'
+  screen controls, the source is asked for each arranged widget whose name matches `widgetPattern` (exact, or `*` and `?` wildcards; at most
+  512 widgets per source and frame), with `UiScreenContext` (`Widget` the widget, `AnchorWidget`/`Anchor` its name and rectangle, `Item` for an
+  item cell, `Character` for a portrait or the screen's) and answers a `UiWidgetOverride` (null: no change): `Caption` (its text, at most 4096
+  characters, inline `#RRGGBB` tags as in the game's texts), `TextColour` (RGBA, each 0 to 1, before the skin's) or `Visible` false (left out:
+  not drawn, not clicked; its children are widgets of their own). Sources apply in registration order, each seeing the last one's changes.
+  `UiScreenContext.State` is what a screen keeps to itself, by key: the stats window's `selected` (the stat its description shows: a stat's
+  number as in its rows' `stat:N` actions, a mod skill's `mod:N`, empty for none) and `race-bonus-line` (the race XP bonus paragraph its
+  description body `stat-description-body` ends with after a blank line, empty when it shows none); other screens publish none yet. It runs on
+  the host thread and must be cheap and not touch the world; a source that throws or answers a caption too long or a colour out of range
+  changes nothing that frame and is logged once and dropped. Without a source the screens are as before. Engine API, not in the original.
+  **Observed** (scratch program, headless UiHost with stats-like controls, and screen-control drags and buttons); no test, not seen in a
+  running game.
+  `Bounds` (a `UiRect` on screen, finite, size not below 0) places the widget: its skin's template parts (`TemplateOwner`) move with its corner,
+  its child widgets do not (match them too), its clip stays its parent's; clicks follow it. Not seen in a running game.
 - **Map markers:** `UiRegistration.AddMapMarkers(markers)` puts markers on the world map (Overview's Map tab). `markers` gets `UiMapContext`
   (the snapshot the map is drawn from and its zoom level, 0 for the whole map to 2) on the host's thread each frame the map shows, so it
   must not touch the world, and returns `UiMapMarker`s: a world point (X, Z), an image group of the game's map marker set
@@ -825,10 +1216,45 @@ holds refuses the second mod.
   the cursor (whether it offers a menu decides what a right click there does), so it must be cheap; a tick may be in flight, so it must not
   touch the world. It gets `UiMenuContext`: the target's snapshot, the selection and the cursor as the menu is built, `Shift` and `Tick` read
   when asked (so a chosen row sees them as the player chooses it), and `Enqueue`; a chosen `UiMenuVerb` queues commands. Return no rows to keep
-  a plain right click (a row makes the character offer a menu). Shift does not turn a mod row into a job; the row reads `Shift` itself. Menus
+  a plain right click (a row makes the character offer a menu). Shift does not turn a mod row into a job; the row reads `Shift` itself. A row
+  with `Unavailable = true` (the selection cannot carry it out now, e.g. it lacks the item) is greyed while the Interface setting "Unavailable
+  menu rows" is Greyed (the default): a plain click does nothing, a Shift click chooses it, so the mod can set up a job for later; on Faithful
+  it is drawn and chosen as any row ([unavailable rows](game/ui-input.md#context-menu-verbs)). Menus
   that stay empty or fixed get no mod rows: no selection, a body the first selected carries (Put Down only), a body someone outside the player's
   faction carries; an animals-only selection keeps only the original's animal verbs. A source that throws, or returns a row without a caption
   or action, is logged once and dropped for the session; a row's action that throws is logged.
+  `registration.AddMenuVerbs(context => rows)` is the same for every target: `UiMenuTargetContext.Target` (`UiMenuTarget`: `Kind`, the
+  menu's `Name`, `Position`, and by kind `Character`, `GroundItem`, or the container's, door's or building's `Id` and `Record`) with the
+  selection, cursor, `Shift`, `Tick` and `Enqueue`; it is asked only with a selection. Kinds: `Character` (after the character rows, same
+  rules), `Container`, `Door` and `Building` (a player-built site, also a bed's or cage's, after the game's rows), `Furniture` (a cage that
+  is no player-built site, a town's or camp's: `Id` its fixture id, `Record` its BUILDING, after the cage's rows; a caged character's press opens
+  that menu and its `Character` one beside it), `GroundItem` (the hold
+  menu Pick Up plus the rows; a quick click still picks up) and `WorldPoint` (the ground under the cursor, `Position` the point; an untitled
+  menu of the rows; a quick click still moves there). A target that gets no rows behaves as without the mod. Engine API, not in the original.
+  **Observed** headless (rows, faults; not the menus in a running game).
+  A `UiMenuVerb` takes `Colour` (RGB 0 to 1, clamped; an unavailable row stays greyed). `registration.AddMenuRowOverrides(row => override)`
+  changes any menu's rows, the game's and the mods', as the menu is built (also each frame a target is under the cursor: cheap, no world):
+  `UiMenuRowContext` gives the title, the row's own label untranslated (`Pick Up`, `Steal`) and chance column, its index, the `Target` the
+  mods' rows were asked for (null for menus without one: turret, town machine; for a cage, its building) and the selection;
+  `UiMenuRowOverride` answers `Caption` (translated as the game's, chance kept; at most 200), `TextColour` or `Visible` false. Sources apply in
+  registration order, each seeing the last caption; a throw or a bad answer drops the source (logged once). Not seen in a running game.
+- **World map input:** `registration.AddMapInput(input => taken)` gets `UiMapInput`s while the overview's Map tab shows: `Press` (a mouse
+  button down over the map image or its markers, not over a mod's own control, which its screen takes), `Key` (a key no text box took;
+  `Typing` says whether one has the keys) and `Closed` (the map stopped showing; every handler hears it). Each carries `Button` or `Key`,
+  `Point`, `Shift`, `Ctrl`, `Alt`, the `View` (`UiWorldMapView`: the map image and viewport on screen, the zoom level and UI scale;
+  `ScreenToMap`/`MapToScreen` for map points 0..1, `ScreenToWorld`/`WorldToScreen` and the static `MapToWorld`/`WorldToMap` for world
+  X, Z), `Snapshot`, `Tick` and `Enqueue`. Returning true takes the press or key from the game (no pan, no move order, no hotkey); the
+  first handler in registration order that takes it ends the round. It runs on the host thread and must not touch the world. A handler
+  that throws is logged once and dropped. Draw on the map with `AddScreenControls("overview", "MapImage", ...)`. Engine API, not in the
+  original.
+- **Interface keys:** `registration.AddKeyInput(input => taken)` gets each key going down to the game's interface (`UiKeyInput`: `Kind`
+  `Down`, `Key`, `Ctrl`, `Shift`, `Alt`, `Modifiers`, `Cancel` (Esc), `OpenScreens`, `Snapshot`, `Tick`, `Enqueue`) before the interface uses
+  it: before Esc cancels a drag, closes the top window or opens the game menu, before window hotkeys, map input and the game's bindings
+  (key actions included). Returning true takes the key from all of them; the first handler in registration order that takes it ends the
+  round. So a mod cancels its pending action on Esc, gives Tab a meaning while its window is open, or captures a key for `Rebind`, only while
+  it wants to. Not while a text box has the keys, over the title or while the interface is hidden; keys the host takes before the interface
+  (a mod's chord, photo mode's P, F7, the settings and console keys, the F10 menu) never arrive. Host thread; it must not touch the world. A
+  handler that throws is logged once and dropped. Without a handler keys go as before. Engine API, not in the original.
 - **Debug rows:** `AddDebugCommand(label, run, hasField)` adds a row to the F10 menu after the vanilla ones. `run` gets
   `DebugCommandContext` (field, selection, camera target, tick, `Enqueue`) on the host thread while a tick may be in flight, so it must
   not touch the world; it returns the status line, and a throw shows as the status.
@@ -852,19 +1278,41 @@ holds refuses the second mod.
   editor has the keys, nor over the title or a loading cover; it does arrive under a window without text input, with the F10 menu open while
   it takes no text, in the character editor, and for the mouse's extra buttons in photo mode, as the game's own actions do; a numpad key bound
   to one is not the cinema camera's. On the Metal host F7, F8, F11, F12 and Print Screen are the view's own keys and never reach an action.
-  A binding is one key or button with no modifier, as the game's own bindings are in Meitou: the action fires whatever Shift, Ctrl or Alt is
-  held, and the press tells which in its context (the host consumes Alt+Enter, Shift+F9 and its Ctrl+F9 alias, plus Shift with F1,
-  F2, F11 or F12 on Vulkan).
+  A plain binding is one key or button, as the game's own bindings are in Meitou: the action fires whatever Shift, Ctrl or Alt is held, and the
+  press tells which in its context. A mod's action may also take chords (`KeyModifiers`): `Binding.Of(Key.P).With(KeyModifiers.Ctrl |
+  KeyModifiers.Shift)` as a default, or on the Controls page its key pressed with the modifiers held (a modifier alone waits; the game's rows
+  stay plain). A chord fires only with exactly its modifiers held; its key going down that way is the chord's before photo mode, the
+  interface's keys and the game's bindings (Ctrl+Shift+P is not photo mode's P, Ctrl+J not Rescue's J), and while that key stays down no plain
+  binding of it fires. A chord is not taken while a text field has the keys, over the title or in photo mode. It is saved as `Ctrl+Shift+P`
+  (modifiers in any order when read); the game's own actions take no chord (one in `bindings` is skipped as unknown). The host's own
+  combinations never reach the bindings: Alt+Enter, Alt+F4, Shift+F9 and its Ctrl+F9 alias, Ctrl+C, Ctrl+V and Shift with F1, F2, F11 or
+  F12 are left out as defaults with a log line and refused on the page; on the Metal host a chord of F7, F8, F11, F12 or Print Screen never fires. **Observed** (scratch
+  program on `InputBindings`: laying, taking, resolving against photo mode's P, saving and reading back); the hosts' key path and the Controls
+  page not run.
   Once per press, also while paused, `pressed(ModKeyContext)` (the `Snapshot` on screen, `Selected`, `Tick`, `Enqueue`, and `Ctrl`, `Shift`,
   `Alt`: either key of each held as it was pressed, so a mod can give Ctrl+key its own meaning) runs on the host thread at the control tick,
   so it must not touch the world, must not block, and queues commands for gameplay; `action.Held` is its state at the last control tick, for
   host-thread readers. A throw is logged with the mod id and the name and that action gets no more presses.
+  `action.After = InputAction.ToggleSneak` (set in `Initialize`) puts its Controls row right after that game row (mod rows after the same row
+  in load order; null, a mod action or a hidden row: after the game's rows). `action.Keys` reads its keys now, and `action.Rebind(keys)` binds
+  it from the mod's own window on the host's thread as the page does (each key taken from the other actions of its key map, chords allowed,
+  none unbinds, kept in `meitou.user.json` as the page's change); it answers false and changes nothing before the bindings take the actions or
+  for a key the page refuses. A key capture ("press a shortcut") reads the next key through "Interface keys".
   `name` (1 to 48 letters, digits, `_ . -`, unique within the mod) keys the saved keys; a bad name, or a label that is empty or blank, over 48
   characters or on more than one line, refuses the mod. The actions are numbered `InputAction` from `InputBindings.FirstModAction` (1000) in
   load order, for this session only. Without key actions the bindings, the page and `meitou.user.json` are the game's. Engine API, not in the
   original.
   **Observed** (Coop source): input binding and mod-key contract types are compiled into `Meitou.Modding` for both hosts. A remote press
   uses the recipient snapshot, command tick and normal typed session submission; it cannot enqueue directly into a mutable world.
+- **Frame:** `AddFrame(frame => ...)` on `ModContext` calls the mod once a frame on the host's thread, after the combat hit feed and before the
+  frame is drawn (not over the title), with `ModFrame`: `Snapshot`, `Tick`, `Selected`, `Shown` (the HUD's character), `Hovered` (under the
+  pointer), `Pointer`, `Ctrl`/`Shift`/`Alt` held now and `Highlight` (the game's Highlight key), `Paused`, `Speed`, `ScreenSize`, `UiScale`,
+  `UiVisible`, `CameraEye`, `CameraTarget`, `Project(point)` (a world point's screen pixel, null behind the camera), `OpenScreens` and
+  `IsOpen(id)` (the game screens' layout ids), `Bindings(action)` (the player's keys for a game or mod action) and `Notify(text, error)` (the
+  interface's notice line). Reads are live and read only; a tick may be in flight, so the callback must not touch the world (commands through
+  `Enqueue`), must be cheap and must not keep the frame. A throw is logged and the callback is not called again. A key action's
+  `ModKeyContext.Frame` is the same view at the press. Engine API, not in the original.
+  Coop remote frames read the recipient session, never a mutable authority world; their typed commands still pass normal authorization.
 - **Squad AI tab options:** in `Register`, `registration.AddSquadAiOptions(context => options)` adds tick buttons to the squad overview's AI
   tab, after the game's own and above Follow Formation; the tab's lines shrink to fit. The source runs on the host thread on every layout pass
   while the tab is open, so it must be cheap; a tick may be in flight, so it must not touch the world. It gets `UiSquadAiContext` (the
@@ -881,8 +1329,8 @@ holds refuses the second mod.
   move, at least 20 times a second), so it must be cheap and read only its context; a tick may be in flight, so it must not touch the world.
   It gets `UiBuildingContext`: `Building` (`UiSelectedBuilding`: `Instance`, the key the simulation
   knows it by and `world.Player.InspectedBuilding` holds; `Record`, its record's string id or null; `SiteId`, the player's building id or null;
-  the panel's `Name`; `Owned`, whether the player's faction owns it, as the game's own buttons show), the `Snapshot` on screen, `Tick` read
-  when asked, and `Enqueue`. It returns `UiBuildingAction`s (caption, tooltip or null, press); return none to add nothing for that building.
+  the panel's `Name`, as shown after the mods' text sources (`Record` names the building for certain); `Owned`, whether the player's faction
+  owns it, as the game's own buttons show), the `Snapshot` on screen, `Tick` read when asked, and `Enqueue`. It returns `UiBuildingAction`s (caption, tooltip or null, press); return none to add nothing for that building.
   Captions and tooltips go through the translation catalog, as the game's own (a text the catalog lacks shows as given). A press plays the
   panel's click and runs only while the building it was shown for is still selected and still exists (the game's own buttons' check); it changes
   the world only by queueing commands, which the mod's system applies in its serial `Inputs` step (`Instance` names the building). By then the
@@ -890,13 +1338,63 @@ holds refuses the second mod.
   and still qualifies before acting. A source that throws, or returns a
   button without a caption or press, is logged once and dropped for the session; a press that throws is logged. Without a source the panel
   is as before. Engine API, not in the original.
+- **Shown text:** in `Register`, `registration.AddText(context => text)` changes text the game shows, without changing the game's data:
+  `ShownTextContext` (namespace `Meitou.Localisation`) gives its `Kind`, its `Key`, the `Text` so far (the game's, or an earlier mod's), a
+  `Tag` and a `Field`; return the text to show, or null or blank to keep it. Several mods chain in load order, each getting the last one's text, so a
+  translation and a mod that tweaks a few words stack. The kinds:
+  - `Message`: a text the code asks the translation catalog for ([localisation](formats/localisation.md) "UI strings": captions, HUD lines,
+    menu verbs, notices, tooltips' rows, the simulation's messages). `Key` is the English source text (`msgid`; a plural message's English form for its
+    number, a layout caption as the layout writes it), placeholders such as `{1}` still in it, and `Text` that text in the player's language; `Tag` is the
+    message context (`msgctxt`, "" none). Keep the placeholders: the values are put in after the mods' text. The game passes other text
+    through the same lookup too (numbers, names, text it built, and sometimes a text it already looked up, your answer included, as
+    it is or formatted or in capitals), so answer only the keys you know and return null for the rest. Text the game shows without asking
+    the catalog is not asked.
+  - `Record`: text a game record gives, wherever the game shows it: item, building, research, race, faction, town, body part, start and
+    biome names, descriptions and the other texts records carry, in windows, tooltips, menus, the map, notices and dialogue (a faction's name
+    in a notice or in a line's `/TARGETFACTION/` is asked here). `Key` is the record's string id and `Field` which of its texts: `name` for its
+    name, else the record's own field (`description`, `unexplored name`, `display name`...). `Text` is in the player's language when a translation
+    renamed it. `Tag` is the item's code-mod tag (`ItemInstance.ModTag`) where the game shows one item, so a mod can name one tagged item alone;
+    "" otherwise. A character, squad or place still called by its record's name is asked here as that record's `name`. Names are put on one line
+    and cut to 80 characters; the tooltip lines' context keeps the game's name.
+  - `Name`: a name of its own rather than its record's, where the game shows it: a character's (rolled from a name list, or given by the
+    player), a squad's, an outpost's, the player's faction's once he renames it. `Field` says what it names (`character`, `squad`, `outpost`,
+    `faction`, `place`), `Key` is the record it was made from ("" none). Put on one line and cut to 80 characters.
+  - `DialogueLine`: a dialogue line's text, in speech bubbles, the conversation window (the line, the choice buttons and the log) and the
+    message log. `Key` is the line's record string id and `Text` the text it was given (one of its texts, picked as the game picks it), before its
+    tokens: return a text with the tokens you want (`/YOURNAME/`, a word swap's `/NAME/`), and each takes the value the game's own text got for
+    the token of that name (in order; a token the game's text did not have is empty). A word swap's line is asked too, under its own id. The
+    game's text still decides everything: whether a choice is offered, how long a bubble stays, the dialogue log. A character's name built from
+    tokens is not asked; the names tokens fill in (`/MYNAME/`, `/YOURNAME/`, `/TARGETFACTION/`, `/PLAYERFACTION/`) are asked on their own, as a `Record` or `Name`.
+  Display only: records, saves, the state hash and every decision keep the game's text. The answer for a kind, key, text, tag and field is kept until
+  `registration.RefreshText()`, which a mod calls when its answers change (a word learned, an item identified, a save loaded whose state its
+  answers read); text already handed out (a line said, a notice posted) keeps what it got. So a source runs once per text shown, not per frame,
+  but it may be asked on any thread (messages and dialogue are made on the simulation's threads), one call at a time (other text waits meanwhile, so
+  keep it quick and never wait on the game): read only the context and the mod's own state, safely across threads. Texts other than names are cut to 4,000 characters. A source that throws is reported once
+  and dropped. With no source, text shows as before at the cost of one check per lookup; with one, a shown text costs one dictionary lookup
+  after its first time. Engine API, not in the original.
+- **Building panel bars:** in `Register`, `registration.AddBuildingRows(context => bars)` adds bars to the medical-bars column of a selected
+  complete building, placed piece or piece of furniture, right under its Condition (and a farm's crop bars), drawn as the Condition bar is.
+  Each `UiBuildingRow` has a name on the bar, a fraction (0 to 1, clamped) for how full it is, a number-column value ("" none) and a tooltip
+  or null; texts are shown as given, put on one line and cut to 80 characters. At most 6 bars from all sources together, in registration
+  order. The source gets the same `UiBuildingContext` as the buttons and the same rules (host thread, possibly every frame, cheap, never
+  touches the world); bars show state and have no press. A source that throws, or returns a bar without a name, is logged once and dropped
+  for the session. Engine API, not in the original.
 - **Item tooltip lines:** in `Register`, `registration.AddItemTooltipLines(context => lines)` adds `UiItemTooltipLine`s (a label and an
   optional value) to an item's tooltip, after the game's own rows and before the record's description. The source gets `UiItemTooltipContext`:
   the item's record string id, name, code-mod tag (`ItemInstance.ModTag`, so a mod shows what it keeps on the item: a condition, rolled
   affixes; a trader's stock item has none), quantity, level and quality. It runs on the host thread each time a tooltip is built, so it must be
-  cheap and must not touch the world. At most 8 lines from all sources together; a label or value is put on one line and cut to 80
+  cheap and must not touch the world; it acts on the world only through `Enqueue`. The context also names the item: `Owner` (an `ItemOwner`:
+  a character's inventory, a machine's or storage's site; null for a trader's stock, a crafted product's preview) and its `Index` there (-1
+  without an owner; it names the item only until the inventory changes, so the mod's command checks the record and tag it expects), and
+  `First`, true for the first build of the tooltip for the item as it is (another item shown before, or the item changed, its tag included),
+  false while the same tooltip is built again each frame. So a mod rolls state on the first tooltip by queueing its own command when `First`
+  is true and the item has no tag of its; its system tags the item (`ItemInstance.ModTag`) in a serial step. `Style` colours a line (see
+  "Line style"). At most 8 lines from all sources together; a label or value is put on one line and cut to 80
   characters, a blank value is none. A source that throws or gives a line without a label is reported once and dropped for the session.
   **Verified** by `ItemTooltipLinesTests` (order, the context, disposal, the cap and cut, a throwing and an unlabelled source dropped).
+  `After` (an init property) places a line right after the game's row with that label: the row's key as the tooltip builds it, its English
+  label for most rows (`Sell value`, `Value`, `Weight`; a price row's leading `-` ignored), in the game's language for the few it translates
+  as it builds them; the last such row, lines placed there keep their order; no such row: the default place. Not seen in a running game.
 - **Town panel lines:** in `Register`, `registration.AddTownPanelLines(context => lines)` adds lines to the HUD's town panel (the outpost the
   camera is in: name, Open to public, Research, Power, Battery charge; [town panel](game/ui-screens.md#town-panel)) under the game's own, in
   registration order (mods in load order), so several mods share it. A `UiTownLine` has a `Label` (in the labels' column, drawn as the game's
@@ -932,18 +1430,43 @@ holds refuses the second mod.
   no free room, so when a source gives buttons the jobs list and its empty-list hint start one job row (int(24 × height / 1080)) lower in
   their frame and the buttons share that row above the list, side by side across its width; a layout where the list or one of its parents is
   not placed in fractions of its parent (a UI mod's) gets none, and without buttons the panel is as before. Limits, cuts and faults as the town
-  panel lines: at most four lines and four buttons of all mods together (the rest left out, logged once per extension), texts cut to 64
+  panel lines: at most four lines and nine buttons of all mods together (the rest left out, logged once per extension), texts cut to 64
   characters on one line, tooltips to 1,000, translated; a source that throws or gives a line without a label (a button without a caption or
   press) is logged once and dropped for the session; a press that throws is logged. A press plays the click and runs only while the panel
   still shows the character it was shown for. Sources run on the host thread whenever the HUD is arranged (each tick, each mouse move), so they
-  must be cheap and must not touch the world. **Verified** by `CharacterPanelLinesTests` (order, context, disposal, caps and cuts, faulty
+  must be cheap and must not touch the world. A `UiJobButton` with `Lit` shows in its skin's selected state (the tab a character is on).
+  `AddJobPanelButtons(source, UiJobButtonLayout)` also places the buttons: `Rows` (the default, as above, wrapping into more rows above the
+  list after `PerLine` buttons) or `Columns` (left of the list, which starts that many columns further right, `PerLine` buttons a column, each
+  a job row high and `ColumnWidth` job rows wide; 0.5 to 6); the first registered source that gives a layout sets it for all, and a list
+  that would keep less room than it gives up shows no buttons. **Verified** by `CharacterPanelLinesTests` (order, context, disposal, caps and cuts, faulty
   sources dropped; with the installed HUD layout: placement under `StatsText`, the list lowered and restored, presses for the shown
   character). Not yet seen in a running game. Engine API, not in the original.
+  A `UiCharacterLine` with `Divider` draws a rule across its row (one UI pixel, the stats labels' colour or `Style.Label`, half opacity;
+  label may be empty, value, bar and press unused); it counts as a line. A `UiJobButton` takes `Skin` (a MyGUI skin the interface's resources
+  hold, else `Kenshi_Button1Skin`), `Silent` (no click on a press; the mod posts its own sound) and `Style` (`Label` the caption's colour,
+  `Icon` a marker in a square at the button's start). Not seen in a running game.
+- **Line style:** item tooltip lines, character panel lines and town panel lines take `Style = new UiLineStyle(Label, Value, Icon)` (an init
+  property): `Label` and `Value` are text colours (RGB 0 to 1, alpha not used; not finite: none; clamped) over the panel's own (a button's
+  caption takes the colour of the text it shows), and `Icon` an image file path (as a `UiNode`'s `Image`, e.g.
+  `Path.Combine(context.Folder, "rank.png")`) drawn in a square of the row's height before the label, which moves right. Tooltips draw no
+  icon. Engine API, not in the original.
+- **Dialogue replies:** in `Register`, `registration.AddDialogueReplies(context => replies)` adds player replies to the open conversation,
+  after the game's own choices, numbered on with them (the number keys pick them too). `UiDialogueContext` gives the `Conversation`
+  (`ConversationView`: NPC, player and speaker ids, the line, the game's choices, the log, `PlayerStarted`: opened by a player character's talk
+  order, false for an NPC's approach or any other event), the `Npc`, `Player` and `Speaker` snapshots (record
+  id, faction, name; null when not in the snapshot), the `Snapshot`, `Tick`, `Enqueue` and `Leave()` (queues `EndConversation`). Answer the
+  `UiDialogueReply`s (text, press) to offer for that line, or none; the source is asked again only when the NPC, the line or the choices
+  change, so it must not decide by time. A chosen reply runs its press on the host thread (it may open the mod's own window, queue commands
+  or `Leave()`); the conversation goes on unless the press ends it. At most four replies of all mods together; a text is put on one line and
+  cut to 200 characters. A source that throws or gives a reply without a text or press is logged once and dropped; a press that throws is
+  logged. Without a source the conversation window is as before. Engine API, not in the original.
 - **Settings:** `AddSettings(object)`, once per mod: the object's public get/set properties marked
   `[Setting(label, Hint, Min, Max, Step, Options, SubGroup, VisibleWhen)]` (`ModSettings.cs`) become one group, in declaration order (a
   sub-group's settings together at its first one's place), under the mod's row on the Settings screen's Mods page
   ([native UI](native-ui.md#settings)): `bool` an Off | On switch, `int`/`float`/`double` a slider (Min and Max required; Step 0 = 1 for `int`, a
-  hundredth of the range otherwise), an enum or a `string` with Options a list. `SubGroup` puts a setting under a sub-group header of that name (its
+  hundredth of the range otherwise), an enum or a `string` with Options a list, a `string` without Options a free text box (one line, at most
+  `MaxLength` characters, 0 meaning 256, up to 4096; a click types in it, Enter, Tab or a click elsewhere keeps the text, Esc drops it; control
+  characters become spaces, a longer text is cut, and a saved value that is too long or holds a control character is ignored). `SubGroup` puts a setting under a sub-group header of that name (its
   own fold, at its first setting's place); `VisibleWhen` names a public `bool` property of the same object and hides the setting while it is false,
   so a switch can hide its dependents (the page reads it every frame; a throw from it is logged and the setting stays shown). Both are optional; a
   `VisibleWhen` that is not such a property refuses the mod; a game older than both fails reading the attribute, so
@@ -954,8 +1477,31 @@ holds refuses the second mod.
   they were, not snapped to the step (Restore defaults also drops every kept mod value). The page sets a changed property at once on the interface's
   thread, outside the tick, and raises the returned group's `Changed`; a throw from the setter or a handler is logged and shown as the page's
   notice. A value the mod sets itself with `ModSetting.Set` or `Reset` (a window's place, an in-game slider) raises `Changed` the same way and is
-  kept in `meitou.user.json` like the page's; call them on the interface's thread. A slider's arrow keys move one Step. A mod copies what its simulation needs in a serial step (its system's `Inputs`). **Verified** by
+  kept in `meitou.user.json` like the page's; call them on the interface's thread. A slider's arrow keys move one Step. A property of type `Action`
+  (a public get is enough) is a button row: its caption the attribute's `Button` (else the label), a click (or `ModSetting.Press()`) runs the
+  delegate on the interface's thread, a throw logged and shown as the page's notice; it keeps no value and Reset passes it by. Named presets
+  (`ModSettingsGroup`): `SavePreset(name)` keeps every value setting's value under a name (1 to 64 characters on one line, at most 64 presets;
+  the same name replaces), `ApplyPreset(name)` sets the values back as `Set` does (raising `Changed`; a value no longer valid is skipped),
+  `DeletePreset(name)`, `Presets` (names, in the order first saved) and `PresetsChanged`; kept in `meitou.user.json` (`modSettingPresets`: mod
+  id, preset, key, text), not dropped by Restore defaults, and read once the game starts the mods (after `Initialize`). With buttons and a text
+  setting for the name a mod builds its own preset slots. A mod copies what its simulation needs in a serial step (its system's `Inputs`). **Verified** by
   `ModdingTests`; the page **Observed** drawn (2026-11-04, Windows, Vulkan, `--settings-showcase` changed locally to open it with a scratch group).
+- **Translations:** `context.Language` is the game's locale code (`en_GB` for English, `ru_RU`, `zh_CN`, a translation mod's own; fixed for
+  the process). `context.AddTranslations(domain, folder = null)` (in `Initialize`) reads the gettext catalogue
+  `<folder>/locale/<language>/LC_MESSAGES/<domain>.mo` (else `.po`) of that language: the folder named by the code ignoring case, else the first
+  of the same language part (`de` of `de_DE`); English reads `en_GB` when there is one. `folder` is the mod's own when null, a relative path is
+  under it, and a full path may name another, such as an installed original's mod folder ([catalogue layout](formats/localisation.md#code-mods-catalogues)).
+  False when there is none or it cannot be read (logged). `context.AddTranslations(language, messages, context = null)` adds translations given
+  directly (English text to translation pairs, such as texts read at runtime from an original's DLL, under one `msgctxt` when given; an empty
+  translation is left out) as such a catalogue, kept only when `language` is the game's (the same code ignoring case, else the same part before
+  `_`; false otherwise; **Observed**, 2026-11-24 scratch check of `ModTranslations`). Catalogues are looked up by the English text in the
+  order added. Then the mod's
+  `UiNode` texts (not a text box's), right-click menu rows, squad AI options and building panel buttons (captions and tooltips), its settings'
+  labels, hints, sub-groups, buttons and choices (a choice is still saved by its own text) and its key actions' labels show through them, the
+  game's own lookup after as before; other texts the mod passes through `context.Tr(english)` (the mod's catalogues, then the game's and
+  Meitou's, else unchanged; any thread), `Tr(english, args)` (`{1}` placeholders, as `Loc.Tr`), `TrIn(context, english)` (`msgctxt`) and
+  `Plural(singular, plural, n, args)` (the catalogue's `Plural-Forms`). Without catalogues every text shows as written. Engine API, not in the
+  original.
 - **Weather kinds:** a WEATHER or EFFECT `affect type` outside 1-5 is kept as its number, with ARMOUR `weather protection<N>` and RACE `weather
   immunity<N>` naming it the same way, so a mod defines a hazard in data and acts on it from its own system
   ([weather](formats/weather.md#effects-on-characters), "Undefined kinds": what the vanilla systems still do with such a kind). Nothing
@@ -1011,12 +1557,34 @@ holds refuses the second mod.
   goes on one of those placed at the point; an interface event on an unplaced object of the mods' own. A character event plays only while the
   character is near enough to have a sound object (`CharacterSounds.TrackRadius`) and within 1000 units of the camera, a point event within
   the same 1000 units. The pooled objects are shared by every mod and reused round robin, and a switch stays on an object until changed, so
-  set the switch on every post that needs one. Post one-shot events: a looping one is never stopped, and on a pooled object it can be moved
-  by a later post. An unknown name plays nothing (the player gives up on it after ten seconds). Several mods post freely. An empty name or a
-  point that is not finite throws, also before the first world; an empty character id plays nothing. Engine API, not in the original.
+  set the switch on every post that needs one. Each call has an overload with `out SoundHandle handle` after its required arguments
+  (`PostSound(eventName, characterId, out handle, switchGroup, switchValue)`, `PostSound(sound, anchor, out handle, volume)`, ...; on
+  `World` and `ModContext`): `handle.Stop(fadeSeconds = 0)` (0 to 10; any thread) ends that playback alone, a loop too, its sounds tagged
+  as Wwise's playing ids are (`WwisePlayer.NewPlaying` / `StopPlaying`), fading over the seconds; stopped before the host plays it, it never
+  starts; again, or once it ended, it does nothing. `Queued` is false when nothing was queued (no world, no audio, a rejected request:
+  `SoundHandle.None`), `Stopped` once stopped. A loop on a pooled object can still be moved by a later post; one on the character's own
+  object follows it. An unknown name plays nothing (the player gives up on it after ten seconds). Several mods post freely. An empty name or
+  a point that is not finite throws, also before the first world; an empty character id plays nothing. Engine API, not in the original.
+  On `ModContext` a name ending in `.wav` is a loose file under the mod's folder (a relative path; one outside it or missing plays nothing,
+  logged once), a 16-bit PCM WAV of at most 20 s, read once by the host: it plays as one Wwise sound made for it, on the mods' interface
+  object or on a pooled object at the point or the character's place (it does not follow), through the SFX bus `59927CD0` when placed (the
+  SFX slider and the pause ducking take it) with Meitou's attenuation (linear from full at the object to silence at 1000 units), on the
+  master bus on the interface (no slider). `PostSound(sound, EffectAnchor at, volume = 1)` plays an event or loose file on an anchor: a
+  point there, a bone or weapon on its character, a building or bolt where it is drawn now (host thread only); `volume` (0 to 4) scales a
+  loose file, a bank event keeps its level; false when nothing was queued (true with no world or audio). **Observed** by a scratch program mixing
+  a synthetic WAV offline (heard at the listener, distance attenuation, volume), not heard in the game; the handle's stop (one playback ended
+  among others on the object, a stop before the host plays it, the fade) **Observed** by a scratch program against `WwisePlayer` with a loose
+  WAV.
   **Observed** (Coop source): `ModContext` calls from a remote interface play only in that client, through an audio queue tied to the current
-  presentation world; they do not submit shared events. Events queued for a replaced world are discarded. Server/world calls use the ordinary
-  presentation journal and recipient visibility; see [networking](networking.md).
+  presentation world; they do not submit shared events. Events queued for a replaced world are discarded. Server/world calls resolve anchors
+  at the serialized authority boundary and use the ordinary presentation journal and recipient visibility. A shared loose WAV carries the
+  code-mod manifest id, a forward-slash path below that mod's folder, and its volume; each client resolves its own enabled mod folder. Absolute
+  paths, parent traversal and symlinks beneath that root are refused. The compatibility manifest includes enabled trusted code-mod content;
+  audio bytes are not sent with each post. A shared playback has a server-issued identity; its stop is a reliable identity-only event with
+  the requested fade, without disclosing its old anchor or asset. Leaving a world, replacing the device or epoch, or losing a positional
+  sound's authorized subject/range stops its local playback. Completed sounds release their client handles. Starts remain transient events
+  in the three-second source journal, rather than persistent loop state: late joins and returns after that window do not restart a long loop.
+  Consumption acknowledgements prevent replay of earlier starts after their stop. See [networking](networking.md).
 - **Status effects:** `AddStatusEffect(new StatusEffect(id, name) { Description, Tone, Stacking, MaxStacks, Modifiers })` (`StatusEffects`,
   `src/Meitou.Simulation/Bodies`) adds a named effect (a poison, a drug, a blessing) the mod's systems put on a character with `effect.Apply(world,
   character, hours, stacks)` (positive infinity: until removed) and take off with `Remove(world, character)`; `On(world, character)` or `On(stats)`
@@ -1044,9 +1612,22 @@ holds refuses the second mod.
   ([loading](#loading)), so another mod's command type, even from a copy of the same DLL in another mod folder, is a different type and does not
   match. A mod whose commands another mod's system should handle shares the type through a [dependency](modding-dependencies.md); otherwise each
   mod handles its own commands in a system of its own.
+- **Commands while paused:** while the clock is paused the world applies the interface's commands between ticks
+  (`World.ApplyPausedInterfaceCommands`: selection, orders, inventory, trade and the other game interface commands) and a mod's command waits
+  for the next tick, unless its type implements `IPausedCommand` (`Meitou.Simulation`, a marker). Such a command is taken in that step, in
+  queue order with the game's, and given to the `Inputs` of every system implementing `IPausedCommandHandler` (and the game's command systems),
+  in system order, inside the step's serial input phase; no other phase runs and time does not advance, so the handler only applies its
+  commands. Running, it is applied at its tick as any command. Without a handler system no command is taken early. A handler that throws is
+  disabled with its fault in the state hash, as in a tick. Deterministic as the game's paused commands: same commands, same order, between the
+  same ticks. Engine API, not in the original. **Observed** (scratch program, a bare world): marked commands reach the handler in queue order
+  without a tick, unmarked ones and those of a world without a handler wait for the next tick; no test.
 - **Player squads on AI packages** (`Meitou.Simulation.Ai`, [rules](simulation.md#autonomous-player-squads)): `SetSquadAutonomy(squadId, on)` lets
   the AI run a player's squad; then `ChangeAi(squadId, packageId)` and `StartContract(squadId, packageId, hours)` give it packages as dialogue's
-  `change AI` / `AI contract` give an NPC squad's (both are ignored for a player squad that is not autonomous), and
+  `change AI` / `AI contract` give an NPC squad's (both are ignored for a player squad that is not autonomous);
+  `SetSquadPackages(squadId, [new SquadPackage(slot, packageId), ...])` sets several by slot (slots 0 to 1000; the board tries the highest slot
+  first, a slot's in the order given, and chooses at once; `ChangeAi` is its one-package case in slot 0; an empty list, a slot out of range or an
+  unknown package refuses the whole command with a log line; saved with the squad as `meitou packages`, [save](formats/save.md#npc-platoons-meitou-mapping),
+  hashed while set; taken by NPC squads too); and
   `SetSquadHome(squadId, building)` its home: a town building's key (`TownBuilding.Key`, `x.y:instance`) or a player-built building's id
   (`BuildSite.Id`); null clears it. A player-built home in one of the faction's outposts makes the outpost the squad's town:
   going home, town work on the outpost's own machines, wandering between its public buildings, the gate guard's gate (guarded from
@@ -1065,11 +1646,34 @@ holds refuses the second mod.
   minds and the independence. Ids: `SquadManagement.PlayerSquads(world)`, `world.Buildings.All`, `PopulationData.Sites[i].Buildings`.
   **Observed** (2026-11-13, headless, two saves, 'Guard building, residents'): members without a job patrol, go home and lie in the home's beds, a
   move order takes them at once and they resume after it, and a re-saved game loads autonomous.
+- **Job choice** (`Meitou.Simulation.Ai`; engine API, not in the original): `SetSquadWork(squadId, building)` gives a player's squad a work
+  building apart from its home (a workplace key as `WorkSlots` takes; null clears it): its members on 189 / 190 work there while it has a free
+  operator slot (189 only where it can really work), else not at all, wherever their home is. `SetSquadConduct(squadId, conduct)` sets
+  `SquadConduct` flags (more may come): `GateInside` posts its gate guard (180) and the gate's flanking guards on the town's side of the gate,
+  as the game posts them at a gate the player built; `CloseDoors` closes a door or gate a member opened on a walk (the movement's own
+  opening) once that member is through it, 20 past the leaf, with nobody else within 20 of it (left open after 60 s). Both are saved on the
+  squad (`meitou work`, `meitou conduct`, [save](formats/save.md)), hashed while set, and cleared with the home when the autonomy's owner mod
+  is missing at a load. A registered system implementing `IJobScoreFilter` is asked `Score(World, in JobScoreAsk)` for each workplace with a
+  free slot a worker on 189 / 190 may pick in its work town (`JobCandidateKind.Workplace`; more kinds may come): the tick, character, task
+  type, the workplace key, its BUILDING record id (a mod finds the stat it trains in its data) and the score, 1 as the game weighs them
+  alike. The best wins, ties drawn by the game's own roll, so asking again names the same; 0 or below leaves one out. An assigned work
+  building is not scored. Filters run in system order, each seeing the earlier answer, on any thread (the think picks too): quick,
+  thread-safe, a pure read. A throw or a non-finite answer keeps the score; the filter is still asked for the rest of that tick, not from the
+  next, and the fault enters the state hash. Without a filter nothing is asked.
 - **Squads outside the faction size count** (`Meitou.Simulation.Factions`): `SetSquadUncounted(squadId, on, Owner: context.Id)` keeps a squad of
   the player's faction out of the `max faction size` count (`Squad.Uncounted`; recruiting, slave trading, `SpawnIntoPlayerSquad` and the squads
   screen's count use `SquadManagement.CappedHeads`), for townspeople, staff or followers a mod adds beside the player's own characters; the
   dismiss rule still counts everyone (`FactionHeads`). Several mods can each mark their own squads. Saved with the squad; a load without the
   owner mod running counts the squad again, with a notice. Engine API, not in the original.
+- **Squad AI options per squad** (`Meitou.Simulation.Factions`): `SetSquadOptions(squadId, options, Owner: context.Id)` gives a squad of the
+  player's faction its own squad AI options (`Squad.OwnOptions`, the `SquadAi` flags: sit when idle, sleep when injured, ditch items, share
+  food, feed animals, heal, help and rescue allies, shoot first, heal neutrals, heal all), which its members follow in place of the player's
+  faction-wide ones (the AI tab still shows and sets the player's, so a led squad given its own no longer follows the tab); `null` gives it the
+  player's again. Guards that should not sit, sleep in other people's beds or haul goods away, for
+  example: `SquadAi.Feed | SquadAi.Share`. Every system that reads the options asks `SquadAiRules.For(world, cold)` (the character's squad's,
+  else the player's), so a squad with none set behaves as in the original. A command naming another mod than the one that set them is
+  ignored. Saved with the squad; a load without the owner mod running gives the squad the player's options again, with a notice. Cost: one
+  squad lookup where an option is read (at decisions, and per character at the feed check). Engine API, not in the original.
 - **Squad purses** (`Meitou.Simulation.Factions`): `SetSquadPurse(squadId, own, Owner: context.Id)` gives a squad of the player's faction its own
   purse (`Squad.OwnPurse`, its `Squad.Money`): its members pay an NPC-style purchase (a shopper buying from a building's stock) from it
   instead of the player's money, and a shop the squad owns keeps its takings in it, so a shopkeeper keeps its own earnings. The trade window
@@ -1105,7 +1709,9 @@ holds refuses the second mod.
   the player comes near). Saved with the squad; a load without the owner mod running wakes it, with a notice. Engine API, not in the original.
 - **World hooks** (engine API, not in the original; serial phases): `PopulationSystem.RequestCampaign` queues a
   FACTION_CAMPAIGN against a town as a dialogue trigger does (the request pass then applies the game's gates); `PopulationSystem.SpawnPlatoon`
-  adds an unloaded platoon of a SQUAD_TEMPLATE at a walkable point in a ring round a point, with a purse, that loads like a roaming one, is
+  adds an unloaded platoon of a SQUAD_TEMPLATE at a walkable point in a ring round a point, with a purse (and, with `maxMembers` above 0, at most that
+  many members: the plan's first members, leader first, then whole slave squads that fit, kept whenever its squad is made again, saved and
+  hashed), that loads like a roaming one, is
   kept off screen whatever the keep switches say (and stays loaded while a member lies knocked out in the loaded zones,
   [roaming](simulation.md#off-screen-tier)), is saved also before it first loads and loads back as the same roaming squad (-1 and nothing
   added when no walkable point is found); platoon ids are given anew at every load, so `Platoon.ModTags[context.Id]` holds one tag per mod
@@ -1117,21 +1723,41 @@ holds refuses the second mod.
   character of a CHARACTER or ANIMAL_CHARACTER record as a new game makes the player's (a look rolled for the player's faction, body,
   starting items, name; a unique claimed as any spawn claims it) and adds it, standing idle on the ground at a walkable point, to a living
   player squad, leading it when it has no leader. Only player squads: an NPC squad loaded from a save keeps only the save's members, so an
-  added NPC would be lost at the next save or unload (`SpawnPlatoon` adds NPCs). The overload taking `float age` creates an
-  ANIMAL_CHARACTER at that age (finite and nonnegative); the default is adult age 1 and CHARACTER ignores it. The overload with both
-  controller and age preserves these same rules. It returns the character's id, or none and adds nothing
-  for another squad, another record type, a point that is not finite or not walkable, a unique already claimed, or the recruit's caps
-  (`max squad size`, `max faction size`). Coop grants the new character to the squad's sole current controller; the overload taking
+  added NPC would be lost at the next save or unload (`SpawnPlatoon` adds NPCs). `SpawnIntoPlayerSquad(world, squadId, recordId, at, age)`
+  makes an ANIMAL_CHARACTER at that age, its stats multiplier and size ([animals](game/animals.md#ageing)), where the four-argument call
+  makes the adult of age 1; a CHARACTER ignores the age; `SpawnIntoPlayerSquad(world, squadId, recordId, at, new SpawnOptions(Age, IgnoreCaps))`
+  with `IgnoreCaps` skips the squad and faction size caps, as the original's birth through `createRandomCharacter` checks none. It returns the character's id, or none and adds nothing for another squad, another
+  record type, a point that is not finite or not walkable, an age that is not finite or below 0, a unique already claimed, or the recruit's caps
+  (`max squad size`, `max faction size`); `PopulationSystem.JoinPlayerSquad(world, character, squadId)` moves a living character that is not
+  the player's (a traveller who settles) into a living player squad as a recruit joins (the player's faction, orders and class; no AI, jobs or
+  uniform marks; written as a new member at the next save), leading it when it has no leader, and returns false, changing nothing, for
+  another squad or character or at the same caps; a squad kept out of the faction size count (`SetSquadUncounted`) has only the squad cap
+  for both. Coop grants the new character to the squad's sole current controller; the overload taking
   `PlayerId? controller` selects a member of that squad's faction explicitly. Empty or mixed-owner squads require the explicit controller;
   grants run only at setup, input or slow-world boundaries. Invalid ownership or phase adds nothing and does not claim a unique.
   `PopulationSystem.JoinPlayerSquad(world, character, squadId, controller)` recruits an existing living NPC with the same explicit controller
-  and faction checks. An uncounted squad bypasses only the faction cap, retaining the squad cap. The `VisitTown` command sends a squad running a
-  wandering trader package to a player town for a stay of N hours, counted from its first step there after the command (on the way it stops at no
-  other town; it leaves a town that is not public at once, as any trader); `BedSystem.PlayerBedRent` prices the player's indoor beds for other factions:
-  set, an NPC must afford it from its squad purse and
+  and faction checks. The `VisitTown` command sends a squad running a wandering trader package to a
+  player town for a stay of N hours, counted from its first step there after the command (on the way it stops at no other town; it leaves a
+  town that is not public at once, as any trader); `BedSystem.PlayerBedRent` prices the player's indoor beds for other factions: set, an NPC must afford it from its squad purse and
   pays the player once it lies in the bed, and a visitor in a player town picks the nearest bed it can afford before the NPC bed search (null
   keeps the original: NPCs never pay). Non-finite delays, hours, points and radii are refused. **Verified** by `ModHookTests` (synthetic
   world): the spawn ring, purse and refusals, a never-loaded spawn kept and reloaded with its tag, and the campaign queue.
+- **Placing characters** (engine API, not in the original; serial phases and `IWorldReady`, once per event): `CharacterPlacement.Place(world,
+  characters, at)` (`Meitou.Simulation.Movement`) puts living characters at a point at once (a start squad at its own place, a scene change, fast
+  travel): the first on the walkable spot nearest it, the rest spread round it as a ground-click move order of that many spreads them, each on
+  the ground there (the floor nearest the point's height), standing still with its fight, task, path and orders dropped as the Stop order drops
+  them; carried characters come with their carrier. Outside a tick both state buffers are written, so a new game's camera, put on the first
+  squad's leader after `IWorldReady`, sees the new place. A character carried or held in a bed, cage or on a pole is left where it is. It
+  returns how many were put (0 for a point that is not finite or with no walkable spot near it). The zones round a far place load as after a
+  long walk; nothing there is preloaded. `CharacterPlacement.WalkableNear(world, point, key)` is the spot search alone.
+- **Placing buildings** (engine API, not in the original; serial phases and `IWorldReady`, once per event): `ConstructionSystem.PlaceSites(world,
+  plans, complete)` makes a site of the player's faction for each `PlannedBuilding` as build mode's Confirm does (the town block, joining a player
+  town or founding an outpost, walls joined, the town reassessed), without research's gate, a message or a build order. With `complete` each
+  stands already, built with all its materials delivered (dismantling refunds them as for any finished building) and no completion message;
+  doors, beds, seats and machines follow on the next step. Furniture is a second call whose plans name the building's site id as `Parent`, at
+  absolute positions the mod chooses inside it. It returns the sites in plan order, null for a refused plan (not a BUILDING, a position that is
+  not finite, blocked by a town), so a mod has the id for `SetSquadHome` and the outpost through `world.Buildings.FindTown(site.Town)` (tag it
+  with `PlayerTown.ModTags`).
 - **Town overrides** (engine API, not in the original; serial phases; [simulation](simulation.md) "Town overrides"): `PopulationSystem.CheckOverrides(world,
   site)` runs a town's `override town` list now, as its zone's load would; `ApplyTownVersion(world, site, townId)` puts a TOWN of the mod's choice
   in its place (null or the town's own id: back to its own record, residents made afresh; also for a held town or one of the player's faction); both
@@ -1255,6 +1881,20 @@ holds refuses the second mod.
   - **Jobs:** the chooser's job passes ask the contributor of a job type for each listed job of that type, for any character with a job list (Mod
     jobs above). A contributor whose call throws is dropped for that world: the first fault is logged with the mod id, the player gets a notice,
     and the fault enters the state hash.
+  - **Desire filters:** in `Register`, `chooser.DesireFilter(IGoalDesireFilter)` filters the chooser's desires of every task type, the
+    engine's and the mods', for every character (a system added later may register one too). `Desire(World, in GoalDesireAsk)` gets the tick,
+    the character, the type, a `GoalDesireKind` and the desire, and answers the desire to use: `Goal` (a list goal as the goal scorer weighs
+    it, before the list's weight, crowding and continuity; a bed goal whose bed search found no bed is not asked), `PlanStep` (a row on the
+    way of a plan, 0 or below a dead end, such as getting out of bed once healed), `Order` (the order queue's front, which leaves at 0 or below,
+    and the second list), `Job` (a job of the list that could run, `Job` its index, asked as 1: 0 or below passes over it), `HeldScore` (the current goal's whole score
+    this think, after weight, crowding, continuity and commitment, with `GoalDesireAsk.HeldScore` the score that type was held at after its last
+    scoring as the current goal, NaN the first time or after a load; the answer is what it competes with and is held for the next, as the
+    original AI keeps its current goal's score: SquadAutonomy's patrol decay is the answer max(0.0001, held x 0.95)). Filters run in
+    registration order, each seeing the desire the earlier ones left, on any thread (the think is parallel): quick, thread-safe, a pure read. A
+    throw or a desire that is not finite keeps the desire; the filter is still asked for the rest of that tick and not from the next, and the
+    fault enters the state hash. Raising a goal's desire from 0 can pick a goal that then finds nothing to act on. Engine API, not in the
+    original. **Observed** by a scratch run (not in the repo): an unchanged answer keeps the town's hash on 1 and 4 threads; 0 for the bed
+    goals leaves every bed empty at night.
 - **Ordering characters** (`Meitou.Simulation`, [order queue](simulation.md#order-queue); **Observed**, by reading `World.GiveOrder` and
   `PlayerOrders.Give`): `world.GiveOrder(actor, row, target, site, point, queued)` gives a player character or an NPC an order through the one
   queue the player's orders use, with the parts the menu's verbs give. The row is one a system owns as an order (the rows `World.CanOrder`
@@ -1262,11 +1902,23 @@ holds refuses the second mod.
   prisoner's waits queued in its cage, a sleeper gets up, a follow order ends, an animal a building keeps out goes past its first door); any
   other row is given as a saved order of that row is loaded, with its owner's detail (an attack is the player's pick, a lock order a walk to its
   row's work) and readying (`IOrderOwner.LoadDetail`, `Restored`). Without `queued` it replaces the queue. Serial phases only (it throws in a
-  parallel one). It answers the check of the order's start when it is the only order queued and the character takes orders now: `Run`,
+  parallel one); between ticks the start is written into the state the next tick computes from, as the paused step's commands are. It answers the check of the order's start when it is the only order queued and the character takes orders now: `Run`,
   `Blocked` (with the text the player's order would show) or `Gone` (it left the queue); else `Run` (queued). `Gone` too for an actor not in the
   world or a row no system owns (nothing queued). An NPC's front starts only while its chooser runs (it has a squad and is not carried, out
   cold or dead), else it waits queued; its start ends a goal holding the character (`ModGoalEnd.Order`), and the chooser takes the character
-  back once the queue is empty. `CanOrder` asks the same without giving.
+  back once the queue is empty. `CanOrder` asks the same without giving. Engine jobs given as orders (engine API): `TaskType.FindWeapon` (8, no
+  target) runs the original's `AI::findWeapon` from the character (`CarrySystem.FindWeapon`) and picks up the ground weapon it finds (row 3,
+  worn into a free slot), or for a character that is not the player's loots the body it finds (a player character's takes the ground pass
+  only); gone once it carries a weapon or nothing is found; one find per order. `TaskType.EatTargetAlive` (220, a target) eats a live caged
+  occupant at its cage, or a body down or dead on the ground where it lies, through the cannibal goals' own job (bites, barks, limb loss, death
+  report), for any character; it stays the queue's front while the meal goes on, another order ends the meal, and an order's meal resets no
+  town's kill timer. Carrying is the lift orders (`LiftPersonPlayerOrder`, `KidnapOrder`). `world.GiveOrder(actor, row, OrderOptions)` gives
+  the same with the parts in an options record (`Target`, `Site`, `Point`, `Queued`; room for more) and per-order options: `Reach`, the distance from
+  the target within which the order's job starts its work (at a cage, past its `use range`) in place of the row's own; read by 220 (the meal's
+  `CaptiveSettings.Reach`, 15), the other rows keep theirs. A reach not finite or below 0 throws. It goes with the order (`OrderEntry.Reach`), is
+  hashed with the queue and the job, and is saved as `meitou tjobR<i>` ([order queue](formats/save.md#order-queue)); an original plugin's widened
+  eating trigger (50) is such a reach. **Observed** (2026-11-24, scratch check on a vanilla save: a downed body 45 away, eaten from 45 with
+  `Reach = 50`, from 16.8 without; the reach saved and read back; the same state hash on 1 and 4 threads).
   **Observed** (Coop source): direct `World.GiveOrder` calls are trusted server/local code, including when player control requires explicit
   grants. They reject parallel phases and pending durable mutations. Remote clients have no mutable world and submit typed commands with
   their issuer and current grants; packet commands cannot set an order's trust flag. A trusted talk order opening trade derives the current
@@ -1295,6 +1947,14 @@ holds refuses the second mod.
   - Gone with nothing in their place: `PopulationSystem.PendingTalk` and `AnnouncementPatience`, `FirstAidSettings.AutoReach`,
     `Platoon.OrderCooldown`, `AiMind.CaptiveOffers`, `LockSystem.ReleaseTimeout`; the host's `ModHost.TryTakeFactoryNotice` is
     `CodeModFaults.TryTakeNotice`.
+- **Workplace slots** (`Meitou.Simulation.Ai`; the system from `world.Systems` or `Find<AiSystem>()`): `AiSystem.WorkSlots(building)` answers a
+  workplace's operator slots as `WorkplaceSlots(Held, Max)` (`Free`): `building` is its `TownBuilding.Key` (a town building's `x.y:instance`,
+  an outpost machine's site id), `Held` the AI workers holding it and the player's operators on a job at an outpost machine, `Max` its
+  functionality's `max operators`, as of the last package cadence pass; null for a building that is no workplace of a town or outpost the AI
+  looked at then. Read only, in the serial phases. `AiSystem.HoldWorkSlot(world, building, worker)` holds a slot for a mod's worker: counted in
+  `Held` at once and in every pass after, so the AI's workers leave it (false for a worker not living, no such workplace or no free slot); one
+  hold a worker, moved by holding another building; `ReleaseWorkSlot(world, worker)` lets it go, as the worker leaving the world or dying does
+  at the next pass. Hashed while any; not saved (hold again after a load). Serial phases only. Engine API.
 - **Seats** (`Meitou.Simulation.Production`; the system from `SystemBuildContext.Find<ProductionSystem>()` or `world.Systems`):
   `SitOn(world, slot, seat, row, source)` puts a character, the player's or an NPC, on a chair or throne through the player's Use order's
   act-out (the original's sitting is its operate task, [chairs](game/ai-tasks.md#town-goals)): it starts `CharacterTask.Operate` through
@@ -1337,11 +1997,33 @@ holds refuses the second mod.
   answers `NotASeat` (one still at its seat sits at once). Without a call nothing changes; a seat that had no machine gets the one the Use order
   makes (`World.Machines`, hashed; a town seat's is not saved, a built chair's is saved with its building, as the Use order's). Engine API, not
   in the original.
+- **Character observers** (`IKnockoutObserver`, `ILimbObserver`, `ICarryObserver`, `IHeldStateObserver`, `IFactionChangeObserver`,
+  `IRecruitObserver`, `IEquipObserver`, `ICharacterRemovedObserver`): any `ITickSystem` implementing one or more of these interfaces is notified
+  serially in slot order after the slow world (and when a character leaves the table, before `ICharacterRemovedObserver.Removed` fires while the
+  character is still readable). Each runs with zero overhead when unregistered; the first observation of a character captures its baseline
+  without emitting spurious events. Observers may read world state and update their own hashed state, and must not mutate characters or other
+  world state (use commands); a throwing observer is disabled for that world and its fault enters the state hash. Engine API, not in the original.
+- **Dialogue choices** (`IDialogueChoiceFilter`, `IDialogueChoiceObserver`): any `ITickSystem` implementing `IDialogueChoiceFilter` is asked
+  serially before `DialogueSystem.Choose` runs a player's reply; returning `true` claims the choice (ending the conversation without running
+  vanilla effects or advancing). `IDialogueChoiceObserver.ChoicePicked` runs serially for every non-bail choice. Faulting hooks are disabled for
+  that world and enter the state hash. Engine API, not in the original.
+- **Audio modulation** (`ModContext.SetAudioModulation`, `ModContext.ClearAudioModulation`, `AudioModulation`): modulates active sound playback
+  rate/pitch (`0.1` to `4`), low-pass muffle coefficient (`0.01` to `1`), and volume gain (`0` to `2`). Applies to world and ambience sounds by
+  default, with optional flags for music (`AffectMusic`) and UI (`AffectUi`). Thread-safe; multiple mods compose multiplicatively for rate/gain
+  and by minimum for low-pass, published lock-free to the audio thread. Engine API, not in the original.
+  **Observed** (Coop source): authority settings are sparse per-owner snapshot state, restored by a baseline without rerunning the server mod
+  on the client. Values set during `Initialize` are defaults copied separately into each ready world before its ready callbacks; preparing a
+  replacement save does not change the active world's controls, and an explicit value set during that save's restoration takes precedence over
+  its Initialize-time default. Within the presented world an authority owner supersedes that same owner's
+  client-local setting, preventing duplicate modulation; other local owners still compose. Clearing or revoking authority modulation retains
+  an identity reading for that owner until the world ends, so an older client default cannot reappear. Leaving the world clears those
+  authority claims. Device replacement reapplies the current composed setting through the common audio update on Vulkan and Metal.
 
 ## Data mods
 
 Some shapes need no code: a race's anatomy of any length, extra or missing parts, and parts of a new type such as a tail are plain records
-([bodies of other shapes](game/character-stats.md#bodies-of-other-shapes-meitou)).
+([bodies of other shapes](game/character-stats.md#bodies-of-other-shapes-meitou)). A WEAPON of the unarmed `skill category` fights as fists with
+martial arts and is worn on the body's skeleton ([worn unarmed weapons](characters.md#worn-unarmed-weapons)).
 
 ## Fixed record ids
 
@@ -1445,6 +2127,14 @@ come back. Last, it runs the game without mods: if that differs too, the fault i
   game and needs an update; it is stopped and the rest of the game goes on.` (`CodeModFaults.Tell`), in place of the fault's own notice; what
   faulted is refused, stopped, dropped or skipped by its own rule, and the game runs on (**Observed**, by reading `CodeModFaults.Tell` and its
   callers).
+- A Harmony patch on an internal the game renamed, removed or re-signed counts the same (`CodeModFaults.HarmonyCannotBind`). **Observed**
+  (2026-11-25, scratch app, net11.0, Lib.Harmony 3.0.0-rc.7; `PatchAll`, a class processor and `Harmony.Patch`): Harmony throws them itself
+  (`Source` `0Harmony`), bare from `Patch`, else wrapped in a `HarmonyException` ("Patching exception in method ..."), with these messages: a
+  missing target `ArgumentException` "Undefined target method for patch method ...", a missing injected parameter `Exception` "Parameter
+  "<name>" not found in <method>", a missing `___field` `ArgumentException` "No field <name> found on <type>". The rule matches that text, so a
+  Harmony update that rewords it needs the rule checked. A throwing `Prepare`, `TargetMethod` or transpiler is wrapped the same way but comes
+  from the mod (a `TargetInvocationException` over the mod's fault) and keeps its own notice; so does a parameter of a changed type ("The
+  boxed value cannot have the requested type").
 - The manifest's `apiVersion` must lie in `ModApi.MinimumVersion` (1) to `ModApi.Version` (3); otherwise the mod is refused at load with a
   message. 2 added `version`, `dependencies`, `loadAfter`, `incompatible`, `gameVersion`, `ModContext.Dependency<T>` and
   `IModDependents`. 3 added the chooser surface ("Chooser goals and jobs", `World.GiveOrder`) and removed `CharacterCold.Engaged`,

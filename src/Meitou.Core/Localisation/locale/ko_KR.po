@@ -166,6 +166,12 @@ msgstr "분대 주변 지역으로 돌아온 분대는 떠나 있던 시간만�
 msgid "A swamp turtle butts and bites when it fights. In the game it fights with a sword or club drawn for it, whose moves its body cannot play, so its blows land without any motion."
 msgstr "늪 거북은 싸울 때 들이받고 뭅니다. 게임에서는 그를 위해 꺼낸 검이나 곤봉으로 싸우는데, 몸이 그 동작을 재생할 수 없어 공격이 아무 움직임 없이 적중합니다."
 
+msgid "Pick-up thefts from the owner"
+msgstr "주운 도둑질은 주인에게서"
+
+msgid "Taking someone else's item from the floor of a building is a theft from the item's owner. The game counts it as stolen from whoever owns the building you stand in, even when the item belongs to someone else."
+msgstr "건물 바닥에서 남의 아이템을 주우면 그 아이템 주인의 물건을 훔친 것이 됩니다. 원래 게임은 아이템이 다른 사람의 것이어도 서 있는 건물의 주인에게서 훔친 것으로 칩니다."
+
 msgid "Turret fire is a crime"
 msgstr "포탑 사격은 범죄"
 
@@ -4847,6 +4853,120 @@ msgstr "현재 프리셋 저장"
 msgid "Sort by"
 msgstr "정렬 기준"
 
+msgid "Beds used as seats"
+msgstr "좌석으로 쓰이는 침대"
+
+msgid "A character sleeping on furniture that works as a seat, such as Bed (job), lies along the mattress as in a real bed. The game seats it on the furniture's middle, so it lies across the foot of the bed."
+msgstr "Bed (job)처럼 좌석으로 작동하는 가구에서 자는 캐릭터가 진짜 침대처럼 매트리스를 따라 눕습니다. 원래 게임은 가구 한가운데에 앉히기 때문에 침대 발치에 가로로 눕습니다."
+
+#. machine-translated
+msgid "Outpost:"
+msgstr "전초기지:"
+
+#. machine-translated
+msgid "This building stands outside every outpost's build limit, so no generator can power it. Dismantle it and build it again inside the red ring."
+msgstr "이 건물은 모든 전초기지의 건설 한계 밖에 있어 어떤 발전기도 전력을 공급할 수 없습니다. 해체한 뒤 빨간 원 안에 다시 지으세요."
+
+#. machine-translated
+msgid "A tall two-story building shell with stairs inside."
+msgstr "내부에 계단이 있는 높은 2층 건물 외벽."
+
+#. machine-translated
+msgid "Makes basic first aid kits and sleeping bags from fabrics. Needs power."
+msgstr "직물로 응급처치 도구(기본)와 침낭을 만듭니다. 전력이 필요합니다."
+
+#. machine-translated
+msgid "Makes first aid kits and splint kits from fabrics and hemp. Needs power."
+msgstr "직물과 대마로 응급처치 도구와 부목 도구를 만듭니다. 전력이 필요합니다."
+
+#. machine-translated
+msgid "Grows hemp indoors, safe from the weather. Needs power and water."
+msgstr "날씨의 영향 없이 실내에서 대마를 재배합니다. 전력과 물이 필요합니다."
+
+#. machine-translated
+msgid "Grows riceweed indoors, safe from the weather. Needs power and water."
+msgstr "날씨의 영향 없이 실내에서 벼 잡초를 재배합니다. 전력과 물이 필요합니다."
+
+#. machine-translated
+msgid "Grows greenfruit indoors, safe from the weather. Needs power and water."
+msgstr "날씨의 영향 없이 실내에서 초록과일을 재배합니다. 전력과 물이 필요합니다."
+
+#. machine-translated
+msgid "Collects water when it rains."
+msgstr "비가 오면 물을 모읍니다."
+
+#. machine-translated
+msgid "A sturdy metal table."
+msgstr "튼튼한 금속 탁자."
+
+#. machine-translated
+msgid "A simple round table."
+msgstr "단순한 원형 탁자."
+
+#. machine-translated
+msgid "A wooden shelf, for decoration."
+msgstr "장식용 나무 선반."
+
+#. machine-translated
+msgid "A simple stool to sit on."
+msgstr "앉을 수 있는 단순한 의자."
+
+#. machine-translated
+msgid "Stores power for when your generators fall short."
+msgstr "발전기 전력이 모자랄 때를 대비해 전력을 저장합니다."
+
+#. machine-translated
+msgid "A larger wind generator with twice the power of the first when the wind is up. Keep batteries as a backup."
+msgstr "더 큰 풍력 발전기로, 바람이 불면 첫 번째 것의 두 배 전력을 냅니다. 예비용 전지를 갖춰 두세요."
+
+#. machine-translated
+msgid "A large storage tank for fuel."
+msgstr "연료를 담는 대형 저장 탱크."
+
+#. machine-translated
+msgid "A stack of boxes you can store anything in."
+msgstr "무엇이든 보관할 수 있는 상자 더미."
+
+#. machine-translated
+msgid "A storage barrel for cactus."
+msgstr "선인장 저장 통."
+
+#. machine-translated
+msgid "A storage barrel for greenfruit."
+msgstr "초록과일 저장 통."
+
+#. machine-translated
+msgid "A storage barrel for riceweed."
+msgstr "벼 잡초 저장 통."
+
+#. machine-translated
+msgid "A low, crude wall that won't keep enemies out for long."
+msgstr "적을 오래 막지 못하는 낮고 조잡한 벽."
+
+#. machine-translated
+msgid "A proper defensive wall, taller than a makeshift one."
+msgstr "임시 벽보다 높은 제대로 된 방어벽."
+
+#. machine-translated
+msgid "A taller, heavier defensive wall."
+msgstr "더 높고 무거운 방어벽."
+
+#. machine-translated
+msgid "A towering fortified wall."
+msgstr "우뚝 솟은 요새 벽."
+
+#. machine-translated
+msgid "The gate for Defensive Wall II."
+msgstr "방어벽 II용 문."
+
+#. machine-translated
+msgid "The gate for Defensive Wall III."
+msgstr "방어벽 III용 문."
+
+#. machine-translated
+msgid "The gate for Defensive Wall IV."
+msgstr "방어벽 IV용 문."
+
 #. machine-translated
 msgid "Simple terrain shading"
 msgstr "간단한 지형 셰이딩"
@@ -4854,6 +4974,843 @@ msgstr "간단한 지형 셰이딩"
 #. machine-translated
 msgid "Faster ground for weak graphics: one biome and two texture layers a pixel, no bump detail. Blends between biomes show harder edges."
 msgstr "성능이 낮은 그래픽을 위한 더 빠른 지면: 픽셀당 바이옴 하나와 텍스처 레이어 두 개, 요철 디테일 없음. 바이옴 사이 경계가 더 뚜렷해집니다."
+
+#. machine-translated
+msgid "Loading the target builds..."
+msgstr "대상 빌드를 불러오는 중..."
+
+#. machine-translated
+msgid "{1} target builds"
+msgstr "대상 빌드 {1}개"
+
+#. machine-translated
+msgid "Benchmark"
+msgstr "벤치마크"
+
+#. machine-translated
+msgid "Target builds unknown: {1}"
+msgstr "대상 빌드를 알 수 없음: {1}"
+
+#. machine-translated
+msgid "Download the build into the benchmark's own folder and list its benchmarks"
+msgstr "빌드를 벤치마크 전용 폴더에 내려받고 벤치마크 목록을 가져옵니다"
+
+#. machine-translated
+msgid "Target builds (full releases and the daily nightlies) count for comparisons; others can be run but not submitted."
+msgstr "대상 빌드(정식 릴리스와 매일 나오는 나이틀리)만 비교에 쓰입니다. 다른 빌드는 실행할 수 있지만 제출할 수 없습니다."
+
+#. machine-translated
+msgid "Build"
+msgstr "빌드"
+
+#. machine-translated
+msgid "target"
+msgstr "대상"
+
+#. machine-translated
+msgid "not a target"
+msgstr "대상 아님"
+
+#. machine-translated
+msgid "installed"
+msgstr "설치됨"
+
+#. machine-translated
+msgid "Proton runs the Windows build, with its own prefix in the launcher's folder."
+msgstr "Proton은 런처 폴더 안의 전용 접두사로 Windows 빌드를 실행합니다."
+
+#. machine-translated
+msgid "Platform"
+msgstr "플랫폼"
+
+#. machine-translated
+msgid "Install the build to see all the benchmarks it has."
+msgstr "빌드를 설치하면 모든 벤치마크를 볼 수 있습니다."
+
+#. machine-translated
+msgid "Each ticked benchmark is run at each ticked tier."
+msgstr "선택한 각 벤치마크를 선택한 각 등급에서 실행합니다."
+
+#. machine-translated
+msgid "Benchmarks"
+msgstr "벤치마크"
+
+#. machine-translated
+msgid "Needs ray tracing"
+msgstr "레이 트레이싱 필요"
+
+#. machine-translated
+msgid "Medium and {1}, recommended for this computer, are ticked first."
+msgstr "중간과 이 컴퓨터에 권장되는 {1}이(가) 먼저 선택되어 있습니다."
+
+#. machine-translated
+msgid "The game's quality presets."
+msgstr "게임의 품질 프리셋입니다."
+
+#. machine-translated
+msgid "Tiers"
+msgstr "등급"
+
+#. machine-translated
+msgid "Start"
+msgstr "시작"
+
+#. machine-translated
+msgid "Do not use the computer while it runs."
+msgstr "실행 중에는 컴퓨터를 사용하지 마세요."
+
+#. machine-translated
+msgid "Sessions: {1}, two runs each, about {2} minutes."
+msgstr "세션: {1}개, 각 2회 실행, 약 {2}분."
+
+#. machine-translated
+msgid "{1} ({2} elapsed)"
+msgstr "{1} ({2} 경과)"
+
+#. machine-translated
+msgid "Benchmark finished."
+msgstr "벤치마크가 끝났습니다."
+
+#. machine-translated
+msgid "The build is installed."
+msgstr "빌드가 설치되었습니다."
+
+#. machine-translated
+msgid "A benchmark is already running."
+msgstr "벤치마크가 이미 실행 중입니다."
+
+#. machine-translated
+msgid "Meitou is running: close it before benchmarking."
+msgstr "Meitou가 실행 중입니다. 벤치마크 전에 닫으세요."
+
+#. machine-translated
+msgid "Choose a build first."
+msgstr "먼저 빌드를 선택하세요."
+
+#. machine-translated
+msgid "Tick at least one benchmark and one tier."
+msgstr "벤치마크와 등급을 하나 이상 선택하세요."
+
+#. machine-translated
+msgid "Cancelled."
+msgstr "취소되었습니다."
+
+#. machine-translated
+msgid "The benchmark stopped: {1}"
+msgstr "벤치마크가 중단되었습니다: {1}"
+
+#. machine-translated
+msgid "Benchmarking: the game window opens and closes by itself."
+msgstr "벤치마크 중: 게임 창이 저절로 열리고 닫힙니다."
+
+#. machine-translated
+msgid "{1} at {2}: run {3} of {4}, launch {5} of {6}"
+msgstr "{1} ({2}): 실행 {3}/{4}, 시작 {5}/{6}"
+
+#. machine-translated
+msgid "Proton: {1}"
+msgstr "Proton: {1}"
+
+#. machine-translated
+msgid "Native Linux build"
+msgstr "네이티브 Linux 빌드"
+
+#. machine-translated
+msgid "This computer's build"
+msgstr "이 컴퓨터용 빌드"
+
+#. machine-translated
+msgid "Results"
+msgstr "결과"
+
+#. machine-translated
+msgid "No results for this build and platform yet."
+msgstr "이 빌드와 플랫폼의 결과가 아직 없습니다."
+
+#. machine-translated
+msgid "Machine id (letters, digits, dashes)"
+msgstr "기기 ID(문자, 숫자, 대시)"
+
+#. machine-translated
+msgid "Machine name (optional)"
+msgstr "기기 이름(선택)"
+
+#. machine-translated
+msgid "Notes (cooling, power plan, ...)"
+msgstr "메모(냉각, 전원 관리 옵션, ...)"
+
+#. machine-translated
+msgid "Kept as it was first submitted, so the site keeps your results together."
+msgstr "처음 제출한 그대로 유지되어 사이트가 결과를 함께 묶어 둡니다."
+
+#. machine-translated
+msgid "Can be edited until the first session is submitted; then it is kept, so the site keeps your results together."
+msgstr "첫 세션을 제출하기 전까지 수정할 수 있으며, 그 뒤에는 유지되어 사이트가 결과를 함께 묶어 둡니다."
+
+#. machine-translated
+msgid "Machine"
+msgstr "기기"
+
+#. machine-translated
+msgid "Your name on the benchmarks site (optional)"
+msgstr "벤치마크 사이트에 표시할 이름(선택)"
+
+#. machine-translated
+msgid "Submitted by"
+msgstr "제출자"
+
+#. machine-translated
+msgid "Shown beside your results."
+msgstr "결과 옆에 표시됩니다."
+
+#. machine-translated
+msgid "The hardware is probed when a benchmark starts."
+msgstr "하드웨어는 벤치마크를 시작할 때 확인합니다."
+
+#. machine-translated
+msgid "{1}, {2}, {3} GB, {4}"
+msgstr "{1}, {2}, {3}GB, {4}"
+
+#. machine-translated
+msgid "{1} at {2}"
+msgstr "{1} ({2})"
+
+#. machine-translated
+msgid "Run {1}: FPS"
+msgstr "실행 {1}: FPS"
+
+#. machine-translated
+msgid "Run {1}: 99% ms"
+msgstr "실행 {1}: 99% ms"
+
+#. machine-translated
+msgid "Run {1}: over 33 ms"
+msgstr "실행 {1}: 33ms 초과"
+
+#. machine-translated
+msgid "Submitted (#{1})."
+msgstr "제출됨(#{1})."
+
+#. machine-translated
+msgid "Submitting..."
+msgstr "제출 중..."
+
+#. machine-translated
+msgid "Submit"
+msgstr "제출"
+
+#. machine-translated
+msgid "Submit again"
+msgstr "다시 제출"
+
+#. machine-translated
+msgid "Incomplete: both runs are needed to submit."
+msgstr "불완전함: 제출하려면 두 번의 실행이 모두 필요합니다."
+
+#. machine-translated
+msgid "Not a target build: its results can be seen here but not submitted."
+msgstr "대상 빌드가 아닙니다: 결과는 여기서 볼 수 있지만 제출할 수 없습니다."
+
+#. machine-translated
+msgid "The runs were made by {1}, not {2}: they cannot be submitted."
+msgstr "실행한 빌드가 {2}이(가) 아니라 {1}입니다. 제출할 수 없습니다."
+
+#. machine-translated
+msgid "Fill in the machine's id to submit."
+msgstr "제출하려면 기기 ID를 입력하세요."
+
+#. machine-translated
+msgid "The service refused it: {1}"
+msgstr "서비스가 거부했습니다: {1}"
+
+#. machine-translated
+msgid "Could not reach the reports service: {1}"
+msgstr "보고 서비스에 연결할 수 없습니다: {1}"
+
+#. machine-translated
+msgid "{1} skipped: it needs ray tracing, which this graphics card does not have."
+msgstr "{1} 건너뜀: 이 그래픽 카드에 없는 레이 트레이싱이 필요합니다."
+
+#. machine-translated
+msgid "{1} has no download for {2}."
+msgstr "{1}에는 {2}용 다운로드가 없습니다."
+
+#. machine-translated
+msgid "{1} has no game in its download."
+msgstr "{1} 다운로드에 게임이 없습니다."
+
+#. machine-translated
+msgid "Asking the build for its benchmarks..."
+msgstr "빌드에 벤치마크 목록을 요청하는 중..."
+
+#. machine-translated
+msgid "This build did not list its benchmarks (exit code {1}): it may be older than launcher benchmarks."
+msgstr "이 빌드는 벤치마크 목록을 내놓지 않았습니다(종료 코드 {1}). 런처 벤치마크보다 오래된 빌드일 수 있습니다."
+
+#. machine-translated
+msgid "{1} skipped: this build has no such benchmark."
+msgstr "{1} 건너뜀: 이 빌드에는 그런 벤치마크가 없습니다."
+
+#. machine-translated
+msgid "{1} skipped: it needs the save {2}, which this launcher cannot download."
+msgstr "{1} 건너뜀: 이 런처가 내려받을 수 없는 저장 파일 {2}이(가) 필요합니다."
+
+#. machine-translated
+msgid "Checking the benchmark save..."
+msgstr "벤치마크 저장 파일을 확인하는 중..."
+
+#. machine-translated
+msgid "The benchmark save is damaged: its download does not match the expected hash."
+msgstr "벤치마크 저장 파일이 손상되었습니다: 내려받은 파일이 예상 해시와 일치하지 않습니다."
+
+#. machine-translated
+msgid "Probing the hardware..."
+msgstr "하드웨어를 확인하는 중..."
+
+#. machine-translated
+msgid "This build did not report the hardware (exit code {1}): it may be older than launcher benchmarks."
+msgstr "이 빌드는 하드웨어 정보를 알려 주지 않았습니다(종료 코드 {1}). 런처 벤치마크보다 오래된 빌드일 수 있습니다."
+
+#. machine-translated
+msgid "Copying the save..."
+msgstr "저장 파일을 복사하는 중..."
+
+#. machine-translated
+msgid "{1} skipped: the game says it needs ray tracing, which this graphics card does not have."
+msgstr "{1} 건너뜀: 게임에 따르면 이 그래픽 카드에 없는 레이 트레이싱이 필요합니다."
+
+#. machine-translated
+msgid "{1} skipped: the game does not know this benchmark (exit code 7)."
+msgstr "{1} 건너뜀: 게임이 이 벤치마크를 알지 못합니다(종료 코드 7)."
+
+#. machine-translated
+msgid "The game refused the save: its hash is not the benchmark's (exit code 6)."
+msgstr "게임이 저장 파일을 거부했습니다: 해시가 벤치마크의 것과 다릅니다(종료 코드 6)."
+
+#. machine-translated
+msgid "The game stopped with exit code {1} in {2}, run {3}; its log is {4}"
+msgstr "게임이 {2} 실행 {3}에서 종료 코드 {1}(으)로 멈췄습니다. 로그: {4}"
+
+#. machine-translated
+msgid "The game wrote no result.json into {1}; its log is {2}"
+msgstr "게임이 {1}에 result.json을 쓰지 않았습니다. 로그: {2}"
+
+#. machine-translated
+msgid "The Vulkan loader is not installed: run 'brew install molten-vk vulkan-loader' in a terminal, then try again."
+msgstr "Vulkan 로더가 설치되어 있지 않습니다: 터미널에서 'brew install molten-vk vulkan-loader'를 실행한 뒤 다시 시도하세요."
+
+#. machine-translated
+msgid "The game did not start."
+msgstr "게임이 시작되지 않았습니다."
+
+#. machine-translated
+msgid "The game ran over {1} minutes and was stopped."
+msgstr "게임이 {1}분을 넘겨 중지되었습니다."
+
+#. machine-translated
+msgid "Bases: the play bench on a save"
+msgstr "기지: 저장 파일에서 하는 플레이 벤치"
+
+#. machine-translated
+msgid "Shark fly-by: a new game, flying round Shark"
+msgstr "Shark 비행: 새 게임에서 Shark 주위를 비행"
+
+#. machine-translated
+msgid "Low"
+msgstr "낮음"
+
+#. machine-translated
+msgid "Medium"
+msgstr "중간"
+
+#. machine-translated
+msgid "High"
+msgstr "높음"
+
+#. machine-translated
+msgid "Whole run"
+msgstr "전체 실행"
+
+#. machine-translated
+msgid "Streaming"
+msgstr "스트리밍"
+
+#. machine-translated
+msgid "Views"
+msgstr "전경"
+
+#. machine-translated
+msgid "Flight"
+msgstr "비행"
+
+#. machine-translated
+msgid "BENCHMARK"
+msgstr "벤치마크"
+
+#. machine-translated
+msgid "A benchmark is running: cancel it on the Benchmark page first."
+msgstr "벤치마크가 실행 중입니다. 먼저 벤치마크 페이지에서 취소하세요."
+
+#. machine-translated
+msgid "The benchmark stopped."
+msgstr "벤치마크가 중단되었습니다."
+
+#. machine-translated
+msgid "{1} squad(s) given their own squad AI options by a mod that is not loaded follow yours again."
+msgstr "로드되지 않은 모드가 자체 분대 AI 옵션을 준 분대 {1}개가 다시 당신의 옵션을 따릅니다."
+msgid "Unavailable menu rows"
+msgstr "사용할 수 없는 메뉴 항목"
+
+msgid "Greyed: a menu row your selection can't do now, such as First Aid without a medkit, is greyed; Shift-click it to set up the job anyway. Faithful: every row as in the game."
+msgstr "회색 표시: 선택한 캐릭터가 지금 할 수 없는 메뉴 항목(구급 키트 없는 응급 처치 등)은 회색으로 표시됩니다. Shift+클릭하면 작업을 그대로 지정할 수 있습니다. 원작대로: 모든 항목을 게임과 같이 표시합니다."
+
+#. machine-translated
+msgid "Lockpick chance on the pointer"
+msgstr "포인터의 자물쇠 따기 확률"
+
+#. machine-translated
+msgid "Pointing at a lock too hard to pick shows 0%, as its Pick Lock menu entry does, since the character cannot pick it. The game shows the chance before that limit there, such as 3% for a lock the menu gives 0%."
+msgstr "따기 너무 어려운 자물쇠를 가리키면 메뉴의 자물쇠 따기 항목처럼 0%가 표시됩니다. 캐릭터가 그 자물쇠를 딸 수 없기 때문입니다. 게임은 그 자리에 그 한계를 적용하기 전의 확률을 보여 주어, 메뉴가 0%로 표시하는 자물쇠도 3% 등으로 나옵니다."
+
+#. machine-translated
+msgid "Mute corpse flies"
+msgstr "시체 파리 음소거"
+
+#. machine-translated
+msgid "Mute corpse flies in the Audio settings"
+msgstr "오디오 설정의 시체 파리 음소거"
+
+#. machine-translated
+msgid "Mute corpse flies in the Audio settings is on"
+msgstr "오디오 설정의 시체 파리 음소거 켜짐"
+
+#. machine-translated
+msgid "Silences the buzzing of the flies over corpses; the flies are still shown (the game: off)."
+msgstr "시체 위 파리의 윙윙거리는 소리를 없앱니다. 파리는 계속 보입니다(게임: 꺼짐)."
+
+#. machine-translated
+msgid "Quiet corpse flies"
+msgstr "시체 파리 조용히"
+
+#. machine-translated
+msgid "Quiet corpse flies in the Audio settings"
+msgstr "오디오 설정의 시체 파리 조용히"
+
+#. machine-translated
+msgid "Quiet corpse flies in the Audio settings is on"
+msgstr "오디오 설정의 시체 파리 조용히 켜짐"
+
+#. machine-translated
+msgid "Corpse flies range"
+msgstr "시체 파리 소리 범위"
+
+#. machine-translated
+msgid "The flies over corpses are heard only close to them, not from across the base (the game: off)."
+msgstr "시체 위 파리 소리가 가까이에서만 들리고 기지 반대편에서는 들리지 않습니다(게임: 꺼짐)."
+
+#. machine-translated
+msgid "How far the corpse flies are heard, of the game's distance: lower to hear them less, higher for more."
+msgstr "시체 파리 소리가 들리는 거리(게임 거리 대비): 낮추면 덜 들리고, 높이면 더 멀리서 들립니다."
+
+#. machine-translated
+msgid "Guards give up lost suspects"
+msgstr "경비병이 놓친 용의자를 포기"
+
+#. machine-translated
+msgid "A guard who loses sight of the character he was arresting gives up and goes back to his duties. The game has him take the fight up again wherever the character is, so he can run straight to someone hiding out of sight."
+msgstr "체포하던 캐릭터를 놓친 경비병은 포기하고 원래 임무로 돌아갑니다. 게임에서는 캐릭터가 어디에 있든 다시 싸움을 시작하므로, 보이지 않는 곳에 숨은 사람에게 곧장 달려갈 수 있습니다."
+
+#. machine-translated
+msgid "Max faction size"
+msgstr "최대 세력 인원"
+
+#. machine-translated
+msgid "Max squad size"
+msgstr "최대 분대 인원"
+
+#. machine-translated
+msgid "Max squads"
+msgstr "최대 분대 수"
+
+#. machine-translated
+msgid "Max faction size, Max squad size and Max squads in the Advanced settings"
+msgstr "고급 설정의 최대 세력 인원, 최대 분대 인원 및 최대 분대 수"
+
+#. machine-translated
+msgid "its limits are now Max faction size, Max squad size and Max squads in the Advanced settings"
+msgstr "해당 제한은 이제 고급 설정의 최대 세력 인원, 최대 분대 인원 및 최대 분대 수로 옮겨졌습니다"
+
+#. machine-translated
+msgid "The faction's recruitment limit: how many characters and animals your faction may hold (the game: 30). Existing members stay if you lower it. Click the number to type an exact value."
+msgstr "세력의 영입 제한: 세력이 보유할 수 있는 캐릭터와 동물의 최대 수(게임: 30). 값을 낮춰도 기존 구성원은 유지됩니다. 숫자를 클릭해 정확한 값을 입력할 수 있습니다."
+
+#. machine-translated
+msgid "How many members one of your squads may hold (the game: 20). Full squads put new recruits into a new squad."
+msgstr "하나의 분대에 소속될 수 있는 최대 인원수(게임: 20). 분대가 가득 차면 새로 영입한 동료는 새 분대에 배치됩니다."
+
+#. machine-translated
+msgid "How many squads your faction may create (the game: 10)."
+msgstr "세력이 생성할 수 있는 최대 분대 수(게임: 10)."
+
+#. machine-translated
+msgid "App menu"
+msgstr "앱 메뉴"
+
+#. machine-translated
+msgid "Could not change the app menu entry: {1}"
+msgstr "앱 메뉴 항목을 변경할 수 없습니다: {1}"
+
+#. machine-translated
+msgid "Meitou Launcher was added to the app menu."
+msgstr "Meitou Launcher를 앱 메뉴에 추가했습니다."
+
+#. machine-translated
+msgid "Meitou Launcher was removed from the app menu."
+msgstr "Meitou Launcher를 앱 메뉴에서 제거했습니다."
+
+#. machine-translated
+msgid "Remove"
+msgstr "제거"
+
+#. machine-translated
+msgid "Add"
+msgstr "추가"
+
+#. machine-translated
+msgid "Meitou Launcher is in your desktop's app launcher."
+msgstr "Meitou Launcher가 데스크톱의 앱 실행기에 있습니다."
+
+#. machine-translated
+msgid "Add Meitou Launcher, with its icon, to your desktop's app launcher."
+msgstr "Meitou Launcher를 아이콘과 함께 데스크톱의 앱 실행기에 추가합니다."
+
+#. machine-translated
+msgid "Add to the app menu"
+msgstr "앱 메뉴에 추가"
+
+#. machine-translated
+msgid "Meitou Launcher, with its icon, in your desktop's app launcher."
+msgstr "Meitou Launcher를 아이콘과 함께 데스크톱의 앱 실행기에 표시합니다."
+
+#. machine-translated
+msgid "Benchmarks site"
+msgstr "벤치마크 사이트"
+
+#. machine-translated
+msgid "~{1} min per tier"
+msgstr "등급당 약 {1}분"
+
+#. machine-translated
+msgid "Recommended for this computer"
+msgstr "이 컴퓨터에 권장됨"
+
+#. machine-translated
+msgid "Recommended"
+msgstr "권장"
+
+#. machine-translated
+msgid "Submit results automatically when done"
+msgstr "완료 후 결과 자동 제출"
+
+#. machine-translated
+msgid "Applies to target builds only."
+msgstr "대상 빌드에만 적용됩니다."
+
+#. machine-translated
+msgid "Submit your results to the Meitou benchmarks site automatically when the benchmark finishes? Hardware specs, timings and your optional handle are sent; your computer name is not."
+msgstr "벤치마크가 끝나면 결과를 Meitou 벤치마크 사이트에 자동으로 제출할까요? 하드웨어 사양, 측정 시간, 선택 입력 이름만 전송되며 컴퓨터 이름은 전송되지 않습니다."
+
+#. machine-translated
+msgid "You can change this anytime on the Benchmark page."
+msgstr "벤치마크 페이지에서 언제든지 변경할 수 있습니다."
+
+#. machine-translated
+msgid "Don't submit"
+msgstr "제출 안 함"
+
+#. machine-translated
+msgid "Submit benchmark results?"
+msgstr "벤치마크 결과를 제출할까요?"
+
+#. machine-translated
+msgid "Wait for the current submission to finish."
+msgstr "현재 제출이 끝날 때까지 기다려 주세요."
+
+#. machine-translated
+msgid "Open this build's benchmark results folder"
+msgstr "이 빌드의 벤치마크 결과 폴더 열기"
+
+#. machine-translated
+msgid "1 session"
+msgstr "세션 1개"
+
+#. machine-translated
+msgid "{1} sessions"
+msgstr "세션 {1}개"
+
+#. machine-translated
+msgid "1 session · submitted"
+msgstr "세션 1개 · 제출됨"
+
+#. machine-translated
+msgid "{1} sessions · all submitted"
+msgstr "세션 {1}개 · 모두 제출됨"
+
+#. machine-translated
+msgid "{1} of {2} submitted"
+msgstr "{2}개 중 {1}개 제출됨"
+
+#. machine-translated
+msgid "All tiers"
+msgstr "모든 등급"
+
+#. machine-translated
+msgid "Submitted (#{1})"
+msgstr "제출됨(#{1})"
+
+#. machine-translated
+msgid "Incomplete ({1} of {2} runs)"
+msgstr "미완료({2}회 중 {1}회)"
+
+#. machine-translated
+msgid "Built by {1}, not {2}"
+msgstr "{2}이(가) 아니라 {1}에서 측정됨"
+
+#. machine-translated
+msgid "Not a target build"
+msgstr "대상 빌드 아님"
+
+#. machine-translated
+msgid "Ready to submit"
+msgstr "제출 준비됨"
+
+#. machine-translated
+msgid "Submit results"
+msgstr "결과 제출"
+
+#. machine-translated
+msgid "Submit all ({1})"
+msgstr "모두 제출({1})"
+
+#. machine-translated
+msgid "Submit all again"
+msgstr "모두 다시 제출"
+
+#. machine-translated
+msgid "All {1} sessions submitted."
+msgstr "세션 {1}개가 모두 제출되었습니다."
+
+#. machine-translated
+msgid "1 session ready to submit ({1} incomplete skipped)."
+msgstr "제출 가능한 세션 1개(미완료 {1}개 제외)."
+
+#. machine-translated
+msgid "{1} sessions ready to submit ({2} incomplete skipped)."
+msgstr "제출 가능한 세션 {1}개(미완료 {2}개 제외)."
+
+#. machine-translated
+msgid "{1} of {2} sessions not yet submitted."
+msgstr "{2}개 중 {1}개 세션이 아직 제출되지 않았습니다."
+
+#. machine-translated
+msgid "1 session ready to submit."
+msgstr "제출 가능한 세션 1개."
+
+#. machine-translated
+msgid "{1} sessions ready to submit."
+msgstr "제출 가능한 세션 {1}개."
+
+#. machine-translated
+msgid "Submitting {1} of {2}..."
+msgstr "{2}개 중 {1}번째 제출 중..."
+
+#. machine-translated
+msgid "Submitted 1 session."
+msgstr "세션 1개를 제출했습니다."
+
+#. machine-translated
+msgid "Submitted {1} sessions."
+msgstr "세션 {1}개를 제출했습니다."
+
+#. machine-translated
+msgid "Submission failed."
+msgstr "제출에 실패했습니다."
+
+#. machine-translated
+msgid "Submitted {1} of {2} sessions; {3} failed: {4}"
+msgstr "{2}개 중 {1}개 제출, {3}개 실패: {4}"
+
+#. machine-translated
+msgid "Bases"
+msgstr "기지"
+
+#. machine-translated
+msgid "Shark fly-by"
+msgstr "Shark 비행"
+
+#. machine-translated
+msgid "The play bench on a save"
+msgstr "저장 파일에서 하는 플레이 벤치"
+
+#. machine-translated
+msgid "A new game, flying round Shark"
+msgstr "새 게임에서 Shark 주위를 비행"
+
+#. machine-translated
+msgid "Tier"
+msgstr "등급"
+
+#. machine-translated
+msgid "Run {1} · Whole run"
+msgstr "실행 {1} · 전체 실행"
+
+#. machine-translated
+msgid "Run {1}"
+msgstr "실행 {1}"
+
+#. machine-translated
+msgid "FPS"
+msgstr "FPS"
+
+#. machine-translated
+msgid "99% ms"
+msgstr "99% ms"
+
+#. machine-translated
+msgid "Over 33 ms"
+msgstr "33ms 초과"
+
+#. machine-translated
+msgid "Status"
+msgstr "상태"
+
+#. machine-translated
+msgid "Click to view groups for {1}"
+msgstr "클릭하여 {1}의 그룹 보기"
+
+#. machine-translated
+msgid "Hardware must be probed before submitting."
+msgstr "제출하기 전에 하드웨어를 감지해야 합니다."
+
+#. machine-translated
+msgid "Generated when hardware is probed."
+msgstr "하드웨어가 감지될 때 생성됩니다."
+
+#. machine-translated
+msgid "Generated for this computer so the site keeps your results together."
+msgstr "사이트에서 결과를 함께 묶어 두도록 이 컴퓨터용으로 생성됩니다."
+
+#. machine-translated
+msgid "Benchmark settings"
+msgstr "벤치마크 설정"
+
+#. machine-translated
+msgid "Benchmarks always use fixed settings so results stay comparable:"
+msgstr "결과를 비교할 수 있도록 벤치마크는 항상 고정 설정으로 실행됩니다:"
+
+#. machine-translated
+msgid "• Windowed 1920×1080, Vulkan, VSync & frame limit off, HDR off"
+msgstr "• 창 모드 1920×1080, Vulkan, VSync 및 프레임 제한 끔, HDR 끔"
+
+#. machine-translated
+msgid "• Chosen quality tier (Meitou look), TAA at 100% scale (Low: no AA at 83%), no upscaler"
+msgstr "• 선택한 품질 등급(Meitou 스타일), TAA 100% 스케일(낮음: 83% AA 없음), 업스케일러 없음"
+
+#. machine-translated
+msgid "• Ray tracing only on Ultra and Extreme"
+msgstr "• 울트라 및 익스트림에서만 레이 트레이싱 사용"
+
+#. machine-translated
+msgid "• Your saved graphics settings and mods are ignored and never modified"
+msgstr "• 저장된 그래픽 설정과 모드는 무시되며 수정되지 않습니다"
+
+msgid "Settings window opacity"
+msgstr "설정 창 불투명도"
+
+msgid "How opaque the in-game settings window is (lower to see the world behind it while adjusting settings)."
+msgstr "게임 내 설정 창의 불투명도입니다(낮추면 설정을 조정하면서 뒤쪽 월드를 볼 수 있습니다)."
+
+msgid "No mod matches the filter."
+msgstr "필터와 일치하는 모드가 없습니다."
+
+msgid "Issues"
+msgstr "문제"
+
+msgid "Name A-Z"
+msgstr "이름순 A-Z"
+
+msgid "Filter mods"
+msgstr "모드 필터"
+
+msgid "Show"
+msgstr "표시"
+
+msgid "Opacity"
+msgstr "불투명도"
+
+msgid "Restore"
+msgstr "복원"
+
+msgid "{1} of {2}"
+msgstr "{1} / {2}"
+
+msgid "{1} mod"
+msgid_plural "{1} mods"
+msgstr[0] "모드 {1}개"
+
+#. machine-translated
+msgid "Monitor"
+msgstr "모니터"
+
+#. machine-translated
+msgid "Monitor {1}: {2}"
+msgstr "모니터 {1}: {2}"
+
+#. machine-translated
+msgid "The monitor the game starts and goes full screen on. Automatic: the one its window is on (on Wayland, the first monitor)."
+msgstr "게임이 시작되고 전체 화면이 되는 모니터입니다. 자동: 창이 있는 모니터(Wayland에서는 첫 번째 모니터)."
+msgid "Put priority:"
+msgstr "넣기 우선순위:"
+
+#. machine-translated
+msgid "Take priority:"
+msgstr "꺼내기 우선순위:"
+
+#. machine-translated
+msgid "Haulers and workers put things into the storage of the highest put priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower."
+msgstr "운반꾼과 일꾼은 넣기 우선순위가 가장 높은 저장고에 먼저 물건을 넣고, 같으면 가장 가까운 곳에 넣습니다. 금지: 사용 안 함. 클릭하면 올리고, 오른쪽 클릭이나 Shift+클릭하면 내립니다."
+
+#. machine-translated
+msgid "Workers and builders take things from the storage of the highest take priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower."
+msgstr "일꾼과 건설꾼은 꺼내기 우선순위가 가장 높은 저장고에서 먼저 물건을 꺼내고, 같으면 가장 가까운 곳에서 꺼냅니다. 금지: 사용 안 함. 클릭하면 올리고, 오른쪽 클릭이나 Shift+클릭하면 내립니다."
+
+#. machine-translated
+msgid "Forbidden"
+msgstr "금지"
+
+#. machine-translated
+msgid "Deferred"
+msgstr "미룸"
+
+#. machine-translated
+msgid "Preferred"
+msgstr "선호"
+
+#. machine-translated
+msgid "Important"
+msgstr "중요"
+
+#. machine-translated
+msgid "Rename"
+msgstr "이름 바꾸기"
+
+#. machine-translated
+msgid "Give the building a name of your own, shown on its panel, its inventory and the jobs that use it."
+msgstr "건물에 직접 이름을 붙입니다. 패널, 인벤토리, 그 건물을 쓰는 작업에 표시됩니다."
+
+#. machine-translated
+msgid "Leave it empty for the building's own name."
+msgstr "비워 두면 건물의 원래 이름을 씁니다."
 
 #. machine-translated
 msgid "Select a self-contained client or an installed compatible runtime."

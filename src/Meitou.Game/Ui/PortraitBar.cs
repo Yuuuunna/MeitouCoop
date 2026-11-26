@@ -69,6 +69,24 @@ sealed class PortraitBar(PlayerInterface player)
     internal float SquadBarScroll;
 
     /// <summary>
+    /// The members the squad bar's cells last showed, in cell order (<see cref="MemberOfCell"/>).
+    /// </summary>
+    IReadOnlyList<CharacterSnapshot> _cellMembers = [];
+
+    /// <summary>
+    /// The member whose portrait picture <paramref name="c"/> is (<c>portrait-N</c>, the code mods' <see cref="UiScreens.Portraits"/> anchor); null
+    /// for any other control.
+    /// </summary>
+    internal CharacterSnapshot? MemberOfCell(UiControl c)
+    {
+        const string prefix = "portrait-";
+        if (!c.Name.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        if (!int.TryParse(c.Name.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int i)) return null;
+
+        return (uint)i < (uint)_cellMembers.Count ? _cellMembers[i] : null;
+    }
+
+    /// <summary>
     /// When each member's flash started (<see cref="Stopwatch"/> ticks); a member leaves when its flash stops.
     /// </summary>
     internal readonly Dictionary<CharacterId, long> PortraitFlashes = [];
@@ -111,24 +129,26 @@ sealed class PortraitBar(PlayerInterface player)
     }
 
     /// <summary>
-    /// The characters the squad bar shows, the active squad's in order: the first atlas cells (<see cref="PortraitMembers"/>).
+    /// The characters the squad bar shows, the active squad's in order; the first <see cref="DialogueNpcCell"/> take the first atlas cells
+    /// (<see cref="PortraitMembers"/>).
     /// </summary>
     public IReadOnlyList<CharacterSnapshot> SquadBarMembers()
     {
         var byId = player.Session.CurrentSnapshot.Characters.Where(c => c.IsPlayer).ToDictionary(c => c.Id);
-        return [.. player.ActiveSquadMembers().Select(byId.GetValueOrDefault).OfType<CharacterSnapshot>().Take(DialogueNpcCell)];
+        return [.. player.ActiveSquadMembers().Select(byId.GetValueOrDefault).OfType<CharacterSnapshot>()];
     }
 
     /// <summary>
     /// The characters whose portraits the host draws, each into the atlas cell of its index: the squad bar's first, then, while the squads screen or
     /// the debug menu's Edit characters window is open, the other squads' members in order. As many as there are cells before the conversation's (30,
-    /// CONSTANTS <c>max faction size</c>); a modded faction past that shows nameless cells.
+    /// CONSTANTS <c>max faction size</c>); members past that still show their name and frame, without a portrait picture.
     /// </summary>
     public IReadOnlyList<CharacterSnapshot> PortraitMembers()
     {
         var bar = SquadBarMembers();
         // the others are drawn (and posed out of range) only while the squads screen or the Edit characters window shows them
-        if (!player.SquadWindows.SquadsShown && !player.CharactersWindow.Shown) return bar;
+        if (!player.SquadWindows.SquadsShown && !player.CharactersWindow.Shown)
+            return bar.Count <= DialogueNpcCell ? bar : [.. bar.Take(DialogueNpcCell)];
 
         var byId = player.Session.CurrentSnapshot.Characters.Where(c => c.IsPlayer).ToDictionary(c => c.Id);
         var shown = bar.Select(c => c.Id).ToHashSet();
@@ -202,6 +222,7 @@ sealed class PortraitBar(PlayerInterface player)
     /// </summary>
     internal void AddSquadPortraits(List<UiControl> controls, UiRect panel)
     {
+        _cellMembers = [];
         var members = SquadBarMembers();
         if (members.Count == 0) return;
 
@@ -257,6 +278,7 @@ sealed class PortraitBar(PlayerInterface player)
     /// </summary>
     void AddSquadCells(List<UiControl> controls, IReadOnlyList<CharacterSnapshot> members, UiRect page, float size, int columns)
     {
+        _cellMembers = members;
         float k = size / PortraitLayoutSize;
         var camera = player.Session.Camera.Current;
         for (int i = 0; i < members.Count; i++)
@@ -276,19 +298,22 @@ sealed class PortraitBar(PlayerInterface player)
             if (BackOverlayName(state) is { Length: > 0 } back)
                 controls.Add(PortraitImage($"portrait-back-overlay-{i}", At(6, 5, 124, 124), "BackOverlay", back) with { Clip = page });
 
-            var portrait = new Dictionary<string, string>
+            if (i < DialogueNpcCell)
             {
-                ["ImageTexture"] = PortraitTexture,
-                ["ImageFlipV"] = "true",
-                ["ImageRect"] = PortraitRect(i),
-            };
-            if ((state & PortraitState.Faded) != 0) portrait["Alpha"] = "0.25";
-            controls.Add(new($"portrait-{i}", "ImageBox", At(6, 6, 124, 123), "", "", "", true, portrait, Vector4.Zero, Clip: page));
+                var portrait = new Dictionary<string, string>
+                {
+                    ["ImageTexture"] = PortraitTexture,
+                    ["ImageFlipV"] = "true",
+                    ["ImageRect"] = PortraitRect(i),
+                };
+                if ((state & PortraitState.Faded) != 0) portrait["Alpha"] = "0.25";
+                controls.Add(new($"portrait-{i}", "ImageBox", At(6, 6, 124, 123), "", "", "", true, portrait, Vector4.Zero, Clip: page));
+            }
             if (FrontOverlayName(state) is { Length: > 0 } front)
                 controls.Add(PortraitImage($"portrait-front-overlay-{i}", At(6, 6, 124, 123), "FrontOverlay", front) with { Clip = page });
 
             var nameProperties = new Dictionary<string, string> { ["TextAlign"] = "HCenter Bottom", ["TextColour"] = "1 1 1", ["TextShadow"] = "true" };
-            controls.Add(new($"portrait-name-{i}", "TextBox", At(4, 4, 128, 126), m.Name, "", "Kenshi_TextboxStandardText", true,
+            controls.Add(new($"portrait-name-{i}", "TextBox", At(4, 4, 128, 126), player.ShownName(m), "", "Kenshi_TextboxStandardText", true,
                 nameProperties, Vector4.Zero, Pickable: false, Clip: page));
             var frameProperties = new Dictionary<string, string> { ["Checked"] = m.Selected ? "true" : "false" };
             controls.Add(new($"member-{i}", "Button", At(0, 0, 136, 136), "", "meitou:member", "Kenshi_PortraitFrameSkin", true,

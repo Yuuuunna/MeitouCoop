@@ -51,7 +51,7 @@ public sealed partial class ProductionSystem
     readonly SmithViewCache _smiths;
 
     /// <summary>
-    /// Crafts some research unlocks; anything no research lists is craftable from the start (engine reading).
+    /// The crafts some research can unlock; a record no research enables is never offered (<see cref="EverOffered"/>).
     /// </summary>
     HashSet<(CraftKind, string)> EverEnabled()
     {
@@ -71,13 +71,12 @@ public sealed partial class ProductionSystem
     bool Researched(World world, string id, int faction) => ResearchFor(world, faction).UnlockedCrafts.Contains((CraftKind.Weapon, id));
 
     /// <summary>
-    /// Whether some research could enable the weapon option: its type and model are each in a research's enable lists. The original's bench never
-    /// lists one that cannot be (<see cref="CanCraft"/>), so the Craft tab leaves it out.
+    /// Whether some research could enable the option: its record (a weapon's type and model each) is in a research's enable lists. The original's
+    /// bench never lists one that cannot be (<see cref="CanCraft"/>), so the Craft tab leaves it out.
     /// </summary>
     bool EverOffered(CraftOption option) =>
-        option.Kind != CraftKind.Weapon
-            || (EverEnabled().Contains((CraftKind.Weapon, option.Item))
-                && (option.Model is null || EverEnabled().Contains((CraftKind.Weapon, option.Model))));
+        EverEnabled().Contains((option.Kind, option.Item))
+            && (option.Model is null || EverEnabled().Contains((CraftKind.Weapon, option.Model)));
 
     /// <summary>
     /// The recipe of a bench option on the machine.
@@ -296,6 +295,7 @@ public sealed partial class ProductionSystem
         state.Queue.RemoveAt(0);
         if (made is not null)
         {
+            ItemCreatedObservers.Report(world, ItemCreatedKind.Crafted, made, m.Smith);
             made.Section = "out";
             if (state.Done.FirstOrDefault(d => d.Record == made.Record && d.Quality == made.Quality && d.MaterialId == made.MaterialId
                 && d.Quantity < d.StackLimit) is { } stack)
@@ -348,8 +348,47 @@ public sealed partial class ProductionSystem
     CraftOptionView OptionView(World world, Machine m, CraftBench bench, CraftOption option)
     {
         var recipe = RecipeOf(m, option);
-        var inputs = recipe.Inputs.Select(i => (_items.Info(i.Item)?.Name ?? i.Item, i.PerItem)).ToArray();
-        return new CraftOptionView(option.Key, recipe.Name, option.Kind, option.Level, recipe.Hours, inputs, CanCraft(world, bench, option, Site(world, m.Site)?.Owner ?? -1));
+        var inputs = recipe.Inputs.Select(i => (ShownItemName(i.Item), i.PerItem)).ToArray();
+        bool can = CanCraft(world, bench, option, Site(world, m.Site)?.Owner ?? -1);
+        var view = new CraftOptionView(option.Key, recipe.ShownName(_db), option.Kind, option.Level, recipe.Hours, inputs, can)
+        {
+            Product = Product(option) is { } made ? InventoryItemView.Of(0, made) : null,
+        };
+
+        return option.Kind switch
+        {
+            CraftKind.Armour => ArmourCosts(view, option),
+            CraftKind.Weapon => view with { MaterialCost = _items.Db.Find(option.Item)?.GetInt("material cost", 4) ?? 4 },
+            _ => view,
+        };
+    }
+
+    /// <summary>
+    /// The item a hovered ITEMS row describes (<b>Verified</b>, <c>FUN_1402b79b0</c>): the item factory's item of the option's record, armour at the
+    /// quality <c>FUN_14082e6b0</c> gives level 40 with no critical, the other kinds at 0, a weapon of the option's model from the player's
+    /// manufacturer.
+    /// </summary>
+    ItemInstance? Product(CraftOption option)
+    {
+        float quality = option.Kind == CraftKind.Armour ? CraftBench.ArmourQuality(40, false) : 0;
+        var made = _items.Create(option.Item, 1, quality);
+        if (made is null || option.Kind != CraftKind.Weapon) return made;
+
+        made.Level = option.Level;
+        made.MaterialId = option.Model ?? "";
+        made.CompanyId = CraftBench.PlayerWeapons;
+        return made;
+    }
+
+    /// <summary>
+    /// An armour row's costs (<b>Verified</b>, <c>FUN_1402b79b0</c> and <c>FUN_1402b7800</c>): <c>total coverage</c> x 0.01, and that x the
+    /// record's <c>fabrics amount</c>.
+    /// </summary>
+    CraftOptionView ArmourCosts(CraftOptionView view, CraftOption option)
+    {
+        var record = _items.Db.Find(option.Item);
+        float materials = CraftBench.TotalCoverage(record) * 0.01f;
+        return view with { MaterialCost = materials, FabricsCost = materials * (record?.GetFloat("fabrics amount", 0.2f) ?? 0.2f) };
     }
 
     /// <summary>
@@ -392,7 +431,7 @@ public sealed partial class ProductionSystem
         world.Machines.Touch();
     }
 
-    bool Unlocked(World world, CraftKind kind, string id, int faction) => ResearchFor(world, faction).UnlockedCrafts.Contains((kind, id)) || !EverEnabled().Contains((kind, id));
+    bool Unlocked(World world, CraftKind kind, string id, int faction) => ResearchFor(world, faction).UnlockedCrafts.Contains((kind, id));
     public bool CanCraft(World world, CraftBench bench, CraftOption option, int faction) => option.Level <= bench.TechLevel
         && (option.Kind == CraftKind.Weapon
             ? Researched(world, option.Item, faction) && (option.Model is null || Researched(world, option.Model, faction))
@@ -430,7 +469,7 @@ public sealed partial class ProductionSystem
 
         ResearchFor(world, faction).Complete(_db, id);
         _publishedResearch = null;
-        world.Post(recipient ?? PlayerId.Local, Loc.Tr("Research complete: {1}", data.Name));
+        world.Post(recipient ?? PlayerId.Local, Loc.Tr("Research complete: {1}", ShownText.Record(data.Id, data.Name)));
         return true;
     }
 
@@ -495,13 +534,13 @@ public sealed partial class ProductionSystem
         int level = r.LevelAt(ResearchFor(world, faction).Times(id));
         if (level > ResearchFor(world, faction).BenchLevel)
         {
-            world.Post(recipient ?? PlayerId.Local, ResearchFor(world, faction).BenchLevel == 0 ? "Research needs a research bench." : $"{r.Name} needs a level {level} research bench.");
+            world.Post(recipient ?? PlayerId.Local, ResearchFor(world, faction).BenchLevel == 0 ? "Research needs a research bench." : $"{ShownText.Record(r.Id, r.Name)} needs a level {level} research bench.");
             return;
         }
 
         if (!Affordable(world, r, faction, recipient))
         {
-            world.Post(recipient ?? PlayerId.Local, $"Not enough materials in the research benches for {r.Name}.");
+            world.Post(recipient ?? PlayerId.Local, $"Not enough materials in the research benches for {ShownText.Record(r.Id, r.Name)}.");
             return;
         }
 
@@ -527,29 +566,40 @@ public sealed partial class ProductionSystem
         world.Machines.Touch();
     }
 
+    /// <summary>Validates a faction research queue command without binding it to per-tick progress.</summary>
+    static FactionState? CommandResearch(World world, ResearchQueueCommand command)
+    {
+        if (world.CommandFaction(command, FactionPermission.ManageAssets) is not { } faction) return null;
+        return command.Issuer is null && command.QueueRevision == 0
+            || command.QueueRevision != 0 && command.QueueRevision == faction.Research.QueueRevision ? faction : null;
+    }
+
     public ResearchSnapshot ResearchView(World world, int faction) => ResearchView(world, faction, PlayerId.Local);
     public ResearchSnapshot ResearchView(World world, int faction, PlayerId viewer)
     {
         var zone = FocusZone(viewer);
         var state = ResearchFor(world, faction);
-        if (_publishedResearch is not null && _publishedResearchFaction == faction && _researchViewer == viewer && _researchVersion == state.Version && _machinesVersion == (world.Machines.Version, world.Machines.Worked) && _researchZone == zone)
-            return _publishedResearch;
+        bool currentScope = _publishedResearch is not null && _publishedResearchFaction == faction && _researchViewer == viewer
+            && _publishedResearch.QueueRevision == state.QueueRevision && _shownRevision == ShownText.Revision;
+        if (currentScope && _researchVersion == state.Version && _machinesVersion == (world.Machines.Version, world.Machines.Worked)
+            && _researchZone == zone) return _publishedResearch!;
         var lists = (state.Completed.Count, state.Queue.Count, state.Paid.Count, state.BenchLevel);
-        if (_publishedResearch is not null && _publishedResearchFaction == faction && _researchViewer == viewer && _researchLists == lists && (ulong)(world.Tick - _researchBuilt) < ResearchRefreshTicks)
-            return _publishedResearch;
+        if (currentScope && _researchLists == lists && (ulong)(world.Tick - _researchBuilt) < ResearchRefreshTicks)
+            return _publishedResearch!;
         _researchLists = lists;
         _researchBuilt = world.Tick;
         _researchZone = zone;
         _researchViewer = viewer;
         _publishedResearchFaction = faction;
-        _researchVersion = ResearchFor(world, faction).Version;
+        _researchVersion = state.Version;
         _machinesVersion = (world.Machines.Version, world.Machines.Worked);
+        _shownRevision = ShownText.Revision;
         _allResearch ??= ResearchData.LoadAll(_db);
-        var queue = state.Queue.Select(q => (q.Id, Research(q.Id)?.Name ?? q.Id, Research(q.Id)is { } d ? Math.Clamp(q.Seconds / (d.Hours(_constants, Settings.ResearchOption, state.Times(q.Id)) * (MachineData.DaySeconds / 24)), 0, 1) : 0)).ToArray();
-        var available = _allResearch.Where(r => Available(world, r, faction)).Select(r => new ResearchOption(r.Id, r.Name, r.Category, r.LevelAt(state.Times(r.Id)), r.Hours(_constants, Settings.ResearchOption, state.Times(r.Id)), Affordable(world, r, faction, viewer), r.LevelAt(state.Times(r.Id)) > state.BenchLevel, state.Partial.TryGetValue(r.Id, out float s) ? Math.Clamp(s / (r.Hours(_constants, Settings.ResearchOption, state.Times(r.Id)) * (MachineData.DaySeconds / 24)), 0, 1) : 0) { Description = r.Description, Paid = state.Paid.Contains(r.Id, StringComparer.Ordinal), Cost = state.Paid.Contains(r.Id, StringComparer.Ordinal) ? [] : [..r.CostAt(state.Times(r.Id)).Select(c => (_items.Info(c.Item)?.Name ?? c.Item, c.Count, CountInBenches(world, c.Item, faction, viewer) >= c.Count))], // The description lists the RESEARCH requirements only (FUN_140495e00 looks them up as type 21).
-        Requirements = [..r.Requirements.Select(_db.Find).Where(q => q is { Type: FcsRecordType.Research }).Select(q => (q!.Name, state.IsDone(q.StringId), state.IsQueued(q.StringId)))], Unlocks = [..r.Unlocks.Select(u => (u.Field, _db.Find(u.Id)?.Name)).Where(u => u.Name is not null).Select(u => (u.Field, u.Name!))], }).ToArray();
+        var queue = state.Queue.Select(q => QueueEntry(state, q.Id, q.Seconds)).ToArray();
+        var available = _allResearch.Where(r => Available(world, r, faction)).Select(r => ResearchOptionOf(world, state, r, faction, viewer)).ToArray();
         return _publishedResearch = new ResearchSnapshot(state.TechLevel, state.BenchLevel, queue, state.Rate, available)
         {
+            QueueRevision = state.QueueRevision,
             Finished = state.Completed.Count,
             Known = state.Completed.ToHashSet(StringComparer.Ordinal),
             RequirementsMet = _allResearch.Where(r => Met(world, r, faction)).Select(r => r.Id).ToHashSet(StringComparer.Ordinal),
@@ -557,17 +607,19 @@ public sealed partial class ProductionSystem
     }
 
     // ------------------------------------------------------------------ items in and out
-    bool Near(World world, CharacterId who, BuildSite site, out CharacterCold cold, PlayerId? actor = null)
+    bool Near(World world, CharacterId who, BuildSite site, bool fromSite, out CharacterCold cold, PlayerId? actor = null)
     {
         cold = null!;
         var table = world.Characters;
-        if (!table.TryResolveNext(who, out int slot) || table.Cold(slot)is not { IsPlayer: true } c || c.Inventory is null)
-            return false;
-        if (actor is not null && (c.Medical?.Incapacitated != false || c.IsImprisoned || !c.CarriedBy.IsNone))
-            return false;
+        if (!table.TryResolveNext(who, out int slot) || table.Cold(slot) is not { IsPlayer: true } c || c.Inventory is null) return false;
+        if (actor is not null && (c.Medical?.Incapacitated != false || c.IsImprisoned || !c.CarriedBy.IsNone)) return false;
         cold = c;
-        if (GapTo(site, table.Next[slot].Position) <= Settings.TransferReach)
-            return true;
+        var at = table.Next[slot].Position;
+        float centre = Vector2.Distance(new Vector2(at.X, at.Z), new Vector2(site.Position.X, site.Position.Z));
+        bool flagged = site.Owner != c.Faction || c.InSomething == Locks.HeldState.Imprisoned
+            || ItemMoveReach.Restricts(_towns, world, fromSite ? site.Position : at, c.Faction);
+        bool near = flagged ? GapTo(site, at) <= Settings.TransferReach || centre <= ContainerAccess.TradingRange : centre <= ItemMoveReach.Range;
+        if (near) return true;
         world.Post(actor ?? PlayerId.Local, "Out of trading range.");
         return false;
     }
@@ -687,11 +739,11 @@ public sealed partial class ProductionSystem
                 || access.Player != command.Issuer || access.Id != command.ContainerSessionId || access.Fixture != container
                 || !access.Valid(world) || !access.InRange(world) || command.ControlRevision == 0)) return;
             if (command.ControlRevision != 0 && world.InventoryRevision(storage) != command.ControlRevision) return;
-            if (InventoryCommands.Arrange(storage)) world.Machines.Touch();
+            if (InventoryCommands.Arrange(world, storage, ItemOwner.AtSite(command.Site), InventoryArrangeReason.Button)) world.Machines.Touch();
             return;
         }
         if (MayControlMachine(world, command, command.Site) && world.Machines.Find(command.Site) is { Storage: { } grid, Closed: false }
-            && InventoryCommands.Arrange(grid)) world.Machines.Touch();
+            && InventoryCommands.Arrange(world, grid, ItemOwner.AtSite(command.Site), InventoryArrangeReason.Button)) world.Machines.Touch();
     }
 
     void BindDisposal(World world, Errand errand, BuildSite site, Machine machine)
@@ -943,7 +995,7 @@ public sealed partial class ProductionSystem
         var found = new ProspectLine[ProspectResources.Length];
         for (int k = 0; k < found.Length; k++)
             found[k] = new(ProspectResources[k].Name, _resources.Yield(ProspectResources[k].Resource, at));
-        recipient.Prospected = new ProspectReport(checked((recipient.Prospected?.Serial ?? 0) + 1), at, prospector.Name, (int)skill, _resources.ZoneName(at.X, at.Z) ?? "", (int)at.Y, (int)((skill * 0.01f * 6000 + 2000) * 0.2f), environment, found, SampleProspectMap(world, at, skill * 0.01f), world.Weather?.At(at.X, at.Z)?.WindSpeed ?? 0);
+        recipient.Prospected = new ProspectReport(checked((recipient.Prospected?.Serial ?? 0) + 1), at, world.ShownName(prospector), (int)skill, _resources.ZoneName(at.X, at.Z) ?? "", (int)at.Y, (int)((skill * 0.01f * 6000 + 2000) * 0.2f), environment, found, SampleProspectMap(world, at, skill * 0.01f), world.Weather?.At(at.X, at.Z)?.WindSpeed ?? 0);
     }
 
     /// <summary>Lazily creates the machine of a registered town placement with its resolved owner.</summary>

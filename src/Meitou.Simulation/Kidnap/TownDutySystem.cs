@@ -384,7 +384,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     {
         var town = AiSystem.TownAt(data, world, at);
         if (town.IsNone || cold.Inventory is not { } inv) return null;
-        return StoreFor(world, squad, cold, at, town, [.. Production.ProductionSystem.Ditchable(inv)], register);
+        return StoreFor(world, squad, cold, at, town, [.. Production.ProductionSystem.Ditchable(world, cold, inv)], register);
     }
 
     /// <summary>
@@ -396,7 +396,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         var town = AiSystem.TownAt(data, world, at);
         if (town.IsNone || cold.Inventory is not { } inv) return null;
 
-        return StoreFor(world, squad, cold, at, town, [.. Production.ProductionSystem.Ditchable(inv).Where(i => i.Record == record)], register: false);
+        var ditchable = Production.ProductionSystem.Ditchable(world, cold, inv).Where(i => i.Record == record);
+        return StoreFor(world, squad, cold, at, town, [.. ditchable], register: false);
     }
 
     /// <summary>
@@ -1117,7 +1118,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     /// house), or a container that is not locked inside the town. Its id and where the member walks. With <paramref name="owner"/> (a player-faction
     /// character's 243) only stores of that faction; for an <paramref name="animal"/> raw food counts too and a store inside another building is
     /// skipped (the finder's animal tests). A store the storage filters refuse <paramref name="asker"/> is skipped
-    /// (<see cref="Items.IStorageFilter"/>).
+    /// (<see cref="Items.IStorageFilter"/>); of the rest, the one of the highest take priority wins (<see cref="Items.IStoragePriority"/>, engine
+    /// API), the nearest among equals.
     /// </summary>
     (string Id, Vector2 Spot)? Store(World world, Vector3 at, CampaignTown town, int looter = -1, int owner = -1, bool animal = false,
             RaceData? race = null, CharacterCold? asker = null)
@@ -1125,6 +1127,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         var here = Flat(at);
         (string, Vector2)? best = null;
         float bestD = float.MaxValue;
+        var bestRank = StoragePriority.Forbidden;
         // A player-faction character's 243 also takes the player's storages in a placed town, standing in a house the player owns there (#762).
         if (town.PlayerTown > 0 || town.IsNone || owner >= 0)
         {
@@ -1139,7 +1142,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
                     continue;
 
                 float d = Vector2.DistanceSquared(here, Flat(site.Position));
-                if (d < bestD && Allowed(world, asker, m.Site)) (best, bestD) = ((m.Site, Flat(site.Position)), d);
+                if (Outranks(FoodRank(world, asker, m.Site, d, bestD, bestRank), d, bestD, bestRank) is { } rank)
+                    (best, bestD, bestRank) = ((m.Site, Flat(site.Position)), d, rank);
             }
         }
 
@@ -1153,18 +1157,31 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
                 continue;
 
             float d = Vector2.DistanceSquared(here, Flat(f.Position));
-            if (d < bestD && Allowed(world, asker, f.Id)) (best, bestD) = ((f.Id, Flat(f.Position)), d);
+            if (Outranks(FoodRank(world, asker, f.Id, d, bestD, bestRank), d, bestD, bestRank) is { } rank)
+                (best, bestD, bestRank) = ((f.Id, Flat(f.Position)), d, rank);
         }
 
         return best;
     }
 
     /// <summary>
-    /// Whether the storage filters let <paramref name="asker"/> take food from the store <paramref name="id"/> (<see cref="Items.IStorageFilter"/>);
-    /// true with no asker.
+    /// How much <paramref name="asker"/> prefers taking food from the store <paramref name="id"/> at squared distance <paramref name="d"/>
+    /// (<see cref="World.StorageRank(CharacterCold, string, StorageUse, string?)"/>: Forbidden when a storage filter refuses it); Normal with no
+    /// asker. Forbidden, unasked, for a store no nearer than the best while no farther one can outrank it.
     /// </summary>
-    static bool Allowed(World world, CharacterCold? asker, string id) =>
-        asker is null || world.StorageAllows(asker, id, Items.StorageUse.Take, null);
+    static StoragePriority FoodRank(World world, CharacterCold? asker, string id, float d, float bestD, StoragePriority bestRank)
+    {
+        if (d >= bestD && !world.StorageMayOutrank(bestRank)) return StoragePriority.Forbidden;
+
+        return asker is null ? StoragePriority.Normal : world.StorageRank(asker, id, StorageUse.Take, null);
+    }
+
+    /// <summary>
+    /// A store's rank when it beats the best so far (a higher priority, or the same and nearer: a tie keeps the first); null when it is forbidden
+    /// or does not.
+    /// </summary>
+    static StoragePriority? Outranks(StoragePriority rank, float d, float bestD, StoragePriority bestRank) =>
+        rank != StoragePriority.Forbidden && (rank > bestRank || rank == bestRank && d < bestD) ? rank : null;
 
     /// <summary>
     /// Whether a store belongs to the food finder's search (<c>FUN_1408cb650</c> over <c>FUN_1409fc540</c>, <b>Verified</b>): in the given town, or,
@@ -1268,16 +1285,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     {
         if (!Accepts(f, item)) return false;
 
-        var box = f.Contents!;
-        int room = box.LimitOf(item);
-        foreach (var other in box.Items)
-        {
-            if (other.Record == item.Record && other.Quality == item.Quality && other.Mark == item.Mark && other.Section == "main"
-                    && other.Quantity < room)
-                return true;
-        }
-
-        return box.FindCell("main", item.Width, item.Height, out _, out _);
+        // The stacking rule the put follows (Inventory.SameStack), so a container chosen for a stack always takes some of it.
+        return f.Contents!.HasRoomIn("main", item);
     }
 
     /// <summary>
@@ -1305,9 +1314,10 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (register && search.Site >= 0) world.Fixtures.RegisterSite(world, data, search.Site);
         int townOwner = search.Owner(world, data);
         bool Usable(int owner) => listed || owner == cold.Faction || townOwner < 0 || owner == townOwner;
-        string? record = world.StorageFilters.Active ? Items.StorageFilters.OneRecord(loot) : null;
+        string? record = world.StorageFilters.Active || world.StoragePriorities.Active ? Items.StorageFilters.OneRecord(loot) : null;
         (string, Vector2)? best = null;
         float bestD = float.MaxValue;
+        var bestRank = StoragePriority.Forbidden;
         if (search.PlayerTown > 0)
         {
             foreach (var m in world.Machines.All)
@@ -1317,9 +1327,11 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
                     continue;
 
                 float d = Vector3.DistanceSquared(at, site.Position);
-                if (d <= Production.ProductionSystem.JobRangeSq && d < bestD && loot.Any(i => Production.ProductionSystem.Stores(m, i))
-                        && world.StorageAllows(cold, m.Site, Items.StorageUse.Put, record))
-                    (best, bestD) = ((m.Site, Flat(site.Position)), d);
+                if (d > Production.ProductionSystem.JobRangeSq || d >= bestD && !world.StorageMayOutrank(bestRank)) continue;
+                if (!loot.Any(i => Production.ProductionSystem.Stores(m, i))) continue;
+
+                var rank = world.StorageRank(cold, m.Site, StorageUse.Put, record);
+                if (Outranks(rank, d, bestD, bestRank) is { } better) (best, bestD, bestRank) = ((m.Site, Flat(site.Position)), d, better);
             }
         }
 
@@ -1327,10 +1339,11 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         {
             if (f.Contents is null || !Usable(f.Owner)) continue;
             float d = Vector3.DistanceSquared(at, f.Position);
-            if (d > Production.ProductionSystem.JobRangeSq || d >= bestD || AiSystem.TownAt(data, world, f.Position) != search) continue;
+            if (d > Production.ProductionSystem.JobRangeSq || d >= bestD && !world.StorageMayOutrank(bestRank)) continue;
+            if (AiSystem.TownAt(data, world, f.Position) != search || !loot.Any(i => Takes(f, i))) continue;
 
-            if (loot.Any(i => Takes(f, i)) && world.StorageAllows(cold, f.Id, Items.StorageUse.Put, record))
-                (best, bestD) = ((f.Id, Flat(f.Position)), d);
+            var rank = world.StorageRank(cold, f.Id, StorageUse.Put, record);
+            if (Outranks(rank, d, bestD, bestRank) is { } better) (best, bestD, bestRank) = ((f.Id, Flat(f.Position)), d, better);
         }
 
         return best;
@@ -1540,7 +1553,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     }
 
     /// <summary>
-    /// A fetch's take at its storage, the player's haul take (<see cref="Production.FillDemand.TakeStored"/>, <c>Task_EmptyMachine</c> with flag 0):
+    /// A fetch's take at its storage (<see cref="Production.FillDemand.TakeStored"/>, <c>Task_EmptyMachine</c> with flag 0):
     /// the first record the storage lists that the town wants, up to that count, whatever the machine the plan fills next needs; the units moved.
     /// </summary>
     int TakeAt(World world, TownDuty d, CharacterCold gc, Vector3 at)
@@ -1578,7 +1591,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     /// </summary>
     void StashHere(World world, bool ditch, CharacterCold gc, Inventory inv, Production.Machine? machine, Fixture? box, Inventory store, Vector3 at)
     {
-        var carried = ditch ? Production.ProductionSystem.Ditchable(inv) : LootOf(world, gc);
+        var carried = ditch ? Production.ProductionSystem.Ditchable(world, gc, inv) : LootOf(world, gc);
         foreach (var item in carried.Where(i => machine is not null ? Production.ProductionSystem.Stores(machine, i) : Takes(box!, i)).ToList())
         {
             inv.Remove(item);
@@ -1603,7 +1616,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (cage is null || !FixtureRegistry.IsFree(table, cage)) return End(world, d);
 
         bool walking = gn.Task == (byte)CharacterTask.GoTo;
-        if (FixtureRegistry.AtCage(cage, gn.Position, walking)) return LockUp(world, d, g, b, cage);
+        if (world.Fixtures.AtCage(cage, gn.Position, walking, world.Walkability)) return LockUp(world, d, g, b, cage);
 
         return walking || Lost(world, d, g, TargetKey(d));
     }
@@ -1622,7 +1635,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
         Deeds?.Caged(world, g, b);
         Arrests?.Claim(world, g, d.Body, cage);
-        if (table.Cold(b) is { IsPlayer: true } body) world.PostCharacter(body, $"{body.Name} has been locked in a cage by {data.Factions[d.Faction].Name}");
+        if (table.Cold(b) is { IsPlayer: true } body) world.PostCharacter(body, $"{world.ShownName(body)} has been locked in a cage by {World.ShownName(data.Factions[d.Faction])}");
         return End(world, d);
     }
 
@@ -1763,7 +1776,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (AtDisposal(world, gn, machine))
         {
             TaskStart.Stand(table, g);
-            string label = world.SystemOf<Production.ProductionSystem>()?.Data(machine.RecordId)?.Label ?? "";
+            string label = world.SystemOf<Production.ProductionSystem>()?.Data(machine.RecordId)?.ShownLabel() ?? "";
             CorpseDisposal.Feed(world, carry, g, machine.Position, label);
             return End(world, d);
         }
@@ -2007,7 +2020,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             return End(world, d);
 
         bool walking = gn.Task == (byte)CharacterTask.GoTo;
-        if (FixtureRegistry.AtCage(cage, gn.Position, walking))
+        if (world.Fixtures.AtCage(cage, gn.Position, walking, world.Walkability))
         {
             TaskStart.Stand(table, g);
             if ((d.Next += world.TickSeconds) <= CarrySystem.ConfiscateSeconds) return true;

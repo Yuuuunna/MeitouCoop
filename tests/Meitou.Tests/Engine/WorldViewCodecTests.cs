@@ -46,7 +46,7 @@ public class WorldViewCodecTests
             Jobs = [PermaJob.Untargeted(TaskType.JobMedic)], Ragdoll = pose,
             ItemGrid = new(10, 10, 0, 0, [new(0, "private-item", "Item", "main", 0, 0, 1, 1, 5, 1, .2f)]) { Revision = 9 },
         };
-        var research = new ResearchSnapshot(2, 3, [("science", "Science", .5f)], 1, []) { Known = new HashSet<string> { "known" } };
+        var research = new ResearchSnapshot(2, 3, [("science", "Science", .5f, 0f)], 1, []) { Known = new HashSet<string> { "known" } };
         return new(Guid.NewGuid(), new(2), 1, 1, 12.5, new(4, [character])
         {
             StateRevision = 7, Research = research, UnlockedBuildings = new HashSet<string> { "building" },
@@ -79,7 +79,7 @@ public class WorldViewCodecTests
         Assert.Same(db.Find("wire-race"), character.Appearance!.Race); Assert.Same(db.Find("wire-clothes"), Assert.Single(character.Appearance.Parts).Record);
         Assert.Equal(125, character.Appearance.Shape!.Sliders["Height"]); Assert.Contains(Limb.LeftArm, character.Appearance.Shape.Missing);
         Assert.Equal(.25f, character.Appearance.PoseWeights["face"]); Assert.Equal(new Vector3(1, 2, 3), character.Appearance.AttachmentPoints["hands"].Position);
-        Assert.Equal(("science", "Science", .5f), Assert.Single(copy.Snapshot.Research.Queue));
+        Assert.Equal(("science", "Science", .5f, 0f), Assert.Single(copy.Snapshot.Research.Queue));
         Assert.Contains("known", copy.Snapshot.Research.Known); Assert.Equal(.5f, copy.Snapshot.Doors[("house", 2)].Open);
     }
 

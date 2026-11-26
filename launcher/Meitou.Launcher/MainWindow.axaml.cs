@@ -19,7 +19,7 @@ using Meitou.Steam;
 namespace Meitou.Launcher;
 
 /// <summary>
-/// The launcher's window: the Home (news), Mods, Versions, Graphics and Settings pages, the footer with Play, and the custom title bar.
+/// The launcher's window: the Home (news), Mods, Versions, Graphics, Benchmark and Settings pages, the footer with Play, and the custom title bar.
 /// </summary>
 public sealed partial class MainWindow : Window
 {
@@ -188,6 +188,7 @@ public sealed partial class MainWindow : Window
         RefreshInstalled();
         _allReleases = _releases.Cached();
         ShowReleases();
+        AttachBenchmark();
         UseKenshi(found);
         if (!config.FoldersConfirmed) ShowSetup();
         WireWindowEvents();
@@ -227,6 +228,8 @@ public sealed partial class MainWindow : Window
         ArgumentsBox.Text = config.LaunchArguments;
         SteamRow.IsVisible = OperatingSystem.IsWindows();
         SteamBox.IsChecked = config.LaunchAsSteamKenshi;
+        AppMenuRow.IsVisible = AppMenuEntry.IsAvailable;
+        ShowAppMenu();
         RendererRow.IsVisible = OperatingSystem.IsMacOS();
         RendererMetalItem.IsVisible = MacSupport.MetalAvailable;
         if (!MacSupport.MetalAvailable && config.Renderer == "metal") config.Renderer = "auto";
@@ -266,6 +269,7 @@ public sealed partial class MainWindow : Window
 
             SaveWindowSize();
             _workshopSync.Stop();
+            BenchmarkPage.Stop();
             if (_graphicsSave?.IsEnabled == true) SaveGame();
         };
 
@@ -458,6 +462,7 @@ public sealed partial class MainWindow : Window
         ShowModDetails();
         ShowModsSummary();
         ShowReleases();
+        BenchmarkPage.LanguageChanged();
 
         // Refilling the box inside its own SelectionChanged throws (Avalonia's selection is still committing), so it waits for the next turn.
         Dispatcher.UIThread.Post(() => PopulateLanguageOptions(_install));
@@ -551,7 +556,7 @@ public sealed partial class MainWindow : Window
         var pages = new (ToggleButton, Control)[]
         {
             (NavCoop, CoopControls), (NavHome, HomePage), (NavMods, ModsPage), (NavVersions, VersionsPage),
-            (NavGraphics, GraphicsPage), (NavSettings, SettingsPage),
+            (NavGraphics, GraphicsPage), (NavBenchmark, BenchmarkPage), (NavSettings, SettingsPage),
         };
         foreach (var (nav, page) in pages)
         {
@@ -560,11 +565,13 @@ public sealed partial class MainWindow : Window
         }
         if (sender == NavGraphics) ShowGraphics();
         if (sender == NavCoop) ShowClient();
+        if (sender == NavBenchmark) BenchmarkPage.Shown();
         Control? selectedPage = sender == NavCoop ? CoopControls
             : sender == NavHome ? HomePage
             : sender == NavMods ? ModsPage
             : sender == NavVersions ? VersionsPage
             : sender == NavGraphics ? GraphicsPage
+            : sender == NavBenchmark ? BenchmarkPage
             : sender == NavSettings ? SettingsPage : null;
         if (selectedPage is not null)
         {
@@ -576,6 +583,26 @@ public sealed partial class MainWindow : Window
             };
             selectedPage.LayoutUpdated += applyAfterLayout;
         }
+    }
+
+    /// <summary>
+    /// Gives the Benchmark page the window's HTTP client, installer, settings, release list, Kenshi folder, the game Play starts (for its tier
+    /// recommendation) and whether that game runs.
+    /// </summary>
+    void AttachBenchmark()
+    {
+        BenchmarkPage.Attach(new Benchmarks.BenchmarkHost(Http, _installer, _config, () => _allReleases, () => _install, BenchmarkDetectGame,
+            () => _gameProcess.Running is { HasExited: false } || _detecting || _serverMods.IsBusy,
+            (title, body, choices) => ChooseAsync(title, body, choices, cancel: null)));
+    }
+
+    /// <summary>
+    /// The game Play starts and its preset detection flag, null when that version cannot detect.
+    /// </summary>
+    (string Exe, string Flag)? BenchmarkDetectGame()
+    {
+        if (PlaySchema().Schema?.Presets?.Detect is not { Length: > 0 } flag || PlayVersion is not { } version) return null;
+        return Releases.FindGame(Releases.VersionDirectory(version)) is { } exe ? (exe, flag) : null;
     }
 
     #endregion
@@ -713,6 +740,38 @@ public sealed partial class MainWindow : Window
     #endregion
 
     #region Settings
+
+    /// <summary>
+    /// Adds the launcher to the app menu, or removes it when it is there.
+    /// </summary>
+    void AppMenu_Click(object? sender, RoutedEventArgs e)
+    {
+        bool adding = !AppMenuEntry.IsAdded;
+        try
+        {
+            if (adding) AppMenuEntry.Add();
+            else AppMenuEntry.Remove();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Status(Tr("Could not change the app menu entry: {1}", ex.Message));
+            return;
+        }
+
+        Status(Tr(adding ? "Meitou Launcher was added to the app menu." : "Meitou Launcher was removed from the app menu."));
+        ShowAppMenu();
+    }
+
+    /// <summary>
+    /// The app menu row's text and button for whether the entry exists.
+    /// </summary>
+    void ShowAppMenu()
+    {
+        bool added = AppMenuEntry.IsAdded;
+        SetText(AppMenuStatus, added ? "Meitou Launcher is in your desktop's app launcher."
+            : "Add Meitou Launcher, with its icon, to your desktop's app launcher.");
+        AppMenuButton.Content = Tr(added ? "Remove" : "Add");
+    }
 
     /// <summary>
     /// Saves the typed launch arguments.
@@ -938,6 +997,7 @@ public sealed partial class MainWindow : Window
             SetupHost.Child = null;
             InstallPathBox.Text = LauncherConfig.InstallDirectory;
             SteamBox.IsChecked = _config.LaunchAsSteamKenshi;
+            ShowAppMenu();
             RefreshInstalled();
             ShowReleases();
             UseKenshi(chosen);
@@ -2087,6 +2147,7 @@ public sealed partial class MainWindow : Window
         var (list, problem) = await _releases.FetchAsync();
         _allReleases = list;
         ShowReleases();
+        if (BenchmarkPage.IsVisible) BenchmarkPage.Shown();
         Status(problem ?? "");
         await ShowLauncherUpdateAsync();   // after: its "Launcher … is available" line must not be cleared
         if (updateLauncher && _config.AutoUpdateLauncher && _updater.IsInstalled && LauncherUpdateButton.IsVisible)
@@ -2521,6 +2582,12 @@ public sealed partial class MainWindow : Window
             Status("Set the Kenshi folder first (Settings).");
             return false;
         }
+        if (BenchmarkPage.Running)
+        {
+            Status("A benchmark is running: cancel it on the Benchmark page first.");
+            return false;
+        }
+
         if (_gameProcess.Running is { HasExited: false } || _detecting || _serverMods.IsBusy)
         {
             Status("Close the running game or wait for hardware detection before starting another client.");

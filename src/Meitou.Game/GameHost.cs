@@ -210,6 +210,10 @@ sealed partial class GameHost(
     /// </summary>
     internal DebugOverlays DebugOverlays = null!;
     /// <summary>
+    /// The outposts' build limit rings in build mode.
+    /// </summary>
+    internal Building.TownRangeRing TownRangeRing = null!;
+    /// <summary>
     /// The dev console.
     /// </summary>
     internal DevConsoleHost DevConsoleHost = null!;
@@ -280,6 +284,7 @@ sealed partial class GameHost(
 
         DebugMenu = new(this);
         DebugOverlays = new(this);
+        TownRangeRing = new(this);
         DevConsoleHost = new(this);
         AgentChannel = new(this);
         AgentPlay = new(this);
@@ -730,6 +735,8 @@ sealed partial class GameHost(
             clock: clock, simulation: settings, systems: systems, walkability: walkability);
 
         LocalSession.World.BenchFacingFix = Config.FixBenchFacing;
+        LocalSession.World.SeatBedFix = Config.FixSeatBeds;
+        LocalSession.World.PickUpTheftFix = Config.FixPickUpTheft;
         LocalSession.World.PrisonPoseFix = Config.FixPrisonPose;
         LocalSession.World.CagedAnimalFix = Config.FixCagedAnimals;
         LocalSession.World.GroundRepair = Config.FixGround;
@@ -764,6 +771,9 @@ sealed partial class GameHost(
                 SquadXp = Config.SquadXp,
                 SquadSkillXp = SkillXp.Rates(Config.SquadSkillXp),
                 OthersXp = Config.OthersXp,
+                MaxFactionSize = Config.MaxFactionSize,
+                MaxSquadSize = Config.MaxSquadSize,
+                MaxSquads = Config.MaxSquads,
             }, Scene.Objects?.Layouts, Console.WriteLine);
         Nav = SimulationContent.Navigation;
         RagdollGeometry = SimulationContent.RagdollGeometry;
@@ -896,6 +906,8 @@ sealed partial class GameHost(
         Player.SpeedUnit = Config.SpeedUnit;
         Player.ShowNames = Config.ShowNames;
         Player.Floaters = Config.Floaters;
+        Player.GreyUnavailableVerbs = Config.GreyUnavailableVerbs;
+        Player.FixLockpickLabel = Config.FixLockpickLabel;
         Player.FeedbackButtonInPlay = Config.FeedbackButton;
         Player.XpLabel = SkillXp.Label(Config, Session.IsRemote ? Session.AuthorityRules : null);
         Player.Frontend.FixLoadButton = Config.FixLoadButton;
@@ -914,6 +926,7 @@ sealed partial class GameHost(
         Gpu.NavmeshOverlay ??= new NavmeshOverlayRenderer(context);
         DebugOverlays.NavOverlayRenderer = Gpu.NavmeshOverlay;
         Gpu.InspectorOverlay ??= new NavmeshOverlayRenderer(context);
+        Gpu.TownRangeOverlay ??= new NavmeshOverlayRenderer(context);
     }
 
     /// <summary>
@@ -935,6 +948,7 @@ sealed partial class GameHost(
         Player.StealthView.HiddenInWorld = Interiors.HiddenIndoors.Contains;
         Player.StealthView.DrawnHead = id => Gpu.Characters?.BonePosition(DrawKey(id), "Bip01 Head");
         Player.Furniture.AboveViewedFloor = Interiors.AboveViewedFloor;
+        Player.Furniture.FloorAboveViewed = Interiors.FloorAboveViewed;
         Player.Furniture.FloorHidden = Interiors.FloorHidden;
 
         // Remote presentation has no navigation owner; door collision still comes from compatible local content.
@@ -1019,7 +1033,7 @@ sealed partial class GameHost(
         if (start is not null)
         {
             PlayerSquad = Population.StartPlayer(LocalSession.World, start);
-            LocalSession.World.TellReady(fromSave: false);
+            LocalSession.World.TellReady(new Simulation.WorldStart(Simulation.WorldStartKind.NewGame));
             var lead = LocalSession.World.Characters.Previous[PlayerSquad.Leader.Slot].Position;
             target = lead;
             Console.WriteLine($"player    {PlayerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
@@ -1078,6 +1092,7 @@ sealed partial class GameHost(
         SendFocus();
         ApplyCamera(Session.Camera.Current);
         if (TitleScreen.TitleVisible) TitleScreen.ApplyTitleCamera();
+        SendView();
     }
 
     /// <summary>
@@ -1130,7 +1145,7 @@ sealed partial class GameHost(
         // The region (BIOME_GROUP) under a point, for the biome banner.
         ui.BiomeBanner.RegionAt = (x, z) => ActiveWeather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
         ui.Build.BuildHost = BuildingSync.MakeBuildServices();
-        ui.SquadWindows.SquadLimits = () => PopData?.Bodies.Constants;
+        ui.SquadWindows.SquadLimits = () => PopData?.Bodies;
         ui.Furniture.Rocks = () => PopData?.ResourceNodes;
 
         ConnectFactions(ui);
@@ -1212,7 +1227,7 @@ sealed partial class GameHost(
     {
         ui.FactionName = faction => Session.DescribeFaction(faction)?.Name is { Length: > 0 } name ? name : null;
         ui.OwnerName = (faction, town) => BuildingSync.OwnerName(faction, town);
-        ui.PlayerFactionName = () => ui.FactionName?.Invoke(Session.ActiveFaction) ?? "";
+        ui.PlayerFactionName = () => ui.ShownFactionName(Session.ActiveFaction) ?? "";
         ui.FactionWindow.FactionNameTaken = name => Session.FactionCatalogue.Any(f => f.Faction != Session.ActiveFaction && f.Name == name);
         ui.FactionWindow.FactionInfo = () => Session.FactionInformation;
         ui.FactionWindow.FactionRelations = () => Session.ActiveFaction < 0 ? [] : Session.FactionCatalogue
@@ -1220,7 +1235,7 @@ sealed partial class GameHost(
                 && !f.NotReal && f.RecordId != "GENERATION_TEMPLATE_FACTION")
             .Select(f => (Faction: f, Standing: Session.StandingTowards(f.Faction)))
             .Where(p => p.Standing is not null)
-            .Select(p => new FactionListRow(p.Faction.Faction, p.Faction.Name, p.Standing!.Relation)).ToArray();
+            .Select(p => new FactionListRow(p.Faction.Faction, ui.ShownFactionName(p.Faction.Faction) ?? p.Faction.Name, p.Standing!.Relation)).ToArray();
     }
 
     /// <summary>
@@ -1234,7 +1249,8 @@ sealed partial class GameHost(
         selection.BuildTarget = record => BuildingDataOf(record)?.Materials.Sum(m => m.Required);
 
         // The upgrade chain of a BUILDING (the panel's [UPGRADE] / [DOWNGRADE]) and its build data (their tooltips' materials).
-        selection.UpgradeOf = record => PopData is { } d ? Simulation.Construction.BuildingUpgrades.UpgradeOf(d.Db, record) : null;
+        selection.UnlockedUpgradeOf = (record, wall, unlocked) =>
+            PopData is { } d ? Simulation.Construction.BuildingUpgrades.UnlockedUpgradeOf(d.Db, record, wall, unlocked.Contains) : null;
         selection.DowngradeOf = record => PopData is { } d ? Simulation.Construction.BuildingUpgrades.DowngradeOf(d.Db, record) : null;
         selection.BuildingData = BuildingDataOf;
         selection.PowerOutput = record => PopData?.Db.Find(record)?.GetInt("power output");
@@ -1264,7 +1280,7 @@ sealed partial class GameHost(
                 return null;
 
             var revealed = Simulation.Items.MapItems.Reveals(d, map, Session.CurrentSnapshot.Towns, LocalSession.World.Seed);
-            return [.. revealed.Select(i => d.Sites[i].Town.Name)];
+            return [.. revealed.Select(i => ShownText.Record(d.Sites[i].Town.Id, d.Sites[i].Town.Name))];
         };
     }
 
@@ -1278,7 +1294,7 @@ sealed partial class GameHost(
         var standing = faction.Faction == Session.ActiveFaction ? MapStanding.Player
             : relation?.Ally == true ? MapStanding.Ally
             : relation?.Relation < -30 ? MapStanding.Enemy : MapStanding.Neutral;
-        return new MapFaction(faction.Name, relation?.Relation ?? 0, standing, faction.NotReal);
+        return new MapFaction(PopData?.ShownFactionName(faction.Faction, faction.Name) ?? faction.Name, relation?.Relation ?? 0, standing, faction.NotReal);
     }
 
     /// <summary>
@@ -1287,15 +1303,23 @@ sealed partial class GameHost(
     void ConnectItems(PlayerInterface ui)
     {
         ui.ArmourOf = record => PopData?.Combat.Armour(record);
-        ui.RecordName = id => PopData?.Db.Find(id)?.Name;
+        ui.RecordName = id => PopData?.Db.Find(id)?.ShownName();
         ui.PopulationOf = () => PopData;
         ui.PricesOf = PriceLookup();
         ui.GroundItemPicks.ArtifactOf = id => PopData?.Db.Find(id)?.GetBool("artifact") == true;
 
-        var specialFoodRaces = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+        // Kept per item with the shown text revision it was made at, since the race names in it are shown text.
+        var specialFoodRaces = new System.Collections.Concurrent.ConcurrentDictionary<string, (int Revision, string Text)>(StringComparer.Ordinal);
         ui.TooltipRuntime.ItemRecordOf = id => PopData?.Db.Find(id);
         ui.TooltipRuntime.SpecialFoodRaces = id =>
-            PopData is { } d ? specialFoodRaces.GetOrAdd(id, item => Data.Gameplay.Bodies.SpecialFood.EatenBy(d.Db, item)) : "";
+        {
+            if (PopData is not { } d) return "";
+            int revision = ShownText.Revision;
+            if (specialFoodRaces.TryGetValue(id, out var known) && known.Revision == revision) return known.Text;
+            string text = Data.Gameplay.Bodies.SpecialFood.EatenBy(d.Db, id);
+            specialFoodRaces[id] = (revision, text);
+            return text;
+        };
         ui.TooltipRuntime.CombatOf = () => PopData?.Combat;
         ui.TooltipRuntime.RangedDamageMultiplier = () => Session.AuthorityRules?.GlobalDamageMultiplier ?? 1;
     }
@@ -1480,7 +1504,10 @@ sealed partial class GameHost(
         UpdateWakes();
         UpdateSplashes();
         Modding.UpdateModHits();
+        Modding.UpdateModFrames();
+        Modding.UpdateModProjectiles();
         Modding.UpdateModEffects();
+        Modding.UpdateModTrails();
         Modding.UpdateModGlows();
         Modding.UpdateModFaults();
         Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Blood, "blood marks");

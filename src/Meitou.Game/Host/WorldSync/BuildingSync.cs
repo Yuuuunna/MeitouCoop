@@ -292,6 +292,7 @@ sealed class BuildingSync(GameHost host)
             Contained = site.Parent is not null && !site.Outside,
             OutsideWhenUncovered = site.Parent is not null && !site.Outside,
             ContainerId = site.Parent,
+            OwnFloor = site.Parent is not null ? site.Floor : null,
             PlayerOwned = mine,
         };
     }
@@ -351,13 +352,14 @@ sealed class BuildingSync(GameHost host)
 
         var parts = new Dictionary<string, IReadOnlyList<PlacedMesh>>(StringComparer.Ordinal);
         var machines = new Dictionary<string, MachineData?>(StringComparer.Ordinal);
+        var markers = new Dictionary<string, IReadOnlyList<PlacedMesh>>(StringComparer.Ordinal);
         var icons = new BuildingIcons(Path.Combine(host.Install.DataDirectory, "icons", "buildings"));
         IReadOnlyList<PlacementTown>? towns = null;
         return new Building.BuildServices
         {
             Menu = new Building.BuildMenu([.. BuildData().Values]),
             ItemName = id => db.Find(id)?.Name ?? id,
-            Description = id => db.Find(id)?.GetString("description") ?? "",
+            Description = id => Building.BuildingDescriptions.Of(db.Find(id)),
             Parts = id =>
             {
                 if (parts.TryGetValue(id, out var cached)) return cached;
@@ -365,6 +367,8 @@ sealed class BuildingSync(GameHost host)
                     ? WorldObjectLayout.Building(db, record, "ghost:" + id, Vector3.Zero, Quaternion.Identity, new BuildingState())
                     : [];
             },
+            UseNodeMarkers = id => markers.TryGetValue(id, out var cached) ? cached
+                : markers[id] = db.Find(id) is { } record ? UseNodeMarkerLayout.Markers(db, record) : [],
             IconFile = icons.Find,
             Placement = MakePlacementServices(db, footprints),
             WorldInfo = MakeWorldInfo(db),
@@ -479,8 +483,16 @@ sealed class BuildingSync(GameHost host)
             StaticAlong = (origin, direction, length) => footprints.Along(origin, direction, length).Where(b => Pickable(b.Placement.BuildingId)),
             FloorAlong = GhostFloorAlong,
             Readout = Readout,
+            Waive = host.Modding.Mods is { HasPlacementRules: true } waivers ? (q, failure) => waivers.WaivePlacement(Ask(q), failure) : null,
+            Refuse = host.Modding.Mods is { HasPlacementRules: true } refusers ? q => refusers.RefusePlacement(Ask(q)) : null,
         };
     }
+
+    /// <summary>
+    /// What the mods' placement rules are asked about a ghost (docs/modding.md "Placement rules").
+    /// </summary>
+    static Modding.PlacementAsk Ask(Meitou.Runtime.Placement.PlacementQuery q) =>
+        new(q.Building, q.Position, q.Yaw, q.On?.Building ?? q.SnappedOn?.Id, q.Floor, q.WallPiece);
 
     /// <summary>
     /// The movement pick's floors up to the viewed one: the build window's floor arrows choose the floor the ghost stands on.
@@ -544,7 +556,7 @@ sealed class BuildingSync(GameHost host)
             var saved = (host.Session as WorldSession)?.World.Fixtures.Saved?.GetValueOrDefault(placement.Key);
             var own = building?.Key == placement.Key ? building : null;
             var (name, type) = WorldBuildingName(db, placement, state, saved, own);
-            var (town, owner) = info is { } t ? (t.Town, OwnerName(t.Owner, new FixtureTown(t.Site, -1))) : (null, null);
+            var (town, owner) = info is { } t ? (ShownTown(t.Town, t.Site), OwnerName(t.Owner, new FixtureTown(t.Site, -1))) : (null, null);
             bool destroyed = host.TownChanges.ShownRuins.TryGetValue(placement.Key, out var ruin) ? ruin.Destroyed
                 : placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false;
             var pieces = destroyed || host.TownChanges.IsEmptied(placement.Key) ? null : own?.Pieces;
@@ -587,15 +599,21 @@ sealed class BuildingSync(GameHost host)
     }
 
     /// <summary>
+    /// Town name <paramref name="name"/> of site <paramref name="site"/> as the mods' text sources show it (its TOWN record's name); display only.
+    /// </summary>
+    string ShownTown(string name, int site) =>
+        ShownText.Any && host.PopData is { } d && site >= 0 && site < d.Sites.Count ? ShownText.Record(d.Sites[site].Town.Id, name) : name;
+
+    /// <summary>
     /// The owner a building's name bar shows (Building slot 113, <c>FUN_1402fdea0</c>, <b>Verified</b> decompile): the player's faction always (as
     /// renamed); another faction only while the building's <paramref name="town"/> (a town site, or the nest whose camp stood it up) is explored
     /// (town slot 0x340, the same for a nest) and not <c>is secret</c> (+0x111, read by the TownBase constructor <c>FUN_140931090</c>); else none,
-    /// as for a building of no town.
+    /// as for a building of no town. The name as the mods' text sources show it: display only.
     /// </summary>
     internal string? OwnerName(int owner, FixtureTown town)
     {
         if (owner < 0) return null;
-        if (owner == host.Session.ActiveFaction) return host.Session.DescribeFaction(owner)?.Name;
+        if (owner == host.Session.ActiveFaction) return host.Player.ShownFactionName(owner);
         if (host.PopData is not { } d || owner >= d.Factions.Count) return null;
 
         var snapshot = host.Session.CurrentSnapshot;
@@ -607,13 +625,13 @@ sealed class BuildingSync(GameHost host)
                 && (camp.Known & Simulation.Player.TownKnowledge.Explored) != 0 && d.Db.Find(camp.TownId)?.GetBool("is secret") != true,
             _ => false,
         };
-        return shown ? d.Factions[owner].Name : null;
+        return shown ? d.ShownFactionName(owner) : null;
     }
 
     /// <summary>
     /// A world building's name and its <c>Type:</c> (the record's name when that differs), as the game names it in both UI modes: read from the
     /// naming a town override's housing gave <paramref name="building"/>, else <paramref name="saved"/>, a loaded save's state, else <paramref
-    /// name="state"/>, the level state the boot's housing named (ResidentRuins).
+    /// name="state"/>, the level state the boot's housing named (ResidentRuins). Both as the mods' text sources show them: display only.
     /// </summary>
     static (string Name, string? Type) WorldBuildingName(Data.GameDatabase db, BuildingPlacement placement,
         Data.GameRecord? state, Data.Fcs.FcsRecord? saved, TownBuilding? building)
@@ -627,7 +645,16 @@ sealed class BuildingSync(GameHost host)
         var squad = StateText(ResidentRuins.SquadTemplateKey) is { Length: > 0 } squadId ? db.Find(squadId) : null;
         string name = squad?.GetString("building name") is { Length: > 0 } squadName ? squadName
             : StateText(ResidentRuins.NameKey) is { Length: > 0 } own ? own : recordName;
-        return (name, name != recordName ? recordName : null);
+        string? type = name != recordName ? recordName : null;
+        if (!ShownText.Any) return (name, type);
+
+        // The squad's "building name" is its record's text; a level state's own name, a name of its own (its building's record name asked as
+        // that record's).
+        string shownType = ShownText.Record(placement.BuildingId, recordName);
+        string shownName = squad?.GetString("building name") is { Length: > 0 } ? ShownText.Record(squad.StringId, name, "building name")
+            : name == recordName ? shownType
+            : ShownText.Name("place", placement.BuildingId, recordName, name);
+        return (shownName, type is null ? null : shownType);
     }
 
     /// <summary>

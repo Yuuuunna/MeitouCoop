@@ -41,6 +41,16 @@ static class SolidHits
     }
 
     /// <summary>
+    /// The fraction of <paramref name="seg"/> from <paramref name="from"/> where it first meets a building's collision, -1 for none;
+    /// <paramref name="ready"/> false while some of it is still being read.
+    /// </summary>
+    public static float BuildingHit(IRagdollEnvironment buildings, Vector3 from, Vector3 seg, out bool ready)
+    {
+        ready = true;
+        return Buildings(buildings, from, seg, 1, false, ref ready);
+    }
+
+    /// <summary>
     /// The fraction of the segment where it goes under the terrain, -1 when it stays above (sampled every <paramref name="step"/> units).
     /// </summary>
     static float Terrain(IWalkability walk, Vector3 from, Vector3 seg, float step)
@@ -104,6 +114,19 @@ static class SolidHits
             for (int i = 0; i + 2 < run.Length; i += 3)
                 if (Crosses(from, seg, run[i], run[i + 1], run[i + 2], out float t) && t >= t0 && t <= t1 && t < Best) Best = t;
         }
+    }
+
+    /// <summary>
+    /// The fraction of <paramref name="seg"/> from <paramref name="from"/> where it first crosses one of <paramref name="triangles"/> (three points
+    /// each, world space), -1 when it crosses none.
+    /// </summary>
+    public static float FirstCrossing(ReadOnlySpan<Vector3> triangles, Vector3 from, Vector3 seg)
+    {
+        float best = -1;
+        for (int i = 0; i + 2 < triangles.Length; i += 3)
+            if (Crosses(from, seg, triangles[i], triangles[i + 1], triangles[i + 2], out float t) && (best < 0 || t < best)) best = t;
+
+        return best;
     }
 
     /// <summary>

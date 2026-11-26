@@ -76,6 +76,10 @@ sealed class ModRegistrations
     /// </summary>
     public List<ModSlot> Slots { get; } = [];
     /// <summary>
+    /// The layout replacements: the layout file name and the full path of the mod's file, in registration order.
+    /// </summary>
+    public List<(string Layout, string Path)> Layouts { get; } = [];
+    /// <summary>
     /// The wear rules, in registration order.
     /// </summary>
     public List<Data.Gameplay.WearRule> WearRules { get; } = [];
@@ -112,6 +116,10 @@ sealed class ModRegistrations
     /// </summary>
     public Dictionary<IUiExtension, string> UiFolders { get; } = new(ReferenceEqualityComparer.Instance);
     /// <summary>
+    /// The translations of the mod each interface extension belongs to (its texts are shown through them).
+    /// </summary>
+    public Dictionary<IUiExtension, Localisation.ModTranslations> UiTexts { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
     /// The debug menu's commands.
     /// </summary>
     public List<ModDebugCommand> DebugCommands { get; } = [];
@@ -128,9 +136,24 @@ sealed class ModRegistrations
     /// </summary>
     public List<ModHitFeed> HitFeeds { get; } = [];
     /// <summary>
+    /// The projectile feeds.
+    /// </summary>
+    public List<ModProjectileFeed> ProjectileFeeds { get; } = [];
+    /// <summary>
     /// The faction tab list arrangers.
     /// </summary>
     public List<ModFactionList> FactionLists { get; } = [];
+    /// <summary>
+    /// The save-written listeners.
+    /// </summary>
+    public List<ModSaveWritten> SavesWritten { get; } = [];
+    /// <summary>
+    /// The per-frame callbacks.
+    /// </summary>
+    public List<ModFrameView> Frames { get; } = [];
+    /// The placement rules.
+    /// </summary>
+    public List<ModPlacementRule> PlacementRules { get; } = [];
     /// <summary>
     /// The mod's settings group; null when it registered none.
     /// </summary>
@@ -152,6 +175,44 @@ sealed class ModHitFeed(string owner, Action<IReadOnlyList<CombatHit>> run)
     public Action<IReadOnlyList<CombatHit>> Run => run;
     /// <summary>
     /// Set once the feed threw; a faulted feed is not called again.
+    /// </summary>
+    public bool Faulted { get; set; }
+}
+
+/// <summary>
+/// A mod's listener for saves written (<see cref="ModContext.AddSaveWritten"/>); faulted once it threw.
+/// </summary>
+sealed class ModSaveWritten(string owner, Action<string> run)
+{
+    /// <summary>
+    /// The id of the mod that registered it.
+    /// </summary>
+    public string Owner => owner;
+    /// <summary>
+    /// Tells it the full path of the save folder written.
+    /// </summary>
+    public Action<string> Run => run;
+    /// <summary>
+    /// Set once it threw; a faulted listener is not called again.
+    /// </summary>
+    public bool Faulted { get; set; }
+}
+
+/// <summary>
+/// A mod's per-frame callback (<see cref="ModContext.AddFrame"/>); faulted once it threw.
+/// </summary>
+sealed class ModFrameView(string owner, Action<ModFrame> run)
+{
+    /// <summary>
+    /// The id of the mod that registered it.
+    /// </summary>
+    public string Owner => owner;
+    /// <summary>
+    /// Hands it the frame.
+    /// </summary>
+    public Action<ModFrame> Run => run;
+    /// <summary>
+    /// Set once it threw; a faulted callback is not called again.
     /// </summary>
     public bool Faulted { get; set; }
 }
@@ -226,6 +287,10 @@ sealed class ModRegistry
     /// </summary>
     public Dictionary<IUiExtension, string> UiOwners { get; } = new(ReferenceEqualityComparer.Instance);
     /// <summary>
+    /// The translations of the mod each interface extension belongs to.
+    /// </summary>
+    public Dictionary<IUiExtension, Localisation.ModTranslations> UiTexts { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
     /// Every mod's debug menu commands, in load order.
     /// </summary>
     public List<ModDebugCommand> DebugCommands { get; } = [];
@@ -238,9 +303,32 @@ sealed class ModRegistry
     /// </summary>
     public List<ModHitFeed> HitFeeds { get; } = [];
     /// <summary>
+    /// Every mod's projectile feeds, in load order.
+    /// </summary>
+    public List<ModProjectileFeed> ProjectileFeeds { get; } = [];
+    /// <summary>
     /// Every mod's faction tab list arrangers, in load order.
     /// </summary>
     public List<ModFactionList> FactionLists { get; } = [];
+    /// <summary>
+    /// Every mod's active playback audio modulations, composed lock-free for the audio thread.
+    /// </summary>
+    internal ModAudioModulations AudioModulations { get; } = new();
+    /// <summary>
+    /// Every mod's save-written listeners, in load order.
+    /// </summary>
+    public List<ModSaveWritten> SavesWritten { get; } = [];
+    /// <summary>
+    /// Every mod's per-frame callbacks, in load order.
+    /// </summary>
+    public List<ModFrameView> Frames { get; } = [];
+    /// <summary>
+    /// The player interface the mods' <see cref="ModInterface"/>s act on (docs/modding.md "Interface actions").
+    /// </summary>
+    public ModInterfaceHub Interface { get; } = new();
+    /// Every mod's placement rules, in load order.
+    /// </summary>
+    public List<ModPlacementRule> PlacementRules { get; } = [];
     /// <summary>
     /// The mods' queued and playing display-only effects (<see cref="ModContext.PlayEffect(string, System.Numerics.Vector3, float,
     /// System.Numerics.Vector3?)"/>).
@@ -250,6 +338,10 @@ sealed class ModRegistry
     /// The mods' display-only glows (<see cref="ModContext.Glow"/>).
     /// </summary>
     public ModGlows Glows { get; } = new();
+    /// <summary>
+    /// The mods' display-only ribbon trails (<see cref="ModContext.KeepTrail"/>).
+    /// </summary>
+    public ModTrails Trails { get; } = new();
     /// <summary>
     /// The record types' names by type number.
     /// </summary>
@@ -313,6 +405,11 @@ sealed class ModRegistry
             Simulation.TaskOwners[type] = mod;
         }
         foreach (var slot in r.Slots) ModSlots.Add(slot);
+        foreach (var (layout, path) in r.Layouts)
+        {
+            if (!Game.Ui.ModLayouts.Add(mod, layout, path))
+                Console.Error.WriteLine($"mod       {mod}: layout {layout} is replaced by another mod already; its replacement is left out");
+        }
         foreach (var rule in r.WearRules) Data.Gameplay.WearRules.Add(mod, rule);
         foreach (var source in r.LookRows) Data.Characters.ModLooks.AddRows(mod, source);
         foreach (var roll in r.LookRolls) Data.Characters.ModLooks.AddRoll(mod, roll);
@@ -323,6 +420,7 @@ sealed class ModRegistry
         Ui.AddRange(r.Ui);
         foreach (var (extension, folder) in r.UiFolders) UiFolders[extension] = folder;
         foreach (var extension in r.Ui) UiOwners[extension] = mod;
+        foreach (var (extension, texts) in r.UiTexts) UiTexts[extension] = texts;
         DebugCommands.AddRange(r.DebugCommands);
         foreach (var state in r.WorldStates)
         {
@@ -335,7 +433,11 @@ sealed class ModRegistry
             KeyActions.Add(action);
         }
         HitFeeds.AddRange(r.HitFeeds);
+        ProjectileFeeds.AddRange(r.ProjectileFeeds);
         FactionLists.AddRange(r.FactionLists);
+        SavesWritten.AddRange(r.SavesWritten);
+        Frames.AddRange(r.Frames);
+        PlacementRules.AddRange(r.PlacementRules);
         if (r.Settings is not null) Settings.Add(r.Settings);
     }
 

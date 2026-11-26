@@ -65,7 +65,9 @@ public sealed record ServerConfiguration
     static bool ValidGameplay(GameplayRules? rules)
     {
         static bool Range(float value, float min, float max) => float.IsFinite(value) && value >= min && value <= max;
-        return rules is not null && Enum.IsDefined(rules.Dismemberment) && (rules.AttackSlots is null or >= 1 and <= 5) && rules.HarpoonLimit is >= 10 and <= 10000 && rules.TownAttacks is >= 0 and <= 5 && rules.GroundItemLimit is >= 1 and <= Meitou.Simulation.Items.GroundItems.MaxLimit && (rules.AutoSaveSeconds == 0 || rules.AutoSaveSeconds is >= 10 and <= 86400) && Range(rules.SquadSize, .5f, 3) && Range(rules.Population, .5f, 4) && Range(rules.RaidSize, .25f, 4) && Range(rules.RaidFrequency, .25f, 3) && Range(rules.GlobalDamageMultiplier, .5f, 4) && Range(rules.HungerTime, .25f, 8) && Range(rules.ChanceOfDeath, .5f, 4) && Range(rules.ProductionSpeed, .5f, 2) && Range(rules.ResearchSpeed, .5f, 2) && Range(rules.BuildingSpeed, .5f, 2) && Range(rules.NestsMultiplier, .5f, 4)
+        return rules is not null && (rules.MaxFactionSize is null or >= BuiltInModSettings.MinSquadLimit and <= BuiltInModSettings.MaxSquadLimit)
+            && (rules.MaxSquadSize is null or >= BuiltInModSettings.MinSquadLimit and <= BuiltInModSettings.MaxSquadLimit) && (rules.MaxSquads is null or >= BuiltInModSettings.MinSquadLimit and <= BuiltInModSettings.MaxSquadLimit)
+            && Enum.IsDefined(rules.Dismemberment) && (rules.AttackSlots is null or >= 1 and <= 5) && rules.HarpoonLimit is >= 10 and <= 10000 && rules.TownAttacks is >= 0 and <= 5 && rules.GroundItemLimit is >= 1 and <= Meitou.Simulation.Items.GroundItems.MaxLimit && (rules.AutoSaveSeconds == 0 || rules.AutoSaveSeconds is >= 10 and <= 86400) && Range(rules.SquadSize, .5f, 3) && Range(rules.Population, .5f, 4) && Range(rules.RaidSize, .25f, 4) && Range(rules.RaidFrequency, .25f, 3) && Range(rules.GlobalDamageMultiplier, .5f, 4) && Range(rules.HungerTime, .25f, 8) && Range(rules.ChanceOfDeath, .5f, 4) && Range(rules.ProductionSpeed, .5f, 2) && Range(rules.ResearchSpeed, .5f, 2) && Range(rules.BuildingSpeed, .5f, 2) && Range(rules.NestsMultiplier, .5f, 4)
             && Range(rules.SquadXp, BuiltInModSettings.MinXpRate, BuiltInModSettings.MaxXpRate)
             && rules.SquadSkillXp is { } skillRates && (skillRates.Length == 0 || skillRates.Length == StatsInfo.Count)
             && skillRates.All(value => Range(value, XpSkills.Follows, BuiltInModSettings.MaxXpRate))
@@ -73,7 +75,7 @@ public sealed record ServerConfiguration
     }
 
     /// <summary>
-    /// Adopts enabled legacy XP mods once before publishing compatibility rules, without executing a mod DLL.
+    /// Adopts enabled legacy XP, squad capacity and gameplay mods once before publishing compatibility rules, without executing a mod DLL.
     /// Subsequent starts keep the administrator's configured rates.
     /// </summary>
     public ServerConfiguration AdoptBuiltIns(GameInstall install, string path)
@@ -83,6 +85,9 @@ public sealed record ServerConfiguration
             SquadXp = Gameplay.SquadXp,
             SquadSkillXp = XpSkills.Saved(Gameplay.SquadSkillXp),
             FixAnimalMoves = Gameplay.AnimalMovesFix,
+            MaxFactionSize = Gameplay.MaxFactionSize,
+            MaxSquadSize = Gameplay.MaxSquadSize,
+            MaxSquads = Gameplay.MaxSquads,
             AdoptedMods = [.. AdoptedMods],
             ModSettings = ModSettings
         };
@@ -94,7 +99,10 @@ public sealed record ServerConfiguration
             {
                 SquadXp = settings.SquadXp,
                 SquadSkillXp = XpSkills.Rates(settings.SquadSkillXp),
-                AnimalMovesFix = settings.FixAnimalMoves
+                AnimalMovesFix = settings.FixAnimalMoves,
+                MaxFactionSize = settings.MaxFactionSize,
+                MaxSquadSize = settings.MaxSquadSize,
+                MaxSquads = settings.MaxSquads
             },
             AdoptedMods = [.. settings.AdoptedMods]
         };

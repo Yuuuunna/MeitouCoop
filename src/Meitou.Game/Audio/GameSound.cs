@@ -108,6 +108,7 @@ sealed class GameSound(GameHost host)
             : $"audio     off: {error}");
         if (Audio is not null && host.Player is not null && host.Player.TitleOpen) Audio.Music.StartMainTheme();
         Ui.Attach(Audio);
+        host.Modding.Mods?.AudioModulations.Attach(snapshot => Audio?.Player.SetModAudio(snapshot));
     }
 
     /// <summary>
@@ -122,6 +123,8 @@ sealed class GameSound(GameHost host)
     /// </summary>
     internal void UpdateAudio(double realSeconds)
     {
+        host.Modding.UpdateModAudio();
+
         // The Audio settings' Sound voices slider (config.Audio.Voices) is applied by AudioSystem.Apply.
         if (Audio is null || host.Player is null || host.Player.TitleOpen) return;
 

@@ -109,6 +109,11 @@ public sealed class ResearchState
     /// </summary>
     public long Version { get; private set; }
 
+    /// <summary>Queue membership and order revision; progress alone leaves it unchanged.</summary>
+    public ulong QueueRevision { get; private set; } = 1;
+
+    void QueueChanged() => QueueRevision = checked(QueueRevision + 1);
+
     /// <summary>
     /// Notes a change: bumps <see cref="Version"/> and marks the state changed in play.
     /// </summary>
@@ -129,6 +134,7 @@ public sealed class ResearchState
     public void Set(GameDatabase db, IEnumerable<string> ids, IEnumerable<(string Id, float Seconds)> queued, IEnumerable<string> paidIds,
         IEnumerable<(string Id, float Seconds)> kept)
     {
+        var previousQueue = _queue.Select(q => q.Id).ToArray();
         _completed.Clear();
         BenchLevel = 0;
 
@@ -142,6 +148,8 @@ public sealed class ResearchState
             if (db.Find(id) is { Type: FcsRecordType.Research } && Times(id) < RepetitionsOf(db, id) && _queue.TrueForAll(q => q.Id != id))
                 _queue.Add(new ResearchItem(id, s));
         }
+
+        if (!previousQueue.SequenceEqual(_queue.Select(q => q.Id), StringComparer.Ordinal)) QueueChanged();
 
         _paid.Clear();
         foreach (var id in paidIds)
@@ -211,7 +219,7 @@ public sealed class ResearchState
         int repetitions = RepetitionsOf(db, id);
         if (Times(id) >= repetitions) return false;
         _completed.Add(id);
-        _queue.RemoveAll(q => q.Id == id);
+        if (_queue.RemoveAll(q => q.Id == id) > 0) QueueChanged();
         _partial.Remove(id);
         if (repetitions > 1) _paid.Remove(id);
         Refresh(db);
@@ -232,6 +240,7 @@ public sealed class ResearchState
         }
 
         if (n == 0) return 0;
+        if (_queue.Count > 0) QueueChanged();
         _queue.Clear();
         _partial.Clear();
         Refresh(db);
@@ -296,6 +305,7 @@ public sealed class ResearchState
     internal void Enqueue(string id)
     {
         _queue.Add(new ResearchItem(id, _partial.Remove(id, out float s) ? s : 0));
+        QueueChanged();
         if (!_paid.Contains(id, StringComparer.Ordinal)) _paid.Add(id);
         Touch();
     }
@@ -309,8 +319,22 @@ public sealed class ResearchState
         if (i < 0) return false;
         if (_queue[i].Seconds > 0) _partial[id] = _queue[i].Seconds;
         _queue.RemoveAt(i);
+        QueueChanged();
         Touch();
         return true;
+    }
+
+    /// <summary>
+    /// Moves a queued entry to another index, keeping its accumulated work.
+    /// </summary>
+    internal void Move(int from, int to)
+    {
+        if (from == to) return;
+        var item = _queue[from];
+        _queue.RemoveAt(from);
+        _queue.Insert(to, item);
+        QueueChanged();
+        Touch();
     }
 
     /// <summary>

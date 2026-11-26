@@ -9,7 +9,7 @@ namespace Meitou.Simulation.Items;
 public static class ItemTagIdentity
 {
     /// <summary>
-    /// The first 128 bits of SHA-256 identify a tag alongside the inventory revision and actor grant; the full tag stays on the authority.
+    /// The first 128 bits of SHA-256 identify a tag alongside the inventory revision and actor grant; visible definitions travel separately.
     /// </summary>
     const int DigestBytes = 16;
 

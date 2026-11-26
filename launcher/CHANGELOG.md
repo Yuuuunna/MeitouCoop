@@ -2,6 +2,31 @@
 
 Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.yml`; each release needs its `## v<version>` section.
 
+## v1.21.2
+
+- Tooltips open beside the mouse pointer, never under it, so they no longer swallow a click on Main menu, Continue or other buttons near the bottom of the screen
+
+## v1.21.1
+
+- Benchmark page: added a "Benchmark settings" tooltip in the header listing the fixed display, quality, and isolation settings used during every benchmark run
+
+## v1.21.0
+
+- Benchmark page: single framed results table with scenario and tier tabs (including an All tiers overview whose rows open each tier's groups)
+- Benchmark page: one Submit all button for all ready sessions, plus a first-time auto-submit prompt and saved "Submit results automatically when done" option (on by default)
+- Benchmark page: machine id is now generated automatically per PC (hardware slug + per-PC hash, not editable) and the Machine name field is removed
+- Benchmark page: Install works without ticking a benchmark or tier first, wider build dropdown, per-tier duration estimates, Recommended / All tier links, launch progress bar, and links to the benchmarks site and results folder
+
+## v1.20.0
+
+- Linux: first-start setup and Settings can add the AppImage to the app menu
+- Benchmark page: Submit is enabled as soon as the machine id is typed; the machine name is optional
+
+## v1.19.0
+
+- New Benchmark page: installs the benchmark builds, runs their scenarios at the chosen graphics tiers (natively or under Proton on Linux), shows the results and submits them
+- Flies Are Muted, Silent Corpse Flies and the fly buzzing mods are marked as built into Meitou (Audio settings: Mute corpse flies)
+
 ## v1.18.0
 
 - Mods page: sort the list by load order, name, date added or last modified

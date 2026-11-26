@@ -42,6 +42,16 @@ public sealed partial class ProductionSystem
     /// original takes the rock's bounds box scaled 1.2 or its <c>use range</c> (50 iron, 100 copper) of its position marker.
     /// </summary>
     const float RockReach = 10;
+    /// <summary>
+    /// How far from a rock's position toward the walker its walk aims (<c>getPosWithinChoppingRange</c> <c>FUN_14059bf30</c>, the foliage branch:
+    /// 65 at <c>DAT_1416f0010</c>, <b>Verified</b>).
+    /// </summary>
+    const float RockApproach = 65;
+    /// <summary>
+    /// The navmesh query that puts a rock's walk aim on the mesh (<see cref="RefitSnap"/>, <b>Verified</b> <c>FUN_14059bf30</c>): the
+    /// half size of its search cube (150, <c>DAT_1416cf06c</c>) and its clearance extent (10, <c>DAT_14167fad4</c>).
+    /// </summary>
+    const float RockSnapReach = 150, RockSnapExtent = 10;
 
     /// <summary>
     /// The rocks' sites by id, made on first use (null: the id names no rock).
@@ -120,7 +130,7 @@ public sealed partial class ProductionSystem
                     if (!visible(node.Position) || node.Record.Length == 0) continue;
                     string id = NaturalId(node.Record, node.Position);
                     if (!sites.ContainsKey(id) && Natural(world, id) is { } rock)
-                        sites[id] = new(id, rock.Position, rock.Owner, world.BuildingRevision(rock));
+                        sites[id] = View(rock);
                 }
 
         if (TownBuildingIndex(world)?.Buildings is { } buildings)
@@ -128,13 +138,20 @@ public sealed partial class ProductionSystem
             {
                 if (world.Fixtures.IsDestroyed(building)) continue;
                 if (visible(building.Position) && Data(building.BuildingId) is not null && TownMachineSite(world, building.Key) is { } site)
-                    sites[site.Id] = new(site.Id, site.Position, site.Owner, world.BuildingRevision(site));
+                    sites[site.Id] = View(site);
                 foreach (var piece in building.Pieces)
                     if (visible(piece.Position) && Data(piece.RecordId) is not null
                         && world.Fixtures.GetTownPieceMachineSite(world, building, piece) is { } part)
-                        sites[part.Id] = new(part.Id, part.Position, part.Owner, world.BuildingRevision(part));
+                        sites[part.Id] = View(part);
             }
         return sites.Values.OrderBy(s => s.Id, StringComparer.Ordinal).ToArray();
+
+        WorkSiteView View(BuildSite site) => new(site.Id, site.Position, site.Owner, world.BuildingRevision(site))
+        {
+            Record = site.Record,
+            Name = site.Name.Length > 0 ? site.Name : _db.Find(site.Record)?.Name ?? site.Record,
+            Kind = WorkSiteViews.KindOf(world, site.Id, site),
+        };
     }
 
     /// <summary>
@@ -257,8 +274,11 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// The name of the player town a worked rock joined (null: none, the original's NO_TOWN, which the panel's <c>Town:</c> line leaves out).
+    /// The name of the player town a worked rock joined as the mods' text sources show it (null: none, the original's NO_TOWN, which the panel's
+    /// <c>Town:</c> line leaves out).
     /// </summary>
     static string? TownNameOf(World world, BuildSite? site) =>
-        site is { Town: not 0 and var number } ? world.Buildings.Towns.FirstOrDefault(t => t.Number == number)?.Name : null;
+        site is { Town: not 0 and var number } && world.Buildings.Towns.FirstOrDefault(t => t.Number == number) is { } town
+            ? world.ShownName(town)
+            : null;
 }

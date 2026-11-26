@@ -143,13 +143,15 @@ public sealed partial class World
             string? FactionName(int index) => DescribeFaction(index)?.Name;
             var squads = SquadManagement.LedSquads(this, member.Key)
                 .Where(s => player.HasPermission(member.Key, FactionPermission.ManageSquads) || s.Members.Any(owned.Contains))
-                .Select(s => new SquadView(s.Id, s.Name, s.Members.Where(id => owned.Contains(id) || player.HasPermission(member.Key, FactionPermission.ManageSquads)).ToArray())).ToArray();
+                .Select(s => new SquadView(s.Id, s.Name,
+                    s.Members.Where(id => owned.Contains(id) || player.HasPermission(member.Key, FactionPermission.ManageSquads)).ToArray())
+                    { TemplateId = s.TemplateId }).ToArray();
             return new PlayerFactionView(member.Key, DescribeFaction(member.Key)?.Name ?? "", member.Value, player.MembershipRevision(member.Key),
                 player.HasPermission(member.Key, FactionPermission.ReadFunds) ? resource?.Money ?? 0 : null,
                 _production?.ResearchView(this, member.Key, connection.Player) ?? ResearchSnapshot.Empty, squads)
             {
                 IndependentSquads = SquadManagement.PlayerSquads(this, member.Key).Where(s => s.Independent)
-                    .Select(s => new SquadView(s.Id, s.Name, s.Members.Where(visible.Contains).ToArray()))
+                    .Select(s => new SquadView(s.Id, s.Name, s.Members.Where(visible.Contains).ToArray()) { TemplateId = s.TemplateId })
                     .Where(s => s.Members.Count > 0).ToArray(),
                 FactionHeads = SquadManagement.FactionHeads(this, member.Key),
                 CappedHeads = SquadManagement.CappedHeads(this, member.Key),
@@ -202,6 +204,9 @@ public sealed partial class World
         var snapshot = new WorldSnapshot(Tick, characters)
         {
             TutorialFacts = PublishTutorialFacts(population, owned),
+            MaxFactionSize = population?.Bodies.MaxFactionSize ?? 30,
+            MaxSquadSize = population?.Bodies.MaxSquadSize ?? 20,
+            MaxSquads = population?.Bodies.MaxSquads ?? 10,
             FoliageOwnedTowns = population?.Sites.Where(s =>
                 (uint)s.Index < (uint)population!.SiteFactions.Count
                 && IsPlayerFaction(population!.SiteFactions[s.Index]) && (Nearby(s.Position) || Manage(population!.SiteFactions[s.Index])))
@@ -320,15 +325,22 @@ public sealed partial class World
     ModVisualSnapshot CaptureModVisuals(IReadOnlySet<CharacterId> visible, Func<Vector3, bool> nearby)
     {
         var visuals = ModVisuals.Capture(this);
-        if (visuals.Effects.Length == 0 && visuals.Glows.Length == 0) return visuals;
+        if (visuals.Effects.Length == 0 && visuals.Glows.Length == 0 && visuals.Trails.Length == 0) return visuals;
+        var projectiles = (_projectiles?.PublishProjectiles() ?? []).Where(projectile => nearby(projectile.Position))
+            .Select(projectile => projectile.Id).ToHashSet();
         return new(visuals.Effects.Where(effect => Visible(effect.Anchor)).ToArray(),
-            visuals.Glows.Where(glow => visible.Contains(glow.Target.On)).ToArray());
+            visuals.Glows.Where(glow => visible.Contains(glow.Target.On)).ToArray())
+        {
+            Trails = visuals.Trails.Where(trail => Visible(trail.Anchor)).ToArray(),
+            Audio = visuals.Audio,
+        };
 
         bool Visible(Meitou.Modding.EffectAnchor anchor)
         {
             if (anchor.Kind is Meitou.Modding.EffectAnchorKind.Bone or Meitou.Modding.EffectAnchorKind.Weapon)
                 return visible.Contains(anchor.Character);
             if (anchor.Kind == Meitou.Modding.EffectAnchorKind.Point) return nearby(anchor.Offset);
+            if (anchor.Kind == Meitou.Modding.EffectAnchorKind.Projectile) return projectiles.Contains(anchor.ProjectileId);
             if (anchor.Kind != Meitou.Modding.EffectAnchorKind.Building || anchor.Name is not { } name) return false;
             Vector3? at = Buildings.Find(name)?.Position ?? Fixtures.Find(name)?.Position
                 ?? NestBuildings.Published().FirstOrDefault(building => building.Id == name)?.Position
@@ -446,6 +458,8 @@ public sealed partial class World
         Imprisoned = c.Imprisoned,
         StayingLow = c.StayingLow,
         InCombat = c.InCombat,
+        Attacking = c.Attacking,
+        Engineering = c.Engineering,
         CombatMode = c.CombatMode,
         Asleep = c.Asleep,
         Shackled = c.Shackled,

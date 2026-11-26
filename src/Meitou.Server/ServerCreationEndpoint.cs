@@ -33,7 +33,7 @@ public sealed class ServerCreationEndpoint
         _rules = new(StringComparer.Ordinal);
         foreach (var rule in rulesets)
         {
-            if (string.IsNullOrWhiteSpace(rule.Id) || rule.Id.Length > 128 || rule.CharacterLimit is < 1 or > 1024 || rule.CharacterLimit > data.Bodies.Constants.MaxSquadSize || rule.Starts.Count is < 1 or > 1024 || rule.Starts.Any(s => s is null || string.IsNullOrWhiteSpace(s.Start.Id) || s.FactionTemplate < 0 || s.FactionTemplate >= data.Factions.Count) || rule.Starts.Select(s => s.Start.Id).Distinct(StringComparer.Ordinal).Count() != rule.Starts.Count)
+            if (string.IsNullOrWhiteSpace(rule.Id) || rule.Id.Length > 128 || rule.CharacterLimit is < 1 or > 1024 || rule.CharacterLimit > data.Bodies.MaxSquadSize || rule.CharacterLimit > data.Bodies.MaxFactionSize || rule.Starts.Count is < 1 or > 1024 || rule.Starts.Any(s => s is null || string.IsNullOrWhiteSpace(s.Start.Id) || s.FactionTemplate < 0 || s.FactionTemplate >= data.Factions.Count) || rule.Starts.Select(s => s.Start.Id).Distinct(StringComparer.Ordinal).Count() != rule.Starts.Count)
                 throw new ArgumentException("Invalid creation ruleset.", nameof(rulesets));
             var starts = rule.Starts.Select(s => s with { Start = s.Start with { Squad = s.Start.Squad.ToArray(), Towns = s.Start.Towns.ToArray(), Research = s.Start.Research.ToArray(), FactionRelations = s.Start.FactionRelations.ToArray(), ForceRace = s.Start.ForceRace.ToArray() } }).ToArray();
             if (!_rules.TryAdd(rule.Id, rule with { Starts = starts }))

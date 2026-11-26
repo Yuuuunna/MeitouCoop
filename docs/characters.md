@@ -165,6 +165,24 @@ Boots (slot 9, not `is locked`) on a character with exactly one fitted leg prost
 
 **Verified** (`skin.hlsl`): worn items always `clip(normal.a - 0.6)`, so a normal map whose alpha is low (BC1 punch-through, atlas islands) hides those texels.
 
+### Worn unarmed weapons
+
+Engine extension, not in the original: a WEAPON of `skill category` 5 (Unarmed; a missing field reads as 5, as combat reads it,
+`WeaponData.IsUnarmedRecord`) is worn, not hung and drawn.
+
+- **Fighting**: in hand it fights as fists (`Fighter.Unarmed`: Martial Arts, the unarmed techniques and stance, never drawn, dodges instead of
+  blocking, the fist damage with the weapon's kind and race multipliers, bleed and penetration; [combat](game/combat.md#weapons-and-damage)).
+  The stats panel shows Martial Arts as with no weapon (`CombatSystem.StatsDisplayMode`), and an NPC's equip step or a captor keeps it
+  instead of taking a packed weapon (`AiSystem.EquipStep`, `CaptiveSystem.DrawWeapon`).
+- **Mixed loadouts**: with both arms, a worn unarmed weapon on the back yields to a real weapon on the hip, which is drawn (`Fighter.Weapon`);
+  otherwise the [arms rule](game/combat.md#arms) holds (back first, the hip one with the right arm only).
+- **Look**: its `mesh` (`mesh female` for a woman when set) is skinned to the body's skeleton like armour (`CharacterAppearance.IsWornWeapon`,
+  `AttachMode.SharedSkeleton`), in its grade's model, whether the character fights or not, also beside a drawn weapon and, like an armour
+  sleeve, on a lost arm. `bare sword` and `sheath` are not used. A mod's knuckles, claws or arm braces author `mesh` skinned to the `Bip01`
+  forearm and hand bones.
+- **Base game**: no such item. **Observed** (records read from `gamedata.base`, `Newwworld.mod` and `rebirth.mod`, 2026-11-19): the only
+  WEAPONs of category 5 are `FISTS` and `FISTS- robo`, the races' fists, which no one equips.
+
 ### Surveys
 
 `dotnet run --project tools/Meitou.Tools -- characters` builds the look of every ANIMAL_CHARACTER and of one CHARACTER per race list and reports a missing body mesh, skeleton,
@@ -275,6 +293,9 @@ exe decompile unless marked; Meitou: `CharacterDraft` (data), `EditCharacter` / 
 - **Modes**: 0 new game (`FUN_140872e00`: every player character after the start's `squad` spawns, with the start's `force race`), 1 in play
   (dialogue `DA_CHARACTER_EDITOR` on the talking player character; `DA_JOIN_SQUAD_WITH_EDIT` and slave purchases on the recruits). Mode 1
   hides the race, subrace and gender arrows; they are also hidden when there is no choice. Everything else works in both modes.
+- **Race missing from the data** (Meitou, engine choice; #1344): a saved look whose `race` names a record no loaded mod has (a race mod removed
+  since the save) is drawn with the race the world falls back to (`CharacterAppearance.Race`: its CHARACTER's race), and the editor's draft
+  takes that race too (`CharacterDraft`'s `shown` race, written into the draft's `race`), not the data's first RACE (Garru, `3998-gamedata.base`).
 - **Animals** (**Verified**, decompile): the window lists every character it is given, animals too (`FUN_1405f4dd0` copies the list unfiltered), so
   rebirth's "Guy with a dog" start (`47924-rebirth.mod`, squad `47925-rebirth.mod`; its man and Bonedog **Observed** in a player save) shows both. An
   animal's page (`FUN_1405efd60`, no humanoid appearance): body view, IMPORT and EXPORT hidden; `FUN_1405ee0c0` then hides the tab buttons, the

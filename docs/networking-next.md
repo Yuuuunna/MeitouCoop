@@ -455,15 +455,18 @@ an output beyond 32 MiB, incomplete consumption, trailing data or a mismatched o
 Compression uses one bounded pooled scratch buffer; decompression allocates the exact declared output. The complete capture and each decoded
 publication retain the 32 MiB expanded-byte limit, including framing within the publication; deferred fields reserve their expanded size against
 the existing 256 KiB bound and against the publication that applies them. Schema metadata distinguishes compressed JSON from binary fields.
-Raw `WorldViewCodec.EncodeComponent` and event-retention accounting remain uncompressed.
+Raw `WorldViewCodec.EncodeComponent` and event-retention accounting remain uncompressed. Field 2071 (`ItemGrid`) uses raw JSON inside
+the already compressed publication, allowing its digest references and repeated row structure to share that compression window.
+No inventory revision, value precision or delivery cadence changes with this representation choice.
 
-**Observed** (`PresentationEventsCodec`, schema field 7): events retain their presence byte and use a `00 4D 50 45` envelope, version `03`
-or `04`, and exact original JSON length (little-endian int32). The independent body contains the four non-sound event families as JSON, one
+**Observed** (`PresentationEventsCodec`, schema field 7): events retain their presence byte and use a `00 4D 50 45` envelope, version `05`
+or `06`, and exact original JSON length (little-endian int32). The independent body contains the four non-sound event families as JSON, one
 packet-local strict UTF-8 name table, and exact binary sound records. Each sound uses 40 bytes for its ID, kind, flags, armour, subject,
-other actor, float32 position and item-name reference; named mod sounds add three uint16 name references. The kind byte uses its low five bits
+other actor, float32 position and item-name reference; named mod sounds add 25 bytes: four uint16 name references (event, switch group,
+switch value, mod ID), float32 volume, uint64 playback identity, one stop byte and float32 fade seconds. The kind byte uses its low five bits
 for `SoundKind`, bits 5–6 for exact `ShootSound` 0–3, and rejects reserved bit 7. The new turret sound selector adds no core bytes. Null and empty names remain
-distinct. Version 3 interleaves each sound core and its optional named references; version 4 XORs adjacent 40-byte cores, gathers matching
-byte positions, then appends named references in the original sound order. The encoder keeps the smaller complete body. An optional
+distinct. Version 5 interleaves each sound core and its optional posted data; version 6 XORs adjacent 40-byte cores, gathers matching
+byte positions, then appends posted data in the original sound order. The encoder keeps the smaller complete body. An optional
 `MBCF` body uses the ordinary quality-1 compression and savings threshold. No earlier event batch or name dictionary is needed.
 Decode checks counts, first-use name ordering, duplicate or unused names, reserved bits, complete consumption and all five
 families' shared ID and payload validation. A bounded re-serialization must reproduce the declared JSON size.
@@ -471,13 +474,34 @@ families' shared ID and payload validation. A bounded re-serialization must repr
 Events retain the 256 KiB original-JSON retention bound, and expanded accounting charges the larger of that size and the envelope plus
 expanded body. Critical capture reserves a further 4 KiB for lifecycle framing. Completed fragments charge their assembled expanded
 bytes before decoding. Event IDs, high-water acknowledgement, ordering, reliable retention and publication frequency are unchanged.
+Server capture excludes source-journal entries already admitted to the ordered reliable lifecycle stream; admission advances only after
+the complete critical batch has queued. Unadmitted events remain retained. Client lifecycle consumption journals events before activation
+and before a later bulk snapshot can replace the view. The sound queue has no separate 128-event discard path: consumption advances its
+acknowledgement only after the queued sounds drain, within the existing 4096-event/256 KiB journal bound.
+
+### Shared item-tag definitions
+
+**Observed** (`ItemTagCodec`, `ItemTagCollection`, `ItemTagProjection`): field 1069's fixed outer manifest names `b:00` through `b:FF`.
+Each bucket is an absolute, independently revisioned membership list for the first digest byte: format byte 2, prefix byte, int32 count,
+then sorted unique 16-byte digests. A changed tag updates only its affected buckets and definition; definitions are not outer-manifest keys.
+Definition values use format byte 1, the 16-byte digest, int32 UTF-16 code-unit count and exact little-endian code units (21 + 2N bytes).
+The decoder verifies the digest and canonical key, without Unicode normalization or replacement fallback. Full-view JSON uses bounded
+base64 chunks of this same representation; ordinary item payloads reject a second nonempty inline-tag channel.
+
+The current referenced table has at most 65,536 definitions within the 32 MiB view bound. Pending and current encoded tag state share the
+32 MiB retention bound; fixed bucket metadata has a separate count allowance. A newer bucket immediately removes old excluded members
+and rejects their late definitions, while allowing a newer definition to arrive before its own bucket. A baseline requires every bucket
+and announced definition. Presentation joins only current members, so incomplete ordinary deltas show empty text until the matching
+definition arrives. Permissions are applied before definition collection; the table is never a global mod-tag registry.
 
 ### Shared visual collection
 
 **Observed** (source): snapshot field 1068 is a keyed collection with two independently revisioned parts per logical visual. `e:<Id>` and
-`g:<Id>` hold effect/glow definitions; `E:<Id>` and `G:<Id>` hold their dynamic readings. `ModVisualCodec` version 2 starts with a version byte,
-family byte (1/2 definition, 3/4 reading), positive int64 ID and positive uint64 definition version. Definitions contain owner and stable
-effect/system/anchor/kept or glow-target data. Readings contain tint or colour/strength, plus absolute float64 start/expiry times. Geometry
+`g:<Id>`, `t:<Id>` and `a:<Id>` hold effect/glow/trail/audio definitions; the uppercase equivalents hold their dynamic readings.
+`ModVisualCodec` version 3 starts with a version byte, family byte (1–4 definition, 5–8 reading), positive int64 ID and positive uint64
+definition version. Definitions contain owner and stable effect/system/anchor/kept, glow-target, trail-anchor or audio-owner data.
+Readings contain tint/colour/strength, size/pulse, glow mode/through-wall flag, trail style or audio modulation, with absolute float64
+start/expiry times where applicable. Geometry
 and colours preserve exact little-endian float32 bits; names use bounded strict UTF-8 and nullable/boolean flags are explicit. The key
 must match the family/ID. Only equal definition versions join, followed by ordinary typed validation of the complete snapshot.
 

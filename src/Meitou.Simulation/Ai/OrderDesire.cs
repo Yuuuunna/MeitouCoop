@@ -35,6 +35,18 @@ public static class OrderDesire
     /// </summary>
     public static float? Of(World world, int slot, OrderEntry order)
     {
+        var desire = GameOf(world, slot, order);
+        var filters = world.Decisions.DesireFilters;
+        if (desire is not { } d || !filters.Active) return desire;
+
+        return filters.Pass(world, world.Characters.IdOf(slot), order.Row, GoalDesireKind.Order, d);
+    }
+
+    /// <summary>
+    /// <see cref="Of"/> as the game weighs it, before the code mods' desire filters (<see cref="IGoalDesireFilter"/>).
+    /// </summary>
+    static float? GameOf(World world, int slot, OrderEntry order)
+    {
         var cold = world.Characters.Cold(slot)!;
         return order.Row switch
         {
@@ -58,6 +70,9 @@ public static class OrderDesire
             TaskType.LiftPersonPlayerOrder or TaskType.KidnapOrder or TaskType.LiftPersonSnatchingAllowed
                 or TaskType.LiftPersonSnatchingAllowedInTownOnly => LiftDesire(world, slot, cold, order.Target),
             TaskType.UseTurret => TurretDesire(world, slot, cold),
+            TaskType.OperateAutomaticMachinery => order.Site is { } site && world.SystemOf<Production.ProductionSystem>() is { } production
+                ? production.AutoHaulScore(world, slot, cold, site)
+                : Registered(world, slot, order),
             TaskType.FirstAidOrder => world.SystemOf<FirstAidSystem>()?.TreatOrderDesire(world, slot, order.Target, robot: false),
             TaskType.FirstAidRobot => world.SystemOf<FirstAidSystem>()?.TreatOrderDesire(world, slot, order.Target, robot: true),
             TaskType.SplintOrder => world.SystemOf<FirstAidSystem>()?.SplintOrderDesire(world, slot, order.Target),

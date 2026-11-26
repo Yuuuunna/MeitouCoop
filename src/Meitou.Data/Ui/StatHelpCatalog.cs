@@ -9,10 +9,10 @@ namespace Meitou.Data.Ui;
 public sealed class StatHelpCatalog
 {
     /// <summary>
-    /// A stat paragraph of the template: the <c>statswindow.cpp</c> lines that reference it, its text in the active language and the length of its
-    /// English msgid.
+    /// A stat paragraph of the template: the <c>statswindow.cpp</c> lines that reference it and its English msgid, translated when shown (so the
+    /// mods' shown text follows a refresh).
     /// </summary>
-    sealed record Entry(int[] Lines, string Text, int EnglishLength);
+    sealed record Entry(int[] Lines, string English);
     /// <summary>
     /// Every template entry referenced from <c>kenshi/statswindow.cpp</c>, in template order.
     /// </summary>
@@ -25,7 +25,8 @@ public sealed class StatHelpCatalog
     /// <summary>
     /// The text referenced from source line <paramref name="line"/>, the longest English msgid when several share it; "" when none.
     /// </summary>
-    public string TextAt(int line) => _entries.Where(e => e.Lines.Contains(line)).MaxBy(e => e.EnglishLength)?.Text ?? "";
+    public string TextAt(int line) =>
+        _entries.Where(e => e.Lines.Contains(line)).MaxBy(e => e.English.Length) is { } entry ? Loc.Tr(entry.English) : "";
 
     /// <summary>
     /// <see cref="From"/> the gettext template at <paramref name="path"/>.
@@ -42,7 +43,7 @@ public sealed class StatHelpCatalog
         // has one.
         foreach (var entry in template)
             if (entry.References.Where(r => r.File == "kenshi/statswindow.cpp").Select(r => r.Line).Distinct().ToArray() is { Length: > 0 } lines)
-                result._entries.Add(new(lines, Loc.Tr(entry.Id), entry.Id.Length));
+                result._entries.Add(new(lines, entry.Id));
         return result;
     }
 
@@ -56,15 +57,15 @@ public sealed class StatHelpCatalog
         var (description, affected, training, end, physical) = stat switch
         {
             StatsEnumerated.Strength => (937, 499, 548, 553, 429),
-            StatsEnumerated.Toughness => (942, 554, 568, 578, 433),
+            StatsEnumerated.Toughness => (942, 554, 568, 578, 0),
             StatsEnumerated.Dexterity => (945, 579, 587, 591, 422),
             StatsEnumerated.Perception => (947, 709, 714, 718, 0),
             StatsEnumerated.MeleeAttack => (959, 592, 597, 604, 0),
             StatsEnumerated.MeleeDefence => (960, 605, 609, 616, 0),
-            StatsEnumerated.MartialArts => (961, 617, 625, 633, 426),
+            StatsEnumerated.MartialArts => (961, 617, 625, 633, 422),
             StatsEnumerated.Dodge => (963, 634, 641, 646, 0),
-            StatsEnumerated.Athletics => (973, 647, 654, 658, 0),
-            StatsEnumerated.Swimming => (974, 659, 666, 670, 0),
+            StatsEnumerated.Athletics => (973, 647, 654, 658, 426),
+            StatsEnumerated.Swimming => (974, 659, 666, 670, 426),
             StatsEnumerated.Medic => (979, 671, 675, 680, 0),
             StatsEnumerated.Robotics => (984, 671, 675, 680, 0),
             StatsEnumerated.Turrets => (956, 689, 694, 698, 0),
@@ -78,9 +79,9 @@ public sealed class StatHelpCatalog
             StatsEnumerated.Science => (985, 790, 794, 800, 437),
             StatsEnumerated.Labouring => (987, 801, 806, 810, 0),
             StatsEnumerated.Farming => (988, 811, 817, 821, 0),
-            StatsEnumerated.Cooking => (989, 822, 826, 831, 0),
-            StatsEnumerated.SmithingWeapon => (981, 832, 839, 843, 0),
-            StatsEnumerated.SmithingArmour => (982, 844, 853, 857, 0),
+            StatsEnumerated.Cooking => (989, 822, 826, 831, 437),
+            StatsEnumerated.SmithingWeapon => (981, 832, 839, 843, 433),
+            StatsEnumerated.SmithingArmour => (982, 844, 853, 857, 433),
             StatsEnumerated.SmithingBow => (983, 858, 868, 870, 0),
             StatsEnumerated.Katanas => (950, 681, 684, 688, 0),
             StatsEnumerated.Sabres => (951, 681, 684, 688, 0),
@@ -90,8 +91,8 @@ public sealed class StatHelpCatalog
             StatsEnumerated.Polearms => (955, 681, 684, 688, 0),
             _ => (0, 0, 0, 0, 0),
         };
-        string[] Between(int from, int to) => _entries.SelectMany(e => e.Lines.Where(l => l > from && l < to).Select(l => (Line: l, e.Text)))
-            .OrderBy(e => e.Line).Select(e => e.Text).Distinct().ToArray();
+        string[] Between(int from, int to) => _entries.SelectMany(e => e.Lines.Where(l => l > from && l < to).Select(l => (Line: l, e.English)))
+            .OrderBy(e => e.Line).Select(e => Loc.Tr(e.English)).Distinct().ToArray();
         return new(TextAt(description), Between(affected, training), Between(training, end + 1), TextAt(physical));
     }
 }

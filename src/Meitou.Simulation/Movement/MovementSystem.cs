@@ -41,7 +41,7 @@ namespace Meitou.Simulation.Movement;
 /// straight at the aim, else it takes paths, and for <see cref="FollowPathSeconds"/> after a blocked step (engine choice). Not done: the original's
 /// aim outside a building the follower cannot enter.</item>
 /// <item>Turning: a walker out of combat faces the way it moves while its velocity follows the agent's acceleration (the original's model, Verified);
-/// its drawn body turns after the facing at a limited rate (<see cref="AnimationSystem.FollowFacing"/>). Fighters and direct followers keep the
+/// its drawn body turns after the facing at a limited rate (<see cref="AnimationSystem.FollowFacing"/>). Fighters keep the
 /// heading limit <see cref="TurnRate"/> and the cosine cut (engine choice).</item> Queued move orders (row-29 entries of
 /// <see cref="CharacterCold.OrderQueue"/>) and the formation (<see cref="Formation"/>) exist.
 /// </summary>
@@ -305,6 +305,30 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
+    /// <see cref="Aim"/> at a point with its height (serial phases only): the walk keeps the point's floor (<see cref="CharacterCold.GoalHeight"/>),
+    /// as the original hands its path search the goal at its own height (docs/game/pathfinding.md "Geometry and queries"). Without it a goal under
+    /// a stacked floor resolves to the walker's own storey. Returns the X/Z goal.
+    /// </summary>
+    public static Vector2 AimAt(CharacterTable table, int slot, Vector3 at, byte mode)
+    {
+        var flat = new Vector2(at.X, at.Z);
+        Aim(table, slot, flat, mode);
+        var cold = table.Cold(slot)!;
+        (cold.GoalHeight, cold.GoalHeightAt) = (at.Y, flat);
+        return flat;
+    }
+
+    /// <summary>
+    /// <see cref="GoTo"/> a point with its height (serial phases only; <see cref="AimAt"/>). Returns the X/Z goal.
+    /// </summary>
+    public static Vector2 GoToAt(CharacterTable table, int slot, Vector3 at, byte mode)
+    {
+        var flat = AimAt(table, slot, at, mode);
+        table.Next[slot].Task = (byte)CharacterTask.GoTo;
+        return flat;
+    }
+
+    /// <summary>
     /// <see cref="FollowOrder"/>: each awake, free character (not the target) drops what it does and follows the target
     /// (<see cref="CharacterCold.FollowOrder"/>); a sleeper gets up first. The order is row 45 Bodyguard or 31 Staying close; a job's follow
     /// (<paramref name="source"/> <see cref="TaskSource.Job"/>) runs the job's <paramref name="row"/>.
@@ -443,21 +467,25 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// <see cref="FollowOrder"/>: row 45 Bodyguard or 31 Staying close to each of the characters (the selection when empty) but the target.
+    /// <see cref="FollowOrder"/>: row 45 Bodyguard or 31 Staying close to each of the characters (the selection when empty) but the target. A
+    /// Follow regroups the ordered characters' speed groups as a move does (it goes through the same giver, <c>FUN_1407f9e20</c>); a Bodyguard
+    /// does not (the original always adds it through the job giver <c>FUN_1407f5a90</c>).
     /// </summary>
     void GiveFollow(World world, FollowOrder follow)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(follow.Target, out int led)) return;
 
+        var slots = new List<int>();
         foreach (var id in world.CommandCharacters(follow, follow.Characters))
-        {
-            if (table.TryResolveNext(id, out int s) && s != led)
-            {
-                var entry = new OrderEntry(follow.Guard ? TaskType.Bodyguard : TaskType.StayCloseToTarget, this) { Target = follow.Target };
-                PlayerOrders.Give(world, s, world.BindOrder(follow, entry), follow.Queued);
-            }
-        }
+            if (table.TryResolveNext(id, out int s)) slots.Add(s);
+
+        if (!follow.Guard) AssignSpeedGroup(world, slots);
+
+        var row = follow.Guard ? TaskType.Bodyguard : TaskType.StayCloseToTarget;
+        foreach (int s in slots)
+            if (s != led)
+                PlayerOrders.Give(world, s, world.BindOrder(follow, new OrderEntry(row, this) { Target = follow.Target }), follow.Queued);
     }
 
     /// <summary>
@@ -486,9 +514,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// <c>PlayerInterface::assignSpeedGroup</c>, run by each formation move order (docs/game/pathfinding.md "Speed groups"): when one of the
-    /// player's ordered characters is in Group speed, the ordered keep their group if they already share one and hold all its members, else they
-    /// leave their groups for one new group of their own, so a character moved alone goes at its own pace, not its old group's slowest.
+    /// <c>PlayerInterface::assignSpeedGroup</c>, run by each order the giver <c>FUN_1407f9e20</c> gives (move, follow; docs/game/pathfinding.md
+    /// "Speed groups"): when one of the player's ordered characters is in Group speed or already in a group, the ordered keep their group if they
+    /// already share one and hold all its members, else they leave their groups for one new group of their own, so a character ordered alone goes
+    /// at its own pace, not its old group's slowest.
     /// </summary>
     static void AssignSpeedGroup(World world, List<int> slots)
     {
@@ -499,7 +528,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         {
             if (table.Cold(s) is not { IsPlayer: true } c) continue;
 
-            grouping |= c.RunSpeed == SpeedMode.Group;
+            grouping |= c.RunSpeed == SpeedMode.Group || c.SpeedGroup >= 0;
             shared = shared == int.MinValue || shared == c.SpeedGroup ? c.SpeedGroup : -1;
         }
 
@@ -916,7 +945,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             }
             else
             {
-                NoPathFound(world, slot, ref n, cold);
+                NoPathFound(world, slot, ref n, cold, answer.Path.Unreachable);
             }
         }
     }
@@ -942,9 +971,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     static bool Walks(byte task) => task is (byte)CharacterTask.GoTo or (byte)CharacterTask.Talk;
 
     /// <summary>
-    /// The latest request found no path: a player's short order walks straight at its goal, any other walk is dropped and waits.
+    /// The latest request found no path: a player's short order walks straight at its goal (not one on ground its own cannot reach,
+    /// <paramref name="unreachable"/>: behind a wall or a locked door it would walk through them), any other walk is dropped and waits.
     /// </summary>
-    static void NoPathFound(World world, int slot, ref CharacterHot n, CharacterCold cold)
+    static void NoPathFound(World world, int slot, ref CharacterHot n, CharacterCold cold, bool unreachable)
     {
         // A player ordered out of a spot no path can leave (shut in a hollow the navmesh does not cross, or shoved into one) walks straight
         // at the order's goal instead of losing the order: the ordinary step test still refuses what it cannot walk, and EscapesToward above
@@ -953,7 +983,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         float toGoal = new Vector2(n.Goal.X - n.Position.X, n.Goal.Y - n.Position.Z).Length();
         bool shortHop = toGoal <= StraightOrderReach && world.Walkability.IsWalkable(n.Goal.X, n.Goal.Y, n.Position.Y);
 
-        if (cold.IsPlayer && n.Task == (byte)CharacterTask.GoTo && shortHop)
+        if (cold.IsPlayer && n.Task == (byte)CharacterTask.GoTo && shortHop && !unreachable)
         {
             cold.PathFailed = false;
             cold.Path = [new Vector3(n.Goal.X, n.Position.Y, n.Goal.Y)];
@@ -1308,26 +1338,13 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         var lead = prev[leader.Slot];
         var self = table.IdOf(i);
         var leadAt = new Vector2(lead.Position.X, lead.Position.Z);
-        var leadDir = new Vector2(MathF.Sin(lead.Yaw), MathF.Cos(lead.Yaw));
+        var leadDir = Direction(lead.Velocity);
         float leadSpeed = new Vector2(lead.Velocity.X, lead.Velocity.Z).Length();
-        bool moving = leadSpeed > StandingSpeed;
         var here = new Vector2(n.Position.X, n.Position.Z);
-        Vector2 slotPos;
-        Vector2? door = null;
-        float aimHeight = lead.Position.Y;
-
-        if (FormationOf(world, squad, cold, leader) is { } formation && formation.FormationSlots.TryGetValue(self, out var slot))
-        {
-            (slotPos, door, aimHeight) = FormationAim(world, i, dt, n.Position, cold, slot, leader.Slot, lead.Position, leadAt, leadDir, leadSpeed,
-                moving);
-        }
-        else
-        {
-            // Anyone else: its drawn distance from the target, on its own side.
-            var off = here - leadAt;
-            off = off.LengthSquared() > 1e-6f ? Vector2.Normalize(off) : -leadDir;
-            slotPos = leadAt + off * PlainDistance(world.Seed, self, leader);
-        }
+        var formation = FormationOf(world, squad, cold, leader);
+        (Vector2 slotPos, Vector2? door, float aimHeight) = formation is not null && formation.FormationSlots.TryGetValue(self, out var slot)
+            ? FormationAim(world, i, dt, n.Position, cold, slot, leader.Slot, lead.Position, leadAt, leadDir, leadSpeed)
+            : (PlainAim(here, leadAt, lead.Yaw, PlainDistance(world.Seed, self, leader)), null, lead.Position.Y);
 
         // The hold point takes the formation aim, an animal's door aim included, not the wait outside a locked building: that wait is Meitou's (see
         // ShutOutAim).
@@ -1346,7 +1363,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         float away = Vector2.Distance(here, slotPos) + (otherFloor ? climb : 0);
 
         // The catch-up factor reads the two movement vectors (+0xd0 / +0xd8 normalised), not the facings (FUN_14033b350, Verified).
-        cold.FollowSpeed = FollowSpeedFor(away, moving, Direction(lead.Velocity), Direction(prev[i].Velocity));
+        cold.FollowSpeed = FollowSpeedFor(away, leadSpeed > StandingSpeed, leadDir, Direction(prev[i].Velocity));
         n.Mode = lead.Mode;
         CopySneak(table, lead, leader.Slot, cold);
 
@@ -1357,6 +1374,16 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
 
         if (direct && !otherFloor && cold.FollowPathTime <= 0) SteerStraight(ref n, cold, slotPos, busy);
         else AskFollowPath(ref n, cold, flags, busy, slotPos, away, otherFloor, lead.Position.Y);
+    }
+
+    /// <summary>
+    /// A plain follower keeps its drawn distance from the target, on its own side or behind the target when they coincide.
+    /// </summary>
+    static Vector2 PlainAim(Vector2 here, Vector2 target, float yaw, float distance)
+    {
+        var offset = here - target;
+        var direction = offset.LengthSquared() > 1e-6f ? Vector2.Normalize(offset) : -new Vector2(MathF.Sin(yaw), MathF.Cos(yaw));
+        return target + direction * distance;
     }
 
     /// <summary>
@@ -1380,22 +1407,18 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// height (the leader's, or the door point's).
     /// </summary>
     static (Vector2 Aim, Vector2? ShutOut, float Height) FormationAim(World world, int i, float dt, Vector3 at, CharacterCold cold, Vector2 slot, int leader,
-        Vector3 leaderAt, Vector2 leadAt, Vector2 leadDir, float leadSpeed, bool moving)
+        Vector3 leaderAt, Vector2 leadAt, Vector2 leadDir, float leadSpeed)
     {
         var heading = cold.FollowHeading;
 
-        if (heading == Vector2.Zero)
-        {
-            heading = leadDir;
-        }
-        else if (moving)
+        if (leadSpeed > 0)
         {
             heading += (leadDir - heading) * MathF.Min(1, HeadingEase * dt);
             heading = heading.LengthSquared() > 1e-8f ? Vector2.Normalize(heading) : leadDir;
+            cold.FollowHeading = heading;
         }
 
-        cold.FollowHeading = heading;
-        var turned = Formation.ToWorld(slot, heading);
+        var turned = Formation.ToWorld(slot, heading == Vector2.Zero ? -Vector2.UnitX : heading);
         if (AnimalDoorAim(world, leader, cold) is { } door)
         {
             var aim = new Vector2(door.X, door.Z) + turned * DoorSlotScale;
@@ -1598,7 +1621,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     public CombatSystem? Fights { get; set; }
 
     /// <summary>
-    /// Speed gained per second in combat (docs/game/pathfinding.md, the combat / follow steering: "ramps up by 15 per second").
+    /// Speed gained per second in combat steering (docs/game/pathfinding.md).
     /// </summary>
     public const float Acceleration = 15;
 
@@ -1725,12 +1748,17 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         public Vector2 Dir;
 
         /// <summary>
+        /// Maximum travel of a direct follow step, the square root of the distance to its aim (zero for other steps).
+        /// </summary>
+        public float FollowStepLimit;
+
+        /// <summary>
         /// Its heading was set this step.
         /// </summary>
         public bool Facing;
 
         /// <summary>
-        /// It walks a path at the nav agent's velocity.
+        /// It moves at the nav agent's velocity, along a path or toward a follow aim.
         /// </summary>
         public bool AgentWalk;
 
@@ -2077,7 +2105,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             reached = occupied || dist <= (last ? cold.ArriveWithin > 0 ? cold.ArriveWithin : FinalArrive : pass)
                 && (last || dist <= CornerReach || CanCut(walk, p.Position, cold.Path[n.PathCursor + 1], 2 * pass))
                 // A corner the agent's velocity has carried past (it turns at its acceleration, not at once) is behind it, not circled.
-                || !last && dist <= ArriveRadius && to.X * p.Velocity.X + to.Y * p.Velocity.Z < 0;
+                || !last && dist <= ArriveRadius && to.X * p.Velocity.X + to.Y * p.Velocity.Z < 0
+                || !last && AtFeet(p.Position, cold.Path[n.PathCursor + 1]);
 
             if (reached)
             {
@@ -2099,7 +2128,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             else if (!cold.InCombat)
             {
                 var past = PastCorner(p, cold.Path[n.PathCursor + 1]);
-                (s.Dir, s.Desired) = CornerBrake(p.Velocity, past, s.Dir, s.Desired, PathAcceleration(cold));
+                if (TurnsAhead(past, dist)) (s.Dir, s.Desired) = CornerBrake(p.Velocity, past, s.Dir, s.Desired, PathAcceleration(cold));
             }
         }
 
@@ -2169,7 +2198,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         cold.Running is { Row: TaskType.TakeIntruderOutside or TaskType.TakeIntruderOutsideTown } || Ai.TownTravel.Runs(cold);
 
     /// <summary>
-    /// A follower near its aim (Think set it as the goal) steers straight at it at its desired speed, capped by its top speed, never past it.
+    /// A follower near its aim (Think set it as the goal) steers its nav agent toward it with the task's speed cap and per-step travel limit.
     /// </summary>
     static void SteerToAim(in CharacterHot p, in CharacterHot n, CharacterCold cold, ref StepState s)
     {
@@ -2179,7 +2208,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (dist > 1e-3f)
         {
             s.Dir = gap / dist;
-            s.Desired = MathF.Min(MathF.Min(cold.FollowSpeed, n.MaxSpeed), dist / s.Dt);
+            s.Desired = MathF.Min(cold.FollowSpeed, n.MaxSpeed);
+            s.FollowStepLimit = MathF.Sqrt(dist);
         }
     }
 
@@ -2236,14 +2266,14 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         // A path is followed by the nav agent, whose speed moves toward the wanted one at its race's acceleration (PathAcceleration); a
         // fighter goes at its steering speed, which ramps by 15 / s up to its top speed and is kept between ticks (CharacterCold.SteerSpeed),
         // not restarted when a path ends.
-        if (cold.InCombat)
+        if (cold.InCombat && s.FollowStepLimit == 0)
         {
             cold.SteerSpeed = MathF.Min(cold.SteerSpeed + Acceleration * s.Dt, MathF.Max(n.MaxSpeed, s.Desired));
             s.Speed = cold.AgentSpeed = MathF.Min(s.Desired, cold.SteerSpeed);
         }
-        else if (n.Task == (byte)CharacterTask.Follow && ((MoveFlags)n.Flags & MoveFlags.AnyPath) == 0)
+        else if (n.Task == (byte)CharacterTask.Follow && ((MoveFlags)n.Flags & MoveFlags.AnyPath) == 0 && s.Desired == 0)
         {
-            s.Speed = cold.AgentSpeed = s.Desired;   // a follower near its slot steers straight (mode 2)
+            s.Speed = cold.AgentSpeed = 0;
         }
         else
         {
@@ -2303,6 +2333,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     {
         var walk = world.Walkability;
         float dt = s.Dt;
+        if (s.FollowStepLimit > 0 && s.Speed * dt > s.FollowStepLimit) dt = s.FollowStepLimit / s.Speed;
 
         // Separation from the neighbours of the last tick, visited in the grid's fixed order.
         var push = new SeparationState { Table = world.Characters, Self = i };
@@ -2508,7 +2539,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// <summary>
     /// Whether a walker at <paramref name="from"/> can step straight toward <paramref name="to"/> for <paramref name="probe"/> units (at least
     /// <see cref="ArriveRadius"/>), its height carried on as each step's is: a corner is cut early only then (engine choice; Observed: zone 22.10, a
-    /// walker beside a door stair's foot cut its corner up the stair's side and stood there).
+    /// walker beside a door stair's foot cut its corner up the stair's side and stood there), and never onto another layer than the leg's own
+    /// (<see cref="LeavesLeg"/>).
     /// </summary>
     static bool CanCut(IWalkability walk, Vector3 from, Vector3 to, float probe = ArriveRadius)
     {
@@ -2519,9 +2551,26 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         float y = from.Y;
         float most = MathF.Min(length, MathF.Max(probe, ArriveRadius));
         for (float d = 1; d <= most; d += 1)
-            if (!walk.TryStand(from.X + leg.X * (d / length), from.Z + leg.Y * (d / length), y, out y)) return false;
+        {
+            float t = d / length;
+            float x = from.X + leg.X * t, z = from.Z + leg.Y * t;
+            if (!walk.TryStand(x, z, y, out y) || LeavesLeg(walk, x, z, y, float.Lerp(from.Y, to.Y, t))) return false;
+        }
 
         return true;
+    }
+
+    /// <summary>
+    /// Whether a cut's step at (<paramref name="x"/>, <paramref name="z"/>), standing at <paramref name="y"/>, has left the leg it cuts along: off the
+    /// leg's straight height <paramref name="along"/> by more than <see cref="CorridorSlack"/> while another layer is there at that height (engine
+    /// choice, #1414: town guards cut a stair's foot across the ground beside it, walked on under the stair and into the storey below their upstairs
+    /// goal before turning back). Terrain that bulges off the straight height has no such layer and is cut as before.
+    /// </summary>
+    static bool LeavesLeg(IWalkability walk, float x, float z, float y, float along)
+    {
+        if (MathF.Abs(y - along) <= CorridorSlack) return false;
+
+        return walk.TryStand(x, z, along, out float own) && MathF.Abs(own - along) <= CorridorSlack && MathF.Abs(own - y) > CorridorSlack;
     }
 
     /// <summary>
@@ -2573,6 +2622,27 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// The way from the walker to the point past the corner it heads for, the point <see cref="CornerBrake"/> tests.
     /// </summary>
     static Vector2 PastCorner(in CharacterHot p, Vector3 past) => new(past.X - p.Position.X, past.Z - p.Position.Z);
+
+    /// <summary>
+    /// Whether the point past the corner lies ahead of the walker for <see cref="CornerBrake"/> to test: one nearer than the corner, or within
+    /// <see cref="ArriveRadius"/>, lies back at the walker (a path doubling back to its feet, #1387), and steering square across toward it circles
+    /// it for good (engine choice; the original's corner is an end of the first portal the agent has not crossed, <c>FUN_140144330</c>).
+    /// </summary>
+    static bool TurnsAhead(Vector2 past, float dist)
+    {
+        float length2 = past.LengthSquared();
+        return length2 >= dist * dist && length2 > ArriveRadius * ArriveRadius;
+    }
+
+    /// <summary>
+    /// Whether a path point lies at the walker's feet: within <see cref="CornerReach"/> on the ground plane and <see cref="CorridorSlack"/> in
+    /// height. The waypoint before such a point is passed, not walked to and back (engine choice, #1387).
+    /// </summary>
+    static bool AtFeet(Vector3 at, Vector3 point)
+    {
+        var flat = new Vector2(point.X - at.X, point.Z - at.Z);
+        return flat.LengthSquared() <= CornerReach * CornerReach && MathF.Abs(point.Y - at.Y) <= CorridorSlack;
+    }
 
     /// <summary>
     /// The factor on a character's step time: <see cref="OffViewTime"/> out of view.

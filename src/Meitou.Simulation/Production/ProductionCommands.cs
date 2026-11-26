@@ -113,11 +113,22 @@ public sealed record ArrangeMachine(string Site) : MachineControlCommand
     public ulong ContainerSessionId { get; init; }
 }
 
+/// <summary>A faction research queue mutation, validated independently of per-tick progress.</summary>
+public abstract record ResearchQueueCommand : FactionCommand
+{
+    public ulong QueueRevision { get; init; }
+}
+
 /// <summary>Queues a research (paying its cost from the research benches when it was never paid).</summary>
-public sealed record QueueResearch(string Research) : FactionCommand;
+public sealed record QueueResearch(string Research) : ResearchQueueCommand;
 
 /// <summary>Takes a research off the queue; its progress is kept for when it is queued again.</summary>
-public sealed record CancelResearch(string Research) : FactionCommand;
+public sealed record CancelResearch(string Research) : ResearchQueueCommand;
+
+/// <summary>
+/// Moves a queued research to the position of another queued research.
+/// </summary>
+public sealed record MoveResearch(string Research, string Target) : ResearchQueueCommand;
 
 /// <summary>Queues a craft at a crafting bench: an option's key (<see cref="Meitou.Data.Gameplay.Construction.CraftOption.Key"/>), <paramref name="Count"/> times.</summary>
 public sealed record QueueCraft(string Site, string Option, int Count = 1) : MachineControlCommand;
@@ -133,6 +144,12 @@ public sealed record CancelCraft(string Site, int Index) : MachineControlCommand
 
 /// <summary>Sets a bench's repeat flag: a finished craft goes back to the end of the queue.</summary>
 public sealed record RepeatCrafts(string Site, bool Repeat) : MachineControlCommand;
+
+/// <summary>
+/// A storage's put or take priority, from its panel (<see cref="Machine.PutPriority"/>, <see cref="Machine.TakePriority"/>): applied to a complete
+/// storage of the player's faction. Engine setting, not in the original.
+/// </summary>
+public sealed record SetStoragePriority(string Site, Items.StorageUse Use, Items.StoragePriority Level) : MachineControlCommand;
 
 /// <summary>A machine's Power toggle (<c>power on</c>) or, for a consumer, its Battery toggle (<c>gets battery</c>); null leaves one as it is.</summary>
 public sealed record SetMachinePower(string Site, bool? PowerOn = null, bool? GetsBattery = null) : MachineControlCommand;

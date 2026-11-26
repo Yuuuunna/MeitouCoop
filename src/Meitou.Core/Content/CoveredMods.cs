@@ -6,8 +6,9 @@ namespace Meitou.Content;
 public sealed record MatchedItem(ulong Id, long Updated);
 
 /// <summary>
-/// A mod whose feature Meitou has built in (docs/formats/rekenshi.md): its <c>.mod</c> name or its code mod's id, the Meitou setting the
-/// feature became, and the workshop items it was matched against (none when it is matched by its code mod id, whatever its version).
+/// A mod whose feature Meitou has built in (docs/formats/rekenshi.md): its <c>.mod</c> name or its code mod's id (or neither: matched by its
+/// workshop items alone), the Meitou setting the feature became, and the workshop items it was matched against (none when it is matched by its
+/// code mod id, whatever its version).
 /// </summary>
 public sealed record BuiltInMod(string? ModName, string? CodeId, string Setting, MatchedItem[] Items);
 
@@ -50,9 +51,54 @@ public static class CoveredMods
         new("Character Highlight", null, "Hover outline in the Advanced settings", [new(3688641949, 1782253588)]);
 
     /// <summary>
+    /// The data mods that mute the corpse flies, matched by their workshop items: "Flies Are Muted" (1173024319, its 2017-10-18 update),
+    /// "Silent Corpse Flies" (1661152630, its 2019-02-20 update) and "Removes fly buzzing sound" (3249760334, its 2024-05-19 update).
+    /// </summary>
+    public static readonly BuiltInMod MuteFlies = new(null, null, "Mute corpse flies in the Audio settings",
+        [new(1173024319, 1508336963), new(1661152630, 1550624826), new(3249760334, 1716139203)]);
+
+    /// <summary>
+    /// The data mod "Immersive Flies" (workshop 2385009404, matched by its item against its 2021-02-05 update): the corpse flies are heard from
+    /// less far.
+    /// </summary>
+    public static readonly BuiltInMod ImmersiveFlies =
+        new(null, null, "Quiet corpse flies in the Audio settings", [new(2385009404, 1612536455)]);
+
+    /// <summary>
+    /// The data mods that raise the player faction, squad size and squad count caps, matched by <c>256 Squad Limit</c> or their workshop items:
+    /// "256 Recruitment Limit" (705119823, 2018-04-19), "256 People" (1767015632, 2019-06-11), "Increased Party Size 256" (1701119801, 2019-04-02),
+    /// "64 Faction Size Limit" (1723792132, 2019-04-26), "256 Recruits - V.1.0.68" (3405818838, 2025-01-12), "Wolves Max Squad limits" (1362433476,
+    /// 2018-04-15), "_256 Squad Limit" (1578601833, 2018-11-30), "increased recruitment (60 version)" (773491398, 2019-10-02), "100 Character Limit"
+    /// (1996458247, 2020-02-13), "Max Party Size (256)" (2133492547, 2020-06-17), "Maximized Faction size" (801089396, 2016-11-17), "48 Faction Size
+    /// Limit" (1723790671, 2019-04-26), "256 Squad Limit" (3746322010, 2026-06-17), "100factions 22Squads" (2018675754, 2020-03-12), "Recruitment
+    /// Limit 200" (2994957775, 2023-06-26) and "Increased Faction Limit &amp; Squad Size" (3551190789, 2025-09-20).
+    /// </summary>
+    public static readonly BuiltInMod SquadLimits = new("256 Squad Limit", null,
+        "Max faction size, Max squad size and Max squads in the Advanced settings",
+        [
+            new(705119823, 1524166325),
+            new(1767015632, 1560243898),
+            new(1701119801, 1554176827),
+            new(1723792132, 1556284426),
+            new(3405818838, 1736679135),
+            new(1362433476, 1523819046),
+            new(1578601833, 1543600152),
+            new(773491398, 1570003843),
+            new(1996458247, 1581609184),
+            new(2133492547, 1592424882),
+            new(801089396, 1479354852),
+            new(1723790671, 1556284391),
+            new(3746322010, 1781657015),
+            new(2018675754, 1583974579),
+            new(2994957775, 1687786216),
+            new(3551190789, 1758333424),
+        ]);
+
+    /// <summary>
     /// The mods Meitou has built in.
     /// </summary>
-    public static IReadOnlyList<BuiltInMod> BuiltIn { get; } = [RekenshiXp, XpPort, SwampTurtleFix, CharacterHighlight];
+    public static IReadOnlyList<BuiltInMod> BuiltIn { get; } =
+        [RekenshiXp, XpPort, SwampTurtleFix, CharacterHighlight, MuteFlies, ImmersiveFlies, SquadLimits];
 
     /// <summary>
     /// Emkej's "Loot-Scoot-Execute" (workshop 3675700748, matched against its 2026-04-26 update, and its "MCM fork" 3813852124, its 2026-11-13
@@ -111,29 +157,228 @@ public static class CoveredMods
         "TauntExpansion", [new(3771499164, 1784997418)], "[Meitou Client] Taunt Expansion Port", "TauntExpansion", 3841647315, "dxseba");
 
     /// <summary>
+    /// tata's "Area Guard" (workshop 3769985477, matched against its 2026-07-23 update), with dxseba's "[Meitou Client] Area Guard Port".
+    /// </summary>
+    static readonly EndorsedPort AreaGuard = new(
+        "AreaGuard", [new(3769985477, 1784775327)], "[Meitou Client] Area Guard Port", "AreaGuard", 3844430966, "dxseba");
+
+    /// <summary>
+    /// LEOPARD's "Better Looting (MCM fork) (QoL)" (workshop 3816121198, matched against its 2026-11-21 update), with dxseba's "[Meitou Client]
+    /// Better Looting Port".
+    /// </summary>
+    static readonly EndorsedPort BetterLooting = new(
+        "BetterLooting", [new(3816121198, 1795304224)], "[Meitou Client] Better Looting Port", "BetterLooting", 3844430978, "dxseba");
+
+    /// <summary>
+    /// Asur's "Building Search Bar (RE_Kenshi)" (workshop 3786979230, matched against its 2026-08-21 update), with dxseba's "[Meitou Client] Building
+    /// Search Bar Port".
+    /// </summary>
+    static readonly EndorsedPort BuildingSearchBar = new(
+        "Search bar", [new(3786979230, 1787345024)], "[Meitou Client] Building Search Bar Port", "BuildingSearchBar", 3844430983, "dxseba");
+
+    /// <summary>
+    /// luckyren's "Cannibalism" (workshop 3797113265, matched against its 2026-09-08 update), with dxseba's "[Meitou Client] Cannibalism Port".
+    /// </summary>
+    static readonly EndorsedPort Cannibalism = new(
+        "CannibalismTask", [new(3797113265, 1788868831)], "[Meitou Client] Cannibalism Port", "Cannibalism", 3844430991, "dxseba");
+
+    /// <summary>
+    /// nestore1961's "Elemental Enchantment" (workshop 3832978749, matched against its 2026-11-19 update), with dxseba's "[Meitou Client] Elemental
+    /// Enchantment Port".
+    /// </summary>
+    static readonly EndorsedPort ElementalEnchantment = new(
+        "Elemental Enchantment", [new(3832978749, 1795061091)],
+        "[Meitou Client] Elemental Enchantment Port", "ElementalEnchantment", 3844431001, "dxseba");
+
+    /// <summary>
+    /// Manboy's "Equipment Durability" (workshop 3834344700, matched against its 2026-11-18 update), with dxseba's "[Meitou Client] Equipment
+    /// Durability Port".
+    /// </summary>
+    static readonly EndorsedPort EquipmentDurability = new(
+        "Durability", [new(3834344700, 1794969418)], "[Meitou Client] Equipment Durability Port", "EquipmentDurability", 3844431009, "dxseba");
+
+    /// <summary>
+    /// Nixxen's "Fix Shopping Wages (RE_Kenshi)" (workshop 3775703318, matched against its 2026-08-01 update), with dxseba's "[Meitou Client] Fix
+    /// Shopping Wages Port".
+    /// </summary>
+    static readonly EndorsedPort FixShoppingWages = new(
+        "FixShoppingWages", [new(3775703318, 1785598382)], "[Meitou Client] Fix Shopping Wages Port", "FixShoppingWages", 3844431026, "dxseba");
+
+    /// <summary>
+    /// LEOPARD's "Kenshi Job Management (MCM fork) (QoL)" (workshop 3818460323, matched against its 2026-11-01 update), with dxseba's "[Meitou
+    /// Client] Job Management Port".
+    /// </summary>
+    static readonly EndorsedPort JobManagement = new(
+        "KenshiJobManagement", [new(3818460323, 1793577496)], "[Meitou Client] Job Management Port", "JobManagement", 3844431040, "dxseba");
+
+    /// <summary>
+    /// Jakematt2004's "Job Tabs" (workshop 3813790518, matched against its 2026-10-05 update), with dxseba's "[Meitou Client] Job Tabs Port".
+    /// </summary>
+    static readonly EndorsedPort JobTabs = new(
+        "JobTabs", [new(3813790518, 1791164245)], "[Meitou Client] Job Tabs Port", "JobTabs", 3844431048, "dxseba");
+
+    /// <summary>
+    /// SaturnVI_OuO's "Kenshi Affixes | 装备随机词条 [RE_Kenshi]" (workshop 3821983877, matched against its 2026-10-26 update), with dxseba's "[Meitou
+    /// Client] Kenshi Affixes Port".
+    /// </summary>
+    static readonly EndorsedPort KenshiAffixes = new(
+        "KenshiAffixes", [new(3821983877, 1793047348)], "[Meitou Client] Kenshi Affixes Port", "KenshiAffixes", 3844431053, "dxseba");
+
+    /// <summary>
+    /// Ekiuts's "Kenshi Compact" (workshop 3763089712, matched against its 2026-08-19 update), with dxseba's "[Meitou Client] Kenshi Compact Port".
+    /// </summary>
+    static readonly EndorsedPort KenshiCompact = new(
+        "KenshiCompact", [new(3763089712, 1787167045)], "[Meitou Client] Kenshi Compact Port", "KenshiCompact", 3844431060, "dxseba");
+
+    /// <summary>
+    /// redderth's "LimbToughness - Max HP to Limb [RE_Kenshi]" (workshop 3787222853, matched against its 2026-08-29 update), with dxseba's "[Meitou
+    /// Client] Limb Toughness Port".
+    /// </summary>
+    static readonly EndorsedPort LimbToughness = new(
+        "LimbToughness", [new(3787222853, 1788042766)], "[Meitou Client] Limb Toughness Port", "LimbToughness", 3844431063, "dxseba");
+
+    /// <summary>
+    /// Edenflora's "属性上限 Limited Stats (RE_Kenshi)" (workshop 3807762285, matched against its 2026-10-19 update), with dxseba's "[Meitou Client]
+    /// Limited Stats Port".
+    /// </summary>
+    static readonly EndorsedPort LimitedStats = new(
+        "Limit Talent", [new(3807762285, 1792411807)], "[Meitou Client] Limited Stats Port", "LimitedStats", 3841647179, "dxseba");
+
+    /// <summary>
+    /// LEOPARD's "Map markers (MCM fork) (QoL)" (workshop 3813852161, matched against its 2026-11-04 update), with dxseba's "[Meitou Client] Map
+    /// Markers Port".
+    /// </summary>
+    static readonly EndorsedPort MapMarkers = new(
+        "Map-markers", [new(3813852161, 1793810767)], "[Meitou Client] Map Markers Port", "MapMarkers", 3844431073, "dxseba");
+
+    /// <summary>
+    /// MENTAL's "KENSHI: MENTORS" (workshop 3834394158, matched against its 2026-11-05 update), with dxseba's "[Meitou Client] Mentors Port".
+    /// </summary>
+    static readonly EndorsedPort Mentors = new(
+        "Mentors", [new(3834394158, 1793917850)], "[Meitou Client] Mentors Port", "Mentors", 3844431079, "dxseba");
+
+    /// <summary>
+    /// john warosa's "Metabolic Traversal" (workshop 3709852838, matched against its 2026-04-19 update), with dxseba's "[Meitou Client] Metabolic
+    /// Traversal Port".
+    /// </summary>
+    static readonly EndorsedPort MetabolicTraversal = new(
+        "Metabolic Traversal", [new(3709852838, 1776588013)], "[Meitou Client] Metabolic Traversal Port", "MetabolicTraversal", 3844431090, "dxseba");
+
+    /// <summary>
+    /// Thenewcomer91's "PersistentPrisoners (RE_Kenshi)" (workshop 3798215878, matched against its 2026-09-13 update), with dxseba's "[Meitou Client]
+    /// Persistent Prisoners Port".
+    /// </summary>
+    static readonly EndorsedPort PersistentPrisoners = new(
+        "PersistentPrisoners", [new(3798215878, 1789307536)],
+        "[Meitou Client] Persistent Prisoners Port", "PersistentPrisoners", 3844431102, "dxseba");
+
+    /// <summary>
+    /// гопсосмыком's "Posh Damage Numbers" (workshop 3821781631, matched against its 2026-10-31 update), with dxseba's "[Meitou Client] Posh Damage
+    /// Numbers Port".
+    /// </summary>
+    static readonly EndorsedPort PoshDamageNumbers = new(
+        "DamageNumbers", [new(3821781631, 1793486736)], "[Meitou Client] Posh Damage Numbers Port", "PoshDamageNumbers", 3844431107, "dxseba");
+
+    /// <summary>
+    /// luckyren's "Queen Start with Birthing" (workshop 3777203526, matched against its 2026-08-29 update), with dxseba's "[Meitou Client] Queen
+    /// Birthing Port".
+    /// </summary>
+    static readonly EndorsedPort QueenBirthing = new(
+        "QueenBirth", [new(3777203526, 1788026960)], "[Meitou Client] Queen Birthing Port", "QueenBirthing", 3844431111, "dxseba");
+
+    /// <summary>
+    /// Basusu's "SleepFix" (workshop 3787375792, matched against its 2026-09-06 update), with dxseba's "[Meitou Client] Sleep Fix Port".
+    /// </summary>
+    static readonly EndorsedPort SleepFix = new(
+        "SleepFix", [new(3787375792, 1788679213)], "[Meitou Client] Sleep Fix Port", "SleepFix", 3844431114, "dxseba");
+
+    /// <summary>
+    /// Lingyang crow's "Sparring 切磋 - 队友互练 (RE_Kenshi)" (workshop 3776308916, matched against its 2026-08-29 update), with dxseba's "[Meitou Client]
+    /// Sparring Port".
+    /// </summary>
+    static readonly EndorsedPort Sparring = new(
+        "Sparring", [new(3776308916, 1788023150)], "[Meitou Client] Sparring Port", "Sparring", 3844431123, "dxseba");
+
+    /// <summary>
+    /// Au's "Squad Autonomy" (workshop 3800729618, matched against its 2026-10-16 update), with dxseba's "[Meitou Client] Squad Autonomy Port".
+    /// </summary>
+    static readonly EndorsedPort SquadAutonomy = new(
+        "SquadAutonomy", [new(3800729618, 1792129131)], "[Meitou Client] Squad Autonomy Port", "SquadAutonomy", 3844431127, "dxseba");
+
+    /// <summary>
+    /// LEOPARD's "Vital Read (MCM fork) (QoL)" (workshop 3813852230, matched against its 2026-11-01 update), with dxseba's "[Meitou Client] Vital
+    /// Read Port".
+    /// </summary>
+    static readonly EndorsedPort VitalRead = new(
+        "Vital-Read", [new(3813852230, 1793577431)], "[Meitou Client] Vital Read Port", "VitalRead", 3844431130, "dxseba");
+
+    /// <summary>
+    /// LEOPARD's "Vital Sense (MCM fork) (QoL)" (workshop 3813852288, matched against its 2026-11-13 update), with dxseba's "[Meitou Client] Vital
+    /// Sense Port".
+    /// </summary>
+    static readonly EndorsedPort VitalSense = new(
+        "Vital-Sense", [new(3813852288, 1794544314)], "[Meitou Client] Vital Sense Port", "VitalSense", 3844431141, "dxseba");
+
+    /// <summary>
+    /// LEOPARD's "Wanted Map (QoL)" (workshop 3813761812, matched against its 2026-11-21 update), with dxseba's "[Meitou Client] Wanted Map Port".
+    /// </summary>
+    static readonly EndorsedPort WantedMap = new(
+        "WantedMap", [new(3813761812, 1795297616)], "[Meitou Client] Wanted Map Port", "WantedMap", 3844431147, "dxseba");
+
+    /// <summary>
+    /// tata's "Weapon Dodge & Guard" (workshop 3767056805, matched against its 2026-08-22 update), with dxseba's "[Meitou Client] Weapon Dodge &
+    /// Guard Port".
+    /// </summary>
+    static readonly EndorsedPort WeaponDodgeGuard = new(
+        "WeaponDodgeGuard", [new(3767056805, 1787386406)], "[Meitou Client] Weapon Dodge & Guard Port", "WeaponDodgeGuard", 3844431155, "dxseba");
+
+    /// <summary>
+    /// klimsat's "Work for Cats - Get Hired at NPC Workbenches" (workshop 3802290991, matched against its 2026-09-15 update), with dxseba's "[Meitou
+    /// Client] Work for Cats Port".
+    /// </summary>
+    static readonly EndorsedPort WorkForCats = new(
+        "Work for Cats - Get Hired at NPC Workbenches", [new(3802290991, 1789500209)],
+        "[Meitou Client] Work for Cats Port", "WorkForCats", 3844431159, "dxseba");
+
+    /// <summary>
+    /// Alexander's "XP Info - experience gain notifications" (workshop 3795213616, matched against its 2026-09-03 update), with dxseba's "[Meitou
+    /// Client] XP Info Port".
+    /// </summary>
+    static readonly EndorsedPort XpInfo = new(
+        "xp_info", [new(3795213616, 1788472284)], "[Meitou Client] XP Info Port", "XpInfo", 3844431170, "dxseba");
+
+    /// <summary>
     /// The RE_Kenshi mods with an endorsed port on the Steam workshop.
     /// </summary>
     public static IReadOnlyList<EndorsedPort> Endorsed { get; } =
     [
-        Execution, ProvingGrounds, Disarm, ItTicklesMe, KillCounter, LevelUpNotify, SpeedMenu, StackSort, TauntExpansion,
+        Execution, ProvingGrounds, Disarm, ItTicklesMe, KillCounter, LevelUpNotify, SpeedMenu, StackSort, TauntExpansion, AreaGuard, BetterLooting,
+        BuildingSearchBar, Cannibalism, ElementalEnchantment, EquipmentDurability, FixShoppingWages, JobManagement, JobTabs, KenshiAffixes,
+        KenshiCompact, LimbToughness, LimitedStats, MapMarkers, Mentors, MetabolicTraversal, PersistentPrisoners, PoshDamageNumbers, QueenBirthing,
+        SleepFix, Sparring, SquadAutonomy, VitalRead, VitalSense, WantedMap, WeaponDodgeGuard, WorkForCats, XpInfo,
     ];
 
     /// <summary>
-    /// The public wishlist of RE_Kenshi mods for Meitou (the roadmap's compatibility sheet), where players ask for one to be covered.
+    /// The public wishlist of RE_Kenshi mods for Meitou, where players ask for one to be covered.
     /// </summary>
     public static Uri Wishlist { get; } = new("https://docs.google.com/spreadsheets/d/1h6HXRgT1MbioPtgj3enuXIdevj2JWaRU8qSz-99Haoo/edit?gid=0#gid=0");
 
     /// <summary>
-    /// The entry that has <paramref name="mod"/> built in, by its <c>.mod</c> name or its code mod's id; null when none does.
+    /// The entry that has <paramref name="mod"/> built in, by its <c>.mod</c> name, its code mod's id or its workshop item; null when none does.
     /// </summary>
-    public static BuiltInMod? BuiltInOf(ModInfo mod) => BuiltInOf(mod.Name, mod.HasCode ? CodeModManifest.TryReadId(mod.CodeManifestPath) : null);
+    public static BuiltInMod? BuiltInOf(ModInfo mod) => BuiltInOf(mod, mod.HasCode ? CodeModManifest.TryReadId(mod.CodeManifestPath) : null);
 
     /// <summary>
-    /// The entry that has the mod named <paramref name="modName"/>, with code mod id <paramref name="codeId"/> (null: no code mod), built in;
-    /// null when none does.
+    /// The entry that has <paramref name="mod"/>, with code mod id <paramref name="codeId"/> (null: no code mod), built in, by its <c>.mod</c>
+    /// name, that id or its workshop item; null when none does.
     /// </summary>
-    public static BuiltInMod? BuiltInOf(string modName, string? codeId) =>
-        BuiltIn.FirstOrDefault(c => c.ModName == modName || (codeId is not null && c.CodeId == codeId));
+    public static BuiltInMod? BuiltInOf(ModInfo mod, string? codeId)
+    {
+        ulong? item = WorkshopId(mod);
+        return BuiltIn.FirstOrDefault(c => c.ModName == mod.Name
+            || (codeId is not null && c.CodeId == codeId)
+            || (item is { } id && c.Items.Any(i => i.Id == id)));
+    }
 
     /// <summary>
     /// The endorsed port of <paramref name="mod"/>, an RE_Kenshi plugin without code of its own, by its <c>.mod</c> name or its workshop item;

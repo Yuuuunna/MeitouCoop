@@ -167,8 +167,9 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
                         && Vector3.Distance(table.Next[m].Position, table.Next[s].Position) <= SlaveSaleRange
                         && (t.Context.Actor is null || world.Players.CanControl(t.Context.Actor.Value, id)))
                     {
-                        rows.Add(new(id, mc.Name, SalePrice(mc, t.Price),
-                            [(Loc.Tr("Name:"), mc.Name), (Loc.Tr("WARNING: Character will become a slave!"), "")], []));
+                        string name = world.ShownName(mc);
+                        rows.Add(new(id, name, SalePrice(mc, t.Price),
+                            [(Loc.Tr("Name:"), name), (Loc.Tr("WARNING: Character will become a slave!"), "")], []));
                     }
                 }
             }
@@ -176,12 +177,15 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
         else if (t.Kind == CharacterTradeKind.AnimalBuying)
         {
             foreach (var (id, ac) in AnimalsForSale(world, s, sc))
-                rows.Add(new(id, ac.Name, AnimalPrice(ac, t.Price), AnimalPanel(ac), [(ac.Name, ""), (Loc.Tr("Age:"), AgeLine(ac))]));
+            {
+                string name = world.ShownName(ac);
+                rows.Add(new(id, name, AnimalPrice(ac, t.Price), AnimalPanel(ac), [(name, ""), (Loc.Tr("Age:"), AgeLine(ac))]));
+            }
         }
         else
         {
             foreach (var (id, c) in SlavesForSale(world, s, sc))
-                rows.Add(new(id, c.Name, PurchasePrice(world, c, t.Price, t.Context.Faction),
+                rows.Add(new(id, world.ShownName(c), PurchasePrice(world, c, t.Price, t.Context.Faction),
                     StatLines(c, StatsEnumerated.Strength, StatsEnumerated.Dexterity, StatsEnumerated.Toughness, StatsEnumerated.MeleeAttack,
                         StatsEnumerated.MeleeDefence),
                     StatLines(c, StatsEnumerated.Labouring, StatsEnumerated.Farming, StatsEnumerated.Cooking, StatsEnumerated.Engineering,
@@ -422,7 +426,7 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
     void BuyAnimals(World world, Interaction state, CharacterTrade t, int seller, List<(int Slot, CharacterCold Cold, long Price)> chosen, long total)
     {
         var table = world.Characters;
-        int free = data.Bodies.Constants.MaxFactionSize - Factions.SquadManagement.CappedHeads(world, t.Context.Faction);
+        int free = data.Bodies.MaxFactionSize - Factions.SquadManagement.CappedHeads(world, t.Context.Faction);
         if (!table.TryResolveNext(t.Player, out int targetSlot) || table.Cold(targetSlot) is not { } target) return;
         if (chosen.Count > free || chosen.Count > system.RecruitSpace(world, t.Context, target))
         {

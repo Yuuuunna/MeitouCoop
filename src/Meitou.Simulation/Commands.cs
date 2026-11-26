@@ -327,6 +327,7 @@ public static class PlayerCommandRouting
             Construction.UpgradeSite q => q.Site,
             Construction.DowngradeSite q => q.Site,
             Construction.SetBuildingPublic q => q.Building,
+            Construction.RenameSite q => q.Site,
             _ => "",
         }),
         Items.OpenContainerOrder c => new(CommandFactionSource.Container, Site: c.Fixture),
@@ -346,6 +347,7 @@ public static class PlayerCommandRouting
             Production.CancelCraft q => q.Site,
             Production.RepeatCrafts q => q.Site,
             Production.SetMachinePower q => q.Site,
+            Production.SetStoragePriority q => q.Site,
             Production.IncinerateFurnace q => q.Site,
             Production.ArrangeMachine q => q.Site,
             _ => "",
@@ -377,7 +379,7 @@ public static class PlayerCommandRouting
         };
     }
     internal static bool Supports(SimCommand command) => command is
-        Production.QueueResearch or Production.CancelResearch or MoveOrder or FollowOrder or StopCommand or SelectCommand
+        Production.QueueResearch or Production.CancelResearch or Production.MoveResearch or MoveOrder or FollowOrder or StopCommand or SelectCommand
         or Combat.AttackOrder or Combat.ShootAtOrder or Trading.OpenTrade or Trading.BuyItem or Trading.SellItem or Trading.CloseTrade or Trading.ArrangeStock
         or Items.ArrangeInventory or Items.RotateItem or Items.QuickMoveItem or Items.ReadMapItem or Items.TransferInventoryItem or OrdersCommand or RunSpeedCommand or StandUpCommand or ManoeuvreCommand
         or Dialogue.AreaArrival or Dialogue.TalkOrder or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
@@ -385,12 +387,12 @@ public static class PlayerCommandRouting
         or Ai.SetSquadAutonomy or Ai.SetSquadHome
         or RenameFactionCommand or SquadFormationCommand or SquadAiCommand or Items.OpenContainerOrder or Items.CloseContainer
         or Production.PutInMachine or Production.TakeFromMachine or Production.QueueCraft or Production.CancelCraft
-        or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace or Production.ArrangeMachine
+        or Production.RepeatCrafts or Production.SetMachinePower or Production.SetStoragePriority or Production.IncinerateFurnace or Production.ArrangeMachine
         or Production.RemoveJob or Production.MoveJob or Production.AddOrderJob or Production.ProspectOrder
         or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob
         or Construction.BuildOrder or Construction.DismantleOrder or Construction.ConfirmDismantle or Construction.CancelSite
         or Construction.PauseSite or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic
-        or Construction.RenameTown or Construction.SetTownPublic or Construction.PlaceBuildings or Locks.BuyBuilding
+        or Construction.RenameTown or Construction.RenameSite or Construction.SetTownPublic or Construction.PlaceBuildings or Locks.BuyBuilding
         or FirstAid.TreatOrder or FirstAid.SplintOrder or FirstAid.RestOrder or FirstAid.MedicJobCommand
         or Editing.EditCharacter or Editing.InPlayEditorOpened
         or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder

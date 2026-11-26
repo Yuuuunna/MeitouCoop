@@ -258,18 +258,22 @@ public sealed partial class CombatSystem : IProjectileSource
     /// Whether <paramref name="shooter"/> (of <paramref name="faction"/>) counts <paramref name="other"/> as an enemy for the line of fire and
     /// friendly fire.
     /// </summary>
-    internal bool Hostile(CharacterTable table, int shooter, int shooterGeneration, int faction, int target, int other)
+    internal bool Hostile(World world, int shooter, int shooterGeneration, int faction, int target, int other)
     {
         if (other == target) return true;
 
         ref readonly var o = ref _read[other];
         if (o.TargetSlot == shooter && o.TargetGeneration == shooterGeneration) return true;
 
+        var table = world.Characters;
         var oc = table.Cold(other);
         if (oc is null) return false;
 
-        // The original asks the character's enemy test (Character slot 125); the engine uses the faction relations, and without a table (hand-built
-        // worlds) another faction.
+        // The character's enemy test (Character slot 125) while the shooter lives: the squads' temporary enemies, else the faction relations; a
+        // shooter gone, its faction's relations, and without a table (hand-built worlds) another faction.
+        bool shooterHere = table.Previous[shooter].Generation == shooterGeneration && table.Cold(shooter) is not null;
+        if (shooterHere) return CharacterFacts.RegardsEnemy(world, Memory, Relations, shooter, table.Cold(shooter)!, other, oc);
+
         return CharacterFacts.RegardsEnemy(Relations, faction, oc.Faction);
     }
 
@@ -284,15 +288,27 @@ public sealed partial class CombatSystem : IProjectileSource
     /// <summary>
     /// The fire decision's line of fire (<c>FUN_140437ad0</c>, docs/game/combat.md "Line of fire and the hit shape"): a ray from
     /// <paramref name="from"/> through <paramref name="to"/> (the original's is unbounded; here <paramref name="reach"/> long at least) and the first
-    /// thing it meets of the click hulls, the terrain and the buildings. A hull of one the shooter does not count an enemy holds the shot (2), any
-    /// enemy's lets it go (1), the target's included; the terrain lets it go (it names no object); a building closes in (0) when it is nearer the
-    /// shooter than the target is (feet to feet), else lets it go; nothing met fires. Buildings on the way still being read hold it (engine choice).
+    /// thing it meets (<see cref="FirstMet"/>), as <see cref="FireDecision"/> takes it.
     /// </summary>
-    int LineOfFire(World world, int self, int target, Vector3 from, Vector3 to, int faction, float reach)
+    int LineOfFire(World world, int self, int target, Vector3 from, Vector3 to, int faction, float reach) =>
+        FireDecision(world, self, target, faction, FirstMet(world, self, from, to, reach));
+
+    /// <summary>
+    /// What a line of fire meets first: the click hull of <see cref="Hull"/> (-1: none first), or a building where the segment
+    /// <see cref="From"/> + <see cref="Seg"/> x <see cref="At"/> meets it (<see cref="Building"/>), or the terrain or nothing; <see cref="Ready"/>
+    /// false while buildings on the way are still being read.
+    /// </summary>
+    readonly record struct LineMet(int Hull, bool Building, bool Ready, Vector3 From, Vector3 Seg, float At);
+
+    /// <summary>
+    /// The first thing a ray from <paramref name="from"/> through <paramref name="to"/>, <paramref name="reach"/> long at least, meets of the click
+    /// hulls, the terrain and the buildings.
+    /// </summary>
+    LineMet FirstMet(World world, int self, Vector3 from, Vector3 to, float reach)
     {
         var seg = to - from;
         float length = seg.Length();
-        if (length < 1e-3f) return 1;
+        if (length < 1e-3f) return new(-1, false, true, from, seg, -1);
 
         seg *= MathF.Max(length, reach) / length;
         length = MathF.Max(length, reach);
@@ -301,15 +317,27 @@ public sealed partial class CombatSystem : IProjectileSource
         // The terrain and the buildings only up to the first hull: whichever comes first decides.
         var solidSeg = hit >= 0 ? seg * atHull : seg;
         float solid = SolidHits.Hit(world.Walkability, Buildings, from, solidSeg, RangedTuning.TerrainStep, out bool building, out bool ready);
+
+        return solid < 0 ? new(hit, false, ready, from, solidSeg, -1) : new(-1, building, ready, from, solidSeg, solid);
+    }
+
+    /// <summary>
+    /// The decision on what a line of fire met first (<c>FUN_140437ad0</c>): a hull of one the shooter does not count an enemy holds the shot (2),
+    /// any enemy's lets it go (1), the target's included; the terrain lets it go (it names no object); a building closes in (0) when it is nearer
+    /// the shooter than the target is (feet to feet), else lets it go; nothing met fires. Buildings on the way still being read hold it (engine
+    /// choice).
+    /// </summary>
+    int FireDecision(World world, int self, int target, int faction, LineMet met)
+    {
         var prev = world.Characters.Previous;
 
         // The buildings on the way still being read: hold fire until they are known rather than shoot through a wall.
-        if (!ready) return 2;
+        if (!met.Ready) return 2;
 
-        if (solid < 0 && hit >= 0) return Hostile(world.Characters, self, prev[self].Generation, faction, target, hit) ? 1 : 2;
-        if (solid < 0 || !building) return 1;
+        if (met.Hull >= 0) return Hostile(world, self, prev[self].Generation, faction, target, met.Hull) ? 1 : 2;
+        if (!met.Building) return 1;
 
-        var at = from + solidSeg * solid;
+        var at = met.From + met.Seg * met.At;
         return Vector3.DistanceSquared(prev[self].Position, prev[target].Position) < Vector3.DistanceSquared(at, prev[self].Position) ? 1 : 0;
     }
 
@@ -519,7 +547,7 @@ public sealed partial class CombatSystem : IProjectileSource
         cold.RangedCombatMode = true;
         if (s.Loaded <= 0)
         {
-            Reload(i, ref s, cold, effects, dt);
+            Reload(world, i, ref s, cold, effects, dt);
             return;
         }
 
@@ -556,7 +584,7 @@ public sealed partial class CombatSystem : IProjectileSource
     /// counts it down with crossbows and dexterity XP and at its end holds <c>num shots</c>, the aim steadied again; a reload cut off resumes where
     /// it stopped.
     /// </summary>
-    void Reload(int i, ref CombatSlot s, CharacterCold cold, EffectBuffer effects, float dt)
+    void Reload(World world, int i, ref CombatSlot s, CharacterCold cold, EffectBuffer effects, float dt)
     {
         var fighter = cold.Fighter!;
         var x = fighter.Crossbow!;
@@ -571,7 +599,8 @@ public sealed partial class CombatSystem : IProjectileSource
 
             float skill = RangedFormulas.SkillBlend(Eff(cold, StatsEnumerated.Crossbows),
                 Eff(cold, StatsEnumerated.Dexterity), fighter.DexterityMult);
-            s.ReloadTime = RangedFormulas.ReloadTime(skill, x.Stats.ReloadMin, x.Stats.ReloadMax);
+            float rate = Filtered(world, i, CombatSpeedKind.Reload, 1);
+            s.ReloadTime = RangedFormulas.ReloadTime(skill, x.Stats.ReloadMin, x.Stats.ReloadMax) / rate;
             s.ReloadLeft = s.ReloadTime;
         }
 
@@ -679,6 +708,7 @@ public sealed partial class CombatSystem : IProjectileSource
         }
 
         var (range, speed) = Flight(x, s.LoadedKind);
+        speed = Filtered(world, i, CombatSpeedKind.Projectile, speed);
         var aim = AimPoint(barrel, world.Characters.Previous[t], world.Characters.Cold(t), speed);
         switch (LineOfFire(world, i, t, barrel, aim, cold.Faction, range))
         {
@@ -733,6 +763,7 @@ public sealed partial class CombatSystem : IProjectileSource
         // Meitou: the loaded ammunition (this tick's slot, the shot's own); null for a base-game crossbow.
         var ammo = _write[a].LoadedKind;
         var (_, leadSpeed) = Flight(x, ammo);
+        leadSpeed = Filtered(world, a, CombatSpeedKind.Projectile, leadSpeed);
         var barrel = Barrel(prev[a]);
         var aim = AimPoint(barrel, prev[t], table.Cold(t), leadSpeed);
         var to = aim - barrel;
@@ -755,6 +786,7 @@ public sealed partial class CombatSystem : IProjectileSource
             speed *= ammo.SpeedMult;
         }
 
+        speed = Filtered(world, a, CombatSpeedKind.Projectile, speed);
         _projectiles.Add(new Projectile
         {
             Id = _projectiles.NextId(),
@@ -841,9 +873,11 @@ public sealed partial class CombatSystem : IProjectileSource
         var cover = new BoltCover(world.Seed, Rng.Key(table.IdOf(v)), p.Id);
         bool observe = world.WantsCombatHits;
         bool wasAlive = observe && !dc.Medical.Dead, wasIncapacitated = observe && dc.Medical.Incapacitated;
-        var (part, damage, absorbed) = world.Player.OnePunch && p.ShooterIsPlayer
+        Bodies.HealthObservers.Before(world, v);
+        var (part, damage, absorbed, _) = world.Player.OnePunch && p.ShooterIsPlayer
             ? HitResolver.LandLethal(dc.Medical, ctx, DebugCheats.OnePunchDamage, false, true, events)
             : HitResolver.LandDetailed(dc.Medical, ctx, packet, armour, cover, toughness, false, true, _combat, events);
+        Bodies.HealthObservers.After(world, v, Bodies.HealthChangeKind.Hit);
         FloatHit(world, v, dc, p.ShooterIsPlayer, part, damage, absorbed, p.ShooterPlayer);
         Sound(world, SoundKind.BoltHit, v, p.Shooter, prev[v].Position, armoured: absorbed.Cut + absorbed.Blunt + absorbed.Pierce > 0, robot: false, otherIdentity: new(p.Shooter, p.ShooterGeneration));
         Splash(world, v, dc, new Vector2(p.Direction.X, p.Direction.Z), damage.Cut + damage.Blunt + damage.Pierce);
@@ -861,7 +895,10 @@ public sealed partial class CombatSystem : IProjectileSource
 
         BoltReaction(world, ref d, v, dc, dc.Medical, p, damage, toughness, death, now);
         if (dc.Stats is { } vs && dc.Fighter is { } vf)
+        {
             _xp.Combat(vs, dc.Race, XpEvent.HitTaken, vf.Unarmed, StatsEnumerated.None, p.ShooterSkill, StrengthFactor(dc, vf), p.Damage);
+            if (vf.Unarmed && dc.Race is not null) DodgeXp(dc, p.ShooterSkill, dodged: false);   // stat-set kind 5 (FUN_1408c6980 event 4)
+        }
 
         BoltShooterEffects(world, p, v, dc, dc.Medical, intended, death);
         if (Settings.RecordLog)
@@ -901,10 +938,15 @@ public sealed partial class CombatSystem : IProjectileSource
             d.ReactTech = -1;
             Sound(world, SoundKind.Down, v, p.Shooter, world.Characters.Previous[v].Position, fatal: death, otherIdentity: new(p.Shooter, p.ShooterGeneration));
         }
-        else if (damage.Cut + damage.Blunt + damage.Pierce + damage.ExtraStun > DamageFormulas.StumbleThreshold(toughness, _combat))
+        else
         {
-            // Only a heavy bolt staggers (engine choice: the original's reaction to a bolt was not traced).
-            Stagger(world, ref d, v, dc, true, now, (ulong)(uint)p.Id ^ 0x424F4C54UL, bolt: true);
+            // Only a heavy bolt staggers (engine choice: the original's reaction to a bolt was not traced), unless a reaction filter says otherwise.
+            float stagger = damage.Cut + damage.Blunt + damage.Pierce + damage.ExtraStun;
+            float threshold = DamageFormulas.StumbleThreshold(toughness, _combat);
+            var kind = ReactionOf(world, new BlowReactionAsk(world.Tick, CombatHitSource.Projectile, new CharacterId(p.Shooter, p.ShooterGeneration),
+                world.Characters.IdOf(v), p.Id, -1, damage, stagger, threshold, stagger > threshold ? BlowReactionKind.Heavy : BlowReactionKind.None));
+            if (kind != BlowReactionKind.None)
+                Stagger(world, ref d, v, dc, kind == BlowReactionKind.Heavy, now, (ulong)(uint)p.Id ^ 0x424F4C54UL, bolt: true);
         }
     }
 

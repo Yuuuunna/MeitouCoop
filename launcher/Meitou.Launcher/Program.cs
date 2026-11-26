@@ -34,6 +34,7 @@ static class Program
         // First: Velopack runs its install, update and uninstall hooks here and may exit (docs/launcher.md, "Self-update").
         Velopack.VelopackApp.Build().Run();
         NativeLibraries.Load();
+        AppMenuEntry.Refresh();
         BuildApp(args).StartWithClassicDesktopLifetime(args);
     }
 
@@ -42,7 +43,7 @@ static class Program
     /// </summary>
     static AppBuilder BuildApp(string[] args)
     {
-        var builder = AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace();
+        var builder = AppBuilder.Configure<App>().UsePlatformDetect().With(new X11PlatformOptions { WmClass = AppMenuEntry.WindowClass }).LogToTrace();
         SoftwareRendering = args.Contains("--software-rendering", StringComparer.Ordinal)
             || Environment.GetEnvironmentVariable("MEITOU_LAUNCHER_SOFTWARE_RENDERING") == "1";
         if (!SoftwareRendering) return builder;
@@ -53,7 +54,7 @@ static class Program
                 RenderingMode = [Win32RenderingMode.Software],
                 CompositionMode = [Win32CompositionMode.RedirectionSurface],
             })
-            .With(new X11PlatformOptions { RenderingMode = [X11RenderingMode.Software] })
+            .With(new X11PlatformOptions { WmClass = AppMenuEntry.WindowClass, RenderingMode = [X11RenderingMode.Software] })
             .With(new AvaloniaNativePlatformOptions { RenderingMode = [AvaloniaNativeRenderingMode.Software] });
     }
 }

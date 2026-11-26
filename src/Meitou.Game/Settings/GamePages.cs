@@ -50,6 +50,10 @@ sealed class GamePages(SettingsMenu menu)
     /// The Shift pan multiplier slider, made on first use.
     /// </summary>
     Slider? _shiftPanMultiplier;
+    /// <summary>
+    /// The Corpse flies range slider, made on first use.
+    /// </summary>
+    Slider? _corpseFlyRange;
 
     /// <summary>
     /// The audio sliders, made on first use.
@@ -90,6 +94,11 @@ sealed class GamePages(SettingsMenu menu)
     /// The skills' own Squad XP sliders, in <see cref="SkillXp.Skills"/>' order, made on first use.
     /// </summary>
     Slider[]? _skillXpSliders;
+
+    /// <summary>
+    /// The player faction size, squad size and squad count limit sliders, made on first use.
+    /// </summary>
+    Slider? _maxFactionSizeSlider, _maxSquadSizeSlider, _maxSquadsSlider;
 
     /// <summary>
     /// The dropped items kept slider, made on first use.
@@ -135,6 +144,19 @@ sealed class GamePages(SettingsMenu menu)
     Slider ShiftPanMultiplier => _shiftPanMultiplier ??= new("Shift pan speed", UserConfig.MinShiftPanMultiplier,
         UserConfig.MaxShiftPanMultiplier, () => menu.Config.ShiftPanMultiplier, SetShiftPanMultiplier, "0.00", Text: v => $"{v * 100:0}%",
         Meitou: UserConfig.DefaultShiftPanMultiplier, Scale: 100, Step: 0.25f);
+
+    /// <summary>
+    /// The Corpse flies range slider in 5% steps, marked at Meitou's 30%.
+    /// </summary>
+    Slider CorpseFlyRange => _corpseFlyRange ??= new("Corpse flies range", UserConfig.MinCorpseFlyRange, UserConfig.MaxCorpseFlyRange,
+        () => menu.Config.CorpseFlyRange, SetCorpseFlyRange, "0.00", Text: v => $"{v * 100:0}%", Meitou: UserConfig.DefaultCorpseFlyRange,
+        Scale: 100, Step: 0.05f);
+
+    /// <summary>
+    /// The corpse flies' range, rounded to 5% and clamped, into the config.
+    /// </summary>
+    void SetCorpseFlyRange(float v) =>
+        menu.Config.CorpseFlyRange = Math.Clamp(MathF.Round(v * 20) / 20, UserConfig.MinCorpseFlyRange, UserConfig.MaxCorpseFlyRange);
 
     /// <summary>
     /// The Shift pan multiplier, rounded to 25% and clamped, into the config and the camera.
@@ -345,6 +367,43 @@ sealed class GamePages(SettingsMenu menu)
             "0.##", Text: v => $"{v:0.##}x", Faithful: 1, Step: 0.25f);
 
     /// <summary>
+    /// The max faction size slider (1 to 256), marked at the game's 30.
+    /// </summary>
+    Slider MaxFactionSizeSlider => _maxFactionSizeSlider ??= SquadLimitSlider("Max faction size", UserConfig.DefaultMaxFactionSize,
+        () => menu.Config.MaxFactionSize ?? menu.Player.SquadWindows.SquadLimits?.Invoke()?.Constants.MaxFactionSize
+            ?? UserConfig.DefaultMaxFactionSize,
+        v => menu.Config.MaxFactionSize = v);
+
+    /// <summary>
+    /// The max squad size slider (1 to 256), marked at the game's 20.
+    /// </summary>
+    Slider MaxSquadSizeSlider => _maxSquadSizeSlider ??= SquadLimitSlider("Max squad size", UserConfig.DefaultMaxSquadSize,
+        () => menu.Config.MaxSquadSize ?? menu.Player.SquadWindows.SquadLimits?.Invoke()?.Constants.MaxSquadSize
+            ?? UserConfig.DefaultMaxSquadSize,
+        v => menu.Config.MaxSquadSize = v);
+
+    /// <summary>
+    /// The max squads slider (1 to 256), marked at the game's 10.
+    /// </summary>
+    Slider MaxSquadsSlider => _maxSquadsSlider ??= SquadLimitSlider("Max squads", UserConfig.DefaultMaxSquads,
+        () => menu.Config.MaxSquads ?? menu.Player.SquadWindows.SquadLimits?.Invoke()?.Constants.MaxSquads
+            ?? UserConfig.DefaultMaxSquads,
+        v => menu.Config.MaxSquads = v);
+
+    /// <summary>
+    /// A player squad or faction cap slider (1 to 256, whole counts, marked at the game's <paramref name="faithful"/>), applied to the running
+    /// world at once.
+    /// </summary>
+    Slider SquadLimitSlider(string label, int faithful, Func<int> get, Action<int> set) =>
+        new(label, UserConfig.MinSquadLimit, UserConfig.MaxSquadLimit, () => get(),
+            v =>
+            {
+                set(Math.Clamp((int)MathF.Round(v), UserConfig.MinSquadLimit, UserConfig.MaxSquadLimit));
+                menu.GameplayChanged?.Invoke();
+            },
+            "0", Faithful: faithful, Step: 1);
+
+    /// <summary>
     /// The fast speed slider, in half steps, marked at the game's default.
     /// </summary>
     Slider FastSpeedSlider => _fastSpeedSlider ??= TimeSpeed("Fast speed", SimulationClock.MinFastSpeed, SimulationClock.MaxFastSpeed, 1,
@@ -391,12 +450,19 @@ sealed class GamePages(SettingsMenu menu)
             + "Simple shows the total, Full one number per damage type and the part hit.",
             Choice: new(() => ["Off", "Simple info", "Full info"], () => (int)menu.Config.Floaters,
                 i => menu.Player.Floaters = menu.Config.Floaters = (FloaterMode)i)));
+        result.Add(new("Unavailable menu rows",
+            "Greyed: a menu row your selection can't do now, such as First Aid without a medkit, is greyed; Shift-click it to "
+            + "set up the job anyway. Faithful: every row as in the game.",
+            Choice: new(() => ["Faithful", "Greyed"], () => menu.Config.GreyUnavailableVerbs ? 1 : 0,
+                i => menu.Player.GreyUnavailableVerbs = menu.Config.GreyUnavailableVerbs = i == 1)));
         result.Add(new("Font size", "Points added to every interface font's default height (the game: 3).",
             Slider: new("Font size", UserConfig.MinFontSize, UserConfig.MaxFontSize, () => menu.Config.FontSize ?? KenshiFontSize.DefaultSetting,
                 v => SetFontSize(v), "0", Faithful: KenshiFontSize.DefaultSetting)));
         result.Add(new("Interface scale", "The size of the whole interface: text, buttons and windows (100%: as the window's height makes it).",
             Slider: new("Interface scale", UserConfig.MinInterfaceScale, UserConfig.MaxInterfaceScale, () => menu.Config.InterfaceScale,
                 SetInterfaceScale, "0.00", Text: v => $"{v * 100:0}%", Faithful: 1, Scale: 100, Step: 0.05f)));
+        result.Add(new("Settings window opacity", "How opaque the in-game settings window is (lower to see the world behind it while adjusting settings).",
+            Slider: menu.Window.OpacitySlider));
         result.Add(new("Show names",
             "The name over each of your characters (the game's Show names option). Off, only the stealth and light icons stay.",
             Toggle: new("Show names", () => menu.Config.ShowNames, v => menu.Player.ShowNames = menu.Config.ShowNames = v, OnOff: true)));
@@ -481,13 +547,26 @@ sealed class GamePages(SettingsMenu menu)
             "Picked-up and looted items go into the character's backpack first, then its slots and inventory (the game: only while the bag "
             + "window is open).",
             Toggle: new("Loot into backpack", () => menu.Config.TakeIntoBackpack, SetTakeIntoBackpack, OnOff: true)));
-        foreach (var action in Enum.GetValues<InputAction>().Where(a => a != InputAction.Quit && a != InputAction.ToggleFps))
+        var shown = Enum.GetValues<InputAction>().Where(a => a != InputAction.Quit && a != InputAction.ToggleFps).ToArray();
+        var mods = menu.Bindings.ModActions;
+        foreach (var action in shown)
+        {
             result.Add(new(SettingsMenu.ActionLabel(action), SettingHints.BindingHint(action), Binding: action));
 
-        // The code mods' key actions follow the game's, in load order (docs/modding.md "Key actions").
-        foreach (var mod in menu.Bindings.ModActions)
-            result.Add(new(mod.Caption, Loc.Tr("A key of the mod {1}: {2}.", mod.OwnerName, mod.Label), Binding: mod.Action));
+            // A code mod's key action that names this row follows it, in load order (docs/modding.md "Key actions").
+            foreach (var mod in mods.Where(m => m.After == action)) result.Add(ModKeyRow(mod));
+        }
+
+        // The other code mods' key actions follow the game's, in load order.
+        foreach (var mod in mods.Where(m => m.After is not { } after || !shown.Contains(after)))
+            result.Add(ModKeyRow(mod));
     }
+
+    /// <summary>
+    /// A code mod's key action's row: its label (in the mod's translation) and the mod's name.
+    /// </summary>
+    static SettingsMenu.Entry ModKeyRow(ModKeyAction mod) =>
+        new(mod.Caption, Loc.Tr("A key of the mod {1}: {2}.", mod.OwnerName, mod.ShownLabel), Binding: mod.Action);
 
     /// <summary>
     /// The Shift pan boost switch, into the config and the camera.
@@ -519,7 +598,7 @@ sealed class GamePages(SettingsMenu menu)
     }
 
     /// <summary>
-    /// The Audio page: the volumes, music frequency, voices and range, and where the listener is.
+    /// The Audio page: the volumes, music frequency, voices and range, where the listener is, and the corpse flies' sound and range.
     /// </summary>
     internal void AudioRows(List<SettingsMenu.Entry> result)
     {
@@ -543,6 +622,15 @@ sealed class GamePages(SettingsMenu menu)
             + "nobody is selected).",
             Toggle: new("Hear from", () => menu.Config.HearFromSelected, v => menu.Config.HearFromSelected = v,
                 Text: () => menu.Config.HearFromSelected ? "Character" : "Camera")));
+        result.Add(new("Mute corpse flies", "Silences the buzzing of the flies over corpses; the flies are still shown (the game: off).",
+            Toggle: new("Mute corpse flies", () => menu.Config.MuteCorpseFlies, v => menu.Config.MuteCorpseFlies = v, OnOff: true)));
+        result.Add(new("Quiet corpse flies", "The flies over corpses are heard only close to them, not from across the base (the game: off).",
+            Toggle: new("Quiet corpse flies", () => menu.Config.QuietCorpseFlies, v => menu.Config.QuietCorpseFlies = v, OnOff: true)));
+        if (menu.Config.QuietCorpseFlies)
+        {
+            result.Add(new(CorpseFlyRange.Label, "How far the corpse flies are heard, of the game's distance: lower to hear them less, higher for more.",
+                Slider: CorpseFlyRange, Depth: 1));
+        }
     }
 
     /// <summary>
@@ -604,6 +692,11 @@ sealed class GamePages(SettingsMenu menu)
             + "The game lets guards lift and grab prisoners anyway, so at a full prison they hand the same body round without end.",
             Toggle: new("Guards stop passing bodies", () => menu.Config.FixArrestLifts, v => menu.Config.FixArrestLifts = v, Remaster: true,
                 OnOff: true)));
+        result.Add(new("Guards give up lost suspects",
+            "A guard who loses sight of the character he was arresting gives up and goes back to his duties. "
+            + "The game has him take the fight up again wherever the character is, so he can run straight to someone hiding out of sight.",
+            Toggle: new("Guards give up lost suspects", () => menu.Config.FixArrestChases, v => menu.Config.FixArrestChases = v, Remaster: true,
+                OnOff: true)));
         result.Add(new("Door break sound",
             "Doors and gates make their breaking sound when they are bashed or broken open. "
             + "The game never picks which breaking sound to play, so it plays none.",
@@ -647,6 +740,11 @@ sealed class GamePages(SettingsMenu menu)
             + "The game mirrors the bench's look point through the middle of the world map, so the sitter faces an unrelated direction.",
             Toggle: new("Bench facing", () => menu.Config.FixBenchFacing,
                 v => { menu.Config.FixBenchFacing = v; menu.BenchFacingChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+        result.Add(new("Beds used as seats",
+            "A character sleeping on furniture that works as a seat, such as Bed (job), lies along the mattress as in a real bed. "
+            + "The game seats it on the furniture's middle, so it lies across the foot of the bed.",
+            Toggle: new("Beds used as seats", () => menu.Config.FixSeatBeds,
+                v => { menu.Config.FixSeatBeds = v; menu.SeatBedsChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
         result.Add(new("Prisoners hold still",
             "A wounded prisoner on a pole or in a cage keeps the pole's or cage's pose. "
             + "In the game it clutches its wounds there instead.",
@@ -677,6 +775,11 @@ sealed class GamePages(SettingsMenu menu)
             + "confiscating stolen goods inside the worn backpack. The game misses those bags, so goods hidden in them are never found.",
             Toggle: new("Bags in the inventory", () => menu.Config.FixBagSearch,
                 v => { menu.Config.FixBagSearch = v; menu.BagSearchChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+        result.Add(new("Pick-up thefts from the owner",
+            "Taking someone else's item from the floor of a building is a theft from the item's owner. "
+            + "The game counts it as stolen from whoever owns the building you stand in, even when the item belongs to someone else.",
+            Toggle: new("Pick-up thefts from the owner", () => menu.Config.FixPickUpTheft,
+                v => { menu.Config.FixPickUpTheft = v; menu.PickUpTheftChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
         result.Add(new("Guards spare their own",
             "Slavers and other cage guards leave their own faction's people in their cages alone instead of making them slaves. "
             + "In the game they enslave them too. Arrests that end in slavery are not affected.",
@@ -691,6 +794,11 @@ sealed class GamePages(SettingsMenu menu)
             + "The game starts it collapsed every time.",
             Toggle: new("Information panel stays open", () => menu.Config.KeepInfoPanel, v => menu.Config.KeepInfoPanel = v, Remaster: true,
                 OnOff: true)));
+        result.Add(new("Lockpick chance on the pointer",
+            "Pointing at a lock too hard to pick shows 0%, as its Pick Lock menu entry does, since the character cannot pick it. "
+            + "The game shows the chance before that limit there, such as 3% for a lock the menu gives 0%.",
+            Toggle: new("Lockpick chance on the pointer", () => menu.Config.FixLockpickLabel,
+                v => menu.Player.FixLockpickLabel = menu.Config.FixLockpickLabel = v, Remaster: true, OnOff: true)));
         result.Add(GroundRow());
         if (!menu.Player.IsRemoteSession) result.Insert(0, menu.PageSidesEntry(result, "All fixes", "Every bug on this page as the game ships it, or every fix.", "fix"));
     }
@@ -836,6 +944,16 @@ sealed class GamePages(SettingsMenu menu)
 
         result.Add(new(OthersXpSlider.Label,
             "The same for everyone outside your faction: other factions, enemies and wild animals (the game: 1x).", Slider: OthersXpSlider));
+        result.Add(new(MaxFactionSizeSlider.Label,
+            "The faction's recruitment limit: how many characters and animals your faction may hold (the game: 30). Existing members stay if you lower "
+            + "it. Click the number to type an exact value.",
+            Slider: MaxFactionSizeSlider));
+        result.Add(new(MaxSquadSizeSlider.Label,
+            "How many members one of your squads may hold (the game: 20). Full squads put new recruits into a new squad.",
+            Slider: MaxSquadSizeSlider));
+        result.Add(new(MaxSquadsSlider.Label,
+            "How many squads your faction may create (the game: 10).",
+            Slider: MaxSquadsSlider));
         result.Add(new(FastSpeedSlider.Label, "The game speed of the second speed button (two arrows) and its key (the game: 2x).",
             Slider: FastSpeedSlider));
         result.Add(new(FastestSpeedSlider.Label,

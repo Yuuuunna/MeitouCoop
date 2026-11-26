@@ -17,6 +17,8 @@
   <ItemGroup>
     <AvaloniaResource Include="../../assets/branding/meitou.ico" Link="Assets/meitou.ico" />
     <AvaloniaResource Include="../../assets/branding/meitou-64.png" Link="Assets/meitou-64.png" />
+    <!-- The app menu entry's icon on Linux (AppMenuEntry.cs). -->
+    <EmbeddedResource Include="../../assets/branding/meitou-128.png" LogicalName="meitou-128.png" Link="Assets/meitou-128.png" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="$(ReleaseSeedPath)" LogicalName="Meitou.Launcher.Releases.json" />

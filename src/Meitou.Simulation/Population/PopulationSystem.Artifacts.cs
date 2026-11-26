@@ -162,55 +162,9 @@ public sealed partial class PopulationSystem
 
         var rng = new BoostRandom(Artifacts.Seed);
         var given = new Dictionary<TownBuilding, List<MadeArtifact>>(ReferenceEqualityComparer.Instance);
-        // Each item to a building drawn among the first ones worth at least as much; with none it is lost.
-        void Share(List<MadeArtifact> made, List<(uint Base, TownBuilding Building)> homes)
-        {
-            foreach (var entry in made.OrderByDescending(m => m.Value))
-            {
-                int worth = homes.FindIndex(h => entry.Value > h.Base);
-                int last = (worth < 0 ? homes.Count : worth) - 1;
-                if (last < 0) continue;
-                var home = homes[rng.UniformInt(0, last)].Building;
-                (given.TryGetValue(home, out var mine) ? mine : given[home] = []).Add(entry);
-            }
-        }
-        Share(items, itemHomes);
-        Share(gear, gearHomes);
-
-        // Within a building: its stock containers emptied, strongest lock first; each item into one of the first 1, 2, 4... drawn, else the others in a shuffled order.
-        var shuffler = rng.Clone();
-        foreach (var b in site.Buildings)
-        {
-            if (!given.TryGetValue(b, out var mine)) continue;
-            var boxes = new List<(int Lock, Locks.Fixture Box)>();
-            foreach (var f in b.Fixtures)
-                if (f.HoldsShopStock && world.Fixtures.Find(f.Id) is { Contents: { } grid } box)
-                {
-                    grid.Items.Clear();
-                    boxes.Add((box.Lock?.Level ?? 0, box));
-                }
-            if (boxes.Count == 0) continue;
-            boxes = [.. boxes.OrderByDescending(x => x.Lock)];
-            int limit = 1;
-            foreach (var made in mine.OrderByDescending(m => m.Value))
-            {
-                int pick = rng.UniformInt(0, limit - 1);
-                if (!boxes[pick].Box.Contents!.AddTo("main", made.Item))
-                {
-                    var order = Enumerable.Range(0, boxes.Count).ToList();
-                    shuffler.Shuffle(order);
-                    foreach (int k in order)
-                        if (k != pick && boxes[k].Box.Contents!.AddTo("main", made.Item)) break;
-                }
-                limit = Math.Min(limit * 2, boxes.Count);
-            }
-            foreach (var (_, box) in boxes)
-                if (box.Contents!.Items.Count > 0 && box.Lock is { } l)
-                {
-                    l.Locked = true;
-                    world.Fixtures.Touch(box);
-                }
-        }
+        ShareOut(items, itemHomes, rng, given);
+        ShareOut(gear, gearHomes, rng, given);
+        PlaceInBoxes(world, town.Site, site, given, rng);
     }
 
     /// <summary>
@@ -278,9 +232,10 @@ public sealed partial class PopulationSystem
 
     /// <summary>
     /// Within each building that was given artifacts: its stock containers emptied, strongest lock first; each item into one of the first 1, 2, 4...
-    /// drawn, else the others in a shuffled order; the containers that hold something are locked.
+    /// drawn, else the others in a shuffled order; the containers that hold something are locked. Each artifact put in a box is told to the
+    /// item-created observers with its box and town <paramref name="town"/>.
     /// </summary>
-    void PlaceInBoxes(World world, TownSite site, Dictionary<TownBuilding, List<MadeArtifact>> given, BoostRandom rng)
+    void PlaceInBoxes(World world, int town, TownSite site, Dictionary<TownBuilding, List<MadeArtifact>> given, BoostRandom rng)
     {
         var shuffler = rng.Clone();
         foreach (var b in site.Buildings)
@@ -290,7 +245,9 @@ public sealed partial class PopulationSystem
             var boxes = StockBoxes(world, b);
             if (boxes.Count == 0) continue;
 
-            PutInBoxes(boxes, mine, rng, shuffler);
+            foreach (var (item, box) in PutInBoxes(boxes, mine, rng, shuffler))
+                ItemCreatedObservers.ReportLoot(world, item, ItemCreatedPlace.Container, box.Id, town);
+
             LockFilledBoxes(world, boxes);
         }
     }
@@ -314,26 +271,40 @@ public sealed partial class PopulationSystem
     }
 
     /// <summary>
-    /// Puts each artifact into a box: a drawn one among the first ones, else one of the others in a shuffled order.
+    /// Puts each artifact into a box: a drawn one among the first ones, else one of the others in a shuffled order. Returns the artifacts placed,
+    /// each with its box.
     /// </summary>
-    static void PutInBoxes(List<(int Lock, Locks.Fixture Box)> boxes, List<MadeArtifact> mine, BoostRandom rng, BoostRandom shuffler)
+    static List<(ItemInstance Item, Locks.Fixture Box)> PutInBoxes(List<(int Lock, Locks.Fixture Box)> boxes, List<MadeArtifact> mine,
+        BoostRandom rng, BoostRandom shuffler)
     {
+        var placed = new List<(ItemInstance, Locks.Fixture)>();
         int limit = 1;
         foreach (var made in mine.OrderByDescending(m => m.Value))
         {
             int pick = rng.UniformInt(0, limit - 1);
-            if (!boxes[pick].Box.Contents!.AddTo("main", made.Item))
-            {
-                var order = Enumerable.Range(0, boxes.Count).ToList();
-                shuffler.Shuffle(order);
-                foreach (int k in order)
-                {
-                    if (k != pick && boxes[k].Box.Contents!.AddTo("main", made.Item)) break;
-                }
-            }
+            if (boxes[pick].Box.Contents!.AddTo("main", made.Item)) placed.Add((made.Item, boxes[pick].Box));
+            else if (OtherBox(boxes, pick, made.Item, shuffler) is { } other) placed.Add((made.Item, other));
 
             limit = Math.Min(limit * 2, boxes.Count);
         }
+
+        return placed;
+    }
+
+    /// <summary>
+    /// The box <paramref name="item"/> went into when the drawn one (<paramref name="pick"/>) had no room: the others in a shuffled order; null when
+    /// none took it.
+    /// </summary>
+    static Locks.Fixture? OtherBox(List<(int Lock, Locks.Fixture Box)> boxes, int pick, ItemInstance item, BoostRandom shuffler)
+    {
+        var order = Enumerable.Range(0, boxes.Count).ToList();
+        shuffler.Shuffle(order);
+        foreach (int k in order)
+        {
+            if (k != pick && boxes[k].Box.Contents!.AddTo("main", item)) return boxes[k].Box;
+        }
+
+        return null;
     }
 
     /// <summary>

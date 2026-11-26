@@ -14,7 +14,17 @@ public sealed record ModEffectView(long Id, string Owner, string Effect, string 
 /// One target's server-owned glow. The client derives its fade from the authority's start and expiry times.
 /// </summary>
 public sealed record ModGlowView(long Id, string Owner, GlowTarget Target, Vector3 Colour, float Strength,
-    double StartedAt, double ExpiresAt);
+    double StartedAt, double ExpiresAt, GlowMode Mode = GlowMode.Light, bool ThroughWalls = false);
+
+/// <summary>
+/// A server-owned ribbon request; recipients sample their current authorized anchor without historical trajectory data.
+/// </summary>
+public sealed record ModTrailView(long Id, string Owner, EffectAnchor Anchor, TrailStyle Style, double StartedAt, double ExpiresAt);
+
+/// <summary>
+/// One authority owner's audio controls; an identity reading preserves its claim over the same owner's local setting.
+/// </summary>
+public sealed record ModAudioView(long Id, string Owner, AudioModulation Modulation);
 
 /// <summary>
 /// Immutable presentation requests, filtered by each player's published characters, buildings and observed region before transmission.
@@ -25,6 +35,14 @@ public sealed record ModVisualSnapshot(ModEffectView[] Effects, ModGlowView[] Gl
     /// No shared visual requests.
     /// </summary>
     public static readonly ModVisualSnapshot Empty = new([], []);
+    /// <summary>
+    /// Ribbon requests sampled on the recipient.
+    /// </summary>
+    public ModTrailView[] Trails { get; init; } = [];
+    /// <summary>
+    /// Current authority audio controls, including explicit clears.
+    /// </summary>
+    public ModAudioView[] Audio { get; init; } = [];
 }
 
 /// <summary>
@@ -63,6 +81,14 @@ public sealed class ModVisuals
     /// </summary>
     readonly Dictionary<GlowTarget, ModGlowView> _glows = [];
     /// <summary>
+    /// One kept ribbon per owner and scale-independent anchor.
+    /// </summary>
+    readonly Dictionary<(string Owner, EffectAnchor Anchor), ModTrailView> _trails = [];
+    /// <summary>
+    /// Stable audio identity per loaded authority mod.
+    /// </summary>
+    readonly Dictionary<string, ModAudioView> _audio = new(StringComparer.Ordinal);
+    /// <summary>
     /// Monotonic identity across effects and glows in this world.
     /// </summary>
     long _sequence;
@@ -95,10 +121,10 @@ public sealed class ModVisuals
         lock (_gate)
         {
             double now = Advance(world);
-            var key = (owner, effect, anchor);
+            var key = (owner, effect, anchor.Key);
             if (kept && _kept.TryGetValue(key, out long oldId) && _effects.TryGetValue(oldId, out var old) && old.ExpiresAt > now)
             {
-                _effects[oldId] = old with { Tint = tint, ExpiresAt = now + seconds };
+                _effects[oldId] = old with { Tint = tint, Anchor = anchor, ExpiresAt = now + seconds };
             }
             else
             {
@@ -121,7 +147,7 @@ public sealed class ModVisuals
         lock (_gate)
         {
             double now = Advance(world);
-            if (!_kept.Remove((owner, effect, anchor), out long id) || !_effects.TryGetValue(id, out var previous)) return false;
+            if (!_kept.Remove((owner, effect, anchor.Key), out long id) || !_effects.TryGetValue(id, out var previous)) return false;
 
             _effects[id] = previous with { ExpiresAt = Math.Min(previous.ExpiresAt, now) };
             _nextExpiry = Math.Min(_nextExpiry, now + RetentionSeconds);
@@ -137,10 +163,11 @@ public sealed class ModVisuals
     /// <summary>
     /// Sets or renews one target's glow, preserving its current fade when a new request replaces it.
     /// </summary>
-    public bool Glow(World world, string owner, in GlowTarget target, Vector3 colour, float seconds, float strength)
+    public bool Glow(World world, string owner, in GlowTarget target, Vector3 colour, float seconds, float strength,
+        GlowMode mode = GlowMode.Light, bool throughWalls = false)
     {
         if (!Name(owner, 256) || !ValidTarget(target) || !world.Characters.IsAlive(target.On) || !Colour(colour)
-            || !Duration(seconds) || strength is not (>= 0 and <= 4)) return false;
+            || !Duration(seconds) || !ValidGlow(mode, target, colour, strength, throughWalls)) return false;
 
         lock (_gate)
         {
@@ -148,7 +175,7 @@ public sealed class ModVisuals
             bool replaces = _glows.TryGetValue(target, out var old);
             double shown = replaces ? FadeSeconds * Envelope(old!, now) : 0;
             long id = replaces ? old!.Id : checked(++_sequence);
-            _glows[target] = new(id, owner, target, colour, strength, now - shown, now + seconds);
+            _glows[target] = new(id, owner, target, colour, strength, now - shown, now + seconds, mode, throughWalls);
             _nextExpiry = Math.Min(_nextExpiry, now + seconds + RetentionSeconds);
             _published = null;
             return true;
@@ -179,6 +206,74 @@ public sealed class ModVisuals
 
     #endregion
 
+    #region Trails and audio
+
+    /// <summary>
+    /// Renews a ribbon's scale and style while retaining its identity through its locally fading tail.
+    /// </summary>
+    public bool KeepTrail(World world, string owner, in EffectAnchor anchor, TrailStyle style, float seconds)
+    {
+        if (!Name(owner, 256) || !ValidAnchor(anchor) || !ValidTrail(style) || !Duration(seconds)) return false;
+        if (anchor.Kind is EffectAnchorKind.Bone or EffectAnchorKind.Weapon && !world.Characters.IsAlive(anchor.Character)) return false;
+
+        lock (_gate)
+        {
+            double now = Advance(world);
+            var key = (owner, anchor.Key);
+            bool renew = _trails.TryGetValue(key, out var old) && old.ExpiresAt + old.Style.Seconds > now;
+            long id = renew ? old!.Id : checked(++_sequence);
+            _trails[key] = new(id, owner, anchor, style, renew ? old!.StartedAt : now, now + seconds);
+            _nextExpiry = Math.Min(_nextExpiry, now + seconds + Math.Max(RetentionSeconds, style.Seconds));
+            _published = null;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Stops a ribbon taking new samples while retaining its existing tail and final reading.
+    /// </summary>
+    public bool StopTrail(World world, string owner, in EffectAnchor anchor)
+    {
+        lock (_gate)
+        {
+            double now = Advance(world);
+            var key = (owner, anchor.Key);
+            if (!_trails.TryGetValue(key, out var old) || old.ExpiresAt <= now) return false;
+
+            _trails[key] = old with { ExpiresAt = now };
+            _nextExpiry = Math.Min(_nextExpiry, now + Math.Max(RetentionSeconds, old.Style.Seconds));
+            _published = null;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Stores bounded controls. Identity clears the contribution while retaining authority over that owner.
+    /// </summary>
+    public void SetAudio(World world, string owner, AudioModulation modulation)
+    {
+        if (!Name(owner, 256)) return;
+        modulation = modulation.Clamped();
+        lock (_gate)
+        {
+            Advance(world);
+            long id = _audio.TryGetValue(owner, out var old) ? old.Id : checked(++_sequence);
+            _audio[owner] = new(id, owner, modulation);
+            _published = null;
+        }
+    }
+
+    /// <summary>
+    /// Seeds a ready world's Initialize-time default without replacing an explicit value already restored into that candidate.
+    /// </summary>
+    public void InitializeAudio(World world, string owner, AudioModulation modulation)
+    {
+        lock (_gate)
+            if (!_audio.ContainsKey(owner)) SetAudio(world, owner, modulation);
+    }
+
+    #endregion
+
     #region Publication
 
     /// <summary>
@@ -189,9 +284,13 @@ public sealed class ModVisuals
         lock (_gate)
         {
             Advance(world);
-            return _published ??= _effects.Count == 0 && _glows.Count == 0
+            return _published ??= _effects.Count == 0 && _glows.Count == 0 && _trails.Count == 0 && _audio.Count == 0
                 ? ModVisualSnapshot.Empty
-                : new([.. _effects.Values.OrderBy(effect => effect.Id)], [.. _glows.Values.OrderBy(glow => glow.Id)]);
+                : new([.. _effects.Values.OrderBy(effect => effect.Id)], [.. _glows.Values.OrderBy(glow => glow.Id)])
+                {
+                    Trails = [.. _trails.Values.OrderBy(trail => trail.Id)],
+                    Audio = [.. _audio.Values.OrderBy(audio => audio.Id)],
+                };
         }
     }
 
@@ -204,6 +303,8 @@ public sealed class ModVisuals
         {
             foreach (var effect in _effects.Values.Where(effect => effect.Owner == owner).ToArray()) Remove(effect);
             foreach (var glow in _glows.Values.Where(glow => glow.Owner == owner).ToArray()) _glows.Remove(glow.Target);
+            foreach (var key in _trails.Keys.Where(key => key.Owner == owner).ToArray()) _trails.Remove(key);
+            if (_audio.TryGetValue(owner, out var audio)) _audio[owner] = audio with { Modulation = AudioModulation.Identity };
             _published = null;
         }
     }
@@ -219,6 +320,8 @@ public sealed class ModVisuals
             _effects.Clear();
             _kept.Clear();
             _glows.Clear();
+            _trails.Clear();
+            foreach (string owner in _audio.Keys.ToArray()) _audio[owner] = _audio[owner] with { Modulation = AudioModulation.Identity };
             _nextExpiry = double.PositiveInfinity;
             _published = null;
         }
@@ -233,7 +336,15 @@ public sealed class ModVisuals
             _published = null;
         }
 
+        foreach (var key in _trails.Where(pair => now >= pair.Value.ExpiresAt + Math.Max(RetentionSeconds, pair.Value.Style.Seconds))
+            .Select(pair => pair.Key).ToArray())
+        {
+            _trails.Remove(key);
+            _published = null;
+        }
+
         _nextExpiry = double.PositiveInfinity;
+        foreach (var trail in _trails.Values) _nextExpiry = Math.Min(_nextExpiry, trail.ExpiresAt + Math.Max(RetentionSeconds, trail.Style.Seconds));
         foreach (var effect in _effects.Values) _nextExpiry = Math.Min(_nextExpiry, effect.ExpiresAt + RetentionSeconds);
         foreach (var glow in _glows.Values) _nextExpiry = Math.Min(_nextExpiry, glow.ExpiresAt + RetentionSeconds);
         return now;
@@ -245,7 +356,7 @@ public sealed class ModVisuals
     void Remove(ModEffectView effect)
     {
         _effects.Remove(effect.Id);
-        var key = (effect.Owner, effect.Effect, effect.Anchor);
+        var key = (effect.Owner, effect.Effect, effect.Anchor.Key);
         if (effect.Kept && _kept.GetValueOrDefault(key) == effect.Id) _kept.Remove(key);
         _published = null;
     }
@@ -260,6 +371,10 @@ public sealed class ModVisuals
     public static bool ValidAnchor(in EffectAnchor anchor) => Enum.IsDefined(anchor.Kind) && Finite(anchor.Offset)
         && (anchor.Turn is not { } turn || Finite(turn) && turn.LengthSquared() > 1e-8f)
         && (anchor.Stretch is not { } stretch || stretch is > 0 and <= 100)
+        && (anchor.Size is not { } size || size is > 0 and <= 100)
+        && anchor.PulseAmount is >= 0 and < 1 && float.IsFinite(anchor.PulseSeconds)
+        && (anchor.PulseAmount == 0 || anchor.PulseSeconds is >= 0.05f and <= 60)
+        && (anchor.Kind != EffectAnchorKind.Projectile || anchor.ProjectileId >= 0)
         && (anchor.Kind is not (EffectAnchorKind.Bone or EffectAnchorKind.Weapon) || !anchor.Character.IsNone)
         && (anchor.Name is null or "" || Name(anchor.Name, 4096))
         && (anchor.Kind is not (EffectAnchorKind.Bone or EffectAnchorKind.Building) || Name(anchor.Name, 4096));
@@ -269,6 +384,27 @@ public sealed class ModVisuals
     /// </summary>
     public static bool ValidTarget(in GlowTarget target) => Enum.IsDefined(target.Kind) && !target.On.IsNone
         && (target.Kind != GlowTargetKind.Worn || Enum.IsDefined(target.Slot));
+
+    /// <summary>
+    /// The upstream light/tint ranges; only whole-character tints may show through walls.
+    /// </summary>
+    public static bool ValidGlow(GlowMode mode, in GlowTarget target, Vector3 colour, float strength, bool throughWalls) =>
+        Enum.IsDefined(mode) && Colour(colour) && strength is >= 0 and <= 4
+        && (mode != GlowMode.Tint || colour.X <= 1 && colour.Y <= 1 && colour.Z <= 1 && strength <= 1)
+        && (!throughWalls || mode == GlowMode.Tint && target.Kind == GlowTargetKind.Character);
+
+    /// <summary>
+    /// Exact style bounds of the upstream ribbon API, with bounded portable material identities.
+    /// </summary>
+    public static bool ValidTrail(TrailStyle? style) => style is not null && style.Span is >= 0 and <= 1000
+        && style.Width is > 0 and <= 1000 && (style.EndWidth is not { } width || width is >= 0 and <= 1000)
+        && style.Seconds is > 0 and <= 5 && Colour4(style.Colour) && (style.EndColour is not { } end || Colour4(end))
+        && (style.Material is null || Name(style.Material, 4096));
+
+    /// <summary>
+    /// Finite ribbon RGB and opacity in the upstream ranges.
+    /// </summary>
+    static bool Colour4(Vector4 colour) => Colour(new(colour.X, colour.Y, colour.Z)) && colour.W is >= 0 and <= 1;
 
     /// <summary>
     /// A bounded nonempty textual identity that the exact UTF-8 wire representation can preserve.

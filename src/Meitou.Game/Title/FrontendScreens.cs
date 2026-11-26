@@ -125,6 +125,11 @@ sealed class FrontendScreens(PlayerInterface player)
         /// The split stack dialog's slider in place of the text (<see cref="StackSplitDialog"/>).
         /// </summary>
         public bool SplitAmount { get; init; }
+
+        /// <summary>
+        /// The rename dialog's text box in place of the text (<see cref="Building.RenameBuildingDialog"/>).
+        /// </summary>
+        public bool NameEntry { get; init; }
     }
 
     /// <summary>
@@ -469,11 +474,12 @@ sealed class FrontendScreens(PlayerInterface player)
 
     /// <summary>
     /// A button of the message box: ButtonA confirms, ButtonB takes the middle choice when there is one; any button closes it. The split stack
-    /// dialog's slider and arrows only change its amount.
+    /// dialog's slider and arrows only change its amount; the rename dialog's text box only its text.
     /// </summary>
     void MessageAction(MyGuiEvent e)
     {
         if (PendingConfirmation is { SplitAmount: true } && player.StackSplitDialog.AmountAction(e)) return;
+        if (PendingConfirmation is { NameEntry: true } && player.RenameBuildingDialog.NameAction(e)) return;
 
         var confirm = PendingConfirmation;
         PendingConfirmation = null;
@@ -775,7 +781,7 @@ sealed class FrontendScreens(PlayerInterface player)
         {
             Enable(b, "LeftButton", "RightButton", "BeginButton");
             var start = Starts[StartIndex];
-            b.Text["TitleTextBox"] = start.Name;
+            b.Text["TitleTextBox"] = ShownText.Record(start.Id, start.Name);
         }
     }
 
@@ -877,12 +883,14 @@ sealed class FrontendScreens(PlayerInterface player)
         // fixed at 180; the captions are localised strings (the pot has "Name" and "Date", Unknown which the window uses). Initially sorted by
         // the second, newest first. Meitou adds the save's origin to the name. addColumn takes screen pixels, not the template's (the date is cut
         // off at 1440 lines in the base game).
-        // Meitou: the columns are 170 and 180 pixels at 1080 lines and grow with the UI scale, so the date fits on a 4K screen (#495).
-        b.Columns["GamesList"] = [new("Name", 170, MyGuiResizingPolicy.Fill), new("Date", 180)];
+        // Meitou: the columns are 170 and 180 pixels at 1080 lines and grow with the UI scale, so the date fits on a 4K screen (#495); Faithful
+        // keeps the original's screen pixels.
+        bool faithful = player.UiMode == UiMode.Faithful;
+        float columnScale = faithful ? 1 : player.UiScale;
+        b.Columns["GamesList"] = [new("Name", 170 * columnScale, MyGuiResizingPolicy.Fill), new("Date", 180 * columnScale)];
         b.Sorts["GamesList"] = (1, false);
 
         // Faithful: the folder name as the original shows it; Meitou adds where the save comes from.
-        bool faithful = player.UiMode == UiMode.Faithful;
         b.Lists["GamesList"] = visibleSlots.Select(s => new UiListItem(s.Folder, $"{s.Name}   {SlotDate(s)}",
             [faithful ? s.Name : $"{s.Name}   [{(s.Writable ? "Meitou" : "Kenshi")}]", SlotDate(s)],
             // The original's comparator (FUN_14047cdb0): names without regard to case, dates by their time.
@@ -1025,6 +1033,7 @@ sealed class FrontendScreens(PlayerInterface player)
         if (controls.FirstOrDefault(c => c.Name == "Root") is not { } root) return;
 
         if (PendingConfirmation is { SplitAmount: true }) player.StackSplitDialog.AddAmountRow(controls);
+        if (PendingConfirmation is { NameEntry: true }) player.RenameBuildingDialog.AddNameRow(controls);
 
         string[] buttons = [.. new[] { "ButtonA", "ButtonB", "ButtonC" }.Where(n => controls.Any(c => c.Name == n))];
 
@@ -1061,9 +1070,10 @@ sealed class FrontendScreens(PlayerInterface player)
         var start = Starts[StartIndex];
         AddDatapanel(controls, "DescriptionPanel",
         [
-            (Loc.Tr("Difficulty:"), start.Difficulty), (Loc.Tr("Cash:"), "c." + start.Money.ToString(CultureInfo.InvariantCulture)),
-            (Loc.Tr("Play Style:"), start.Style),
-            (start.Description, ""),
+            (Loc.Tr("Difficulty:"), ShownText.Record(start.Id, start.Difficulty, "difficulty")),
+            (Loc.Tr("Cash:"), "c." + start.Money.ToString(CultureInfo.InvariantCulture)),
+            (Loc.Tr("Play Style:"), ShownText.Record(start.Id, start.Style, "style")),
+            (ShownText.Record(start.Id, start.Description, "description"), ""),
         ], lastWraps: true, rows: 40);
     }
 

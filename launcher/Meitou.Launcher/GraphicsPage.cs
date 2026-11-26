@@ -842,7 +842,7 @@ public sealed partial class MainWindow
         try
         {
             await RunProbeAsync(target, flag, file);
-            var (preset, summary) = await ReadReportAsync(file);
+            var (preset, summary) = await GameProbe.ReadPresetAsync(file);
             if (preset is null || !p.Names.Contains(preset))
                 throw new InvalidDataException("the game reported no preset");
             if (ResolveTarget(out _) != target) return false;
@@ -880,33 +880,12 @@ public sealed partial class MainWindow
     /// <summary>
     /// Runs the game's probe with the detect flag and the report path, and waits up to a minute for it to finish.
     /// </summary>
-    async Task RunProbeAsync(GameTarget target, string flag, string file)
+    static Task RunProbeAsync(GameTarget target, string flag, string file)
     {
         var start = target.CreateStartInfo(hidden: true);
         start.ArgumentList.Add(flag);
         start.ArgumentList.Add(file);
-        using var probe = Process.Start(start) ?? throw new InvalidOperationException("the game did not start");
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        try
-        {
-            await probe.WaitForExitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            probe.Kill();
-            throw new TimeoutException("the game took over a minute");
-        }
-    }
-
-    /// <summary>
-    /// The preset and the summary line the probe wrote to <paramref name="file"/>; the preset is null when the report names none.
-    /// </summary>
-    static async Task<(string? Preset, string Summary)> ReadReportAsync(string file)
-    {
-        var report = JsonNode.Parse(await File.ReadAllTextAsync(file)) as JsonObject;
-        string? preset = report?["preset"] is JsonValue pv && pv.TryGetValue(out string? name) ? name : null;
-        string summary = report?["summary"] is JsonValue sv && sv.TryGetValue(out string? line) ? line : preset ?? "";
-        return (preset, summary);
+        return GameProbe.RunAsync(start, TimeSpan.FromSeconds(60));
     }
 
     /// <summary>

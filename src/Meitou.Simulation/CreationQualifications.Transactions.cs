@@ -80,7 +80,7 @@ public sealed partial class CreationQualifications
     /// </summary>
     EntityId[] CreationOutput(Reservation reservation, IReadOnlyList<Squad> squads)
     {
-        var constants = _world.SystemOf<PopulationSystem>()?.Data.Bodies.Constants
+        var constants = _world.SystemOf<PopulationSystem>()?.Data.Bodies
             ?? throw new InvalidOperationException("Creation output has no population policy.");
         if (squads.Count == 0 || squads.Count > constants.MaxSquads || squads.Any(s => s is null) ||
             squads.Select(s => s.Id).Distinct().Count() != squads.Count)
@@ -91,8 +91,8 @@ public sealed partial class CreationQualifications
                 s.Faction != faction || s.Members.Count < 1 || s.Members.Count > constants.MaxSquadSize || !s.Members.Contains(s.Leader) ||
                 s.Members.Any(id => !_world.Characters.TryResolveNext(id, out int slot) || _world.Characters.Cold(slot)?.SquadId != s.Id)) ||
             squads.Sum(s => (long)s.Members.Count) != reservation.Count || reservation.Count < 1 || reservation.Count > reservation.Grant.CharacterLimit ||
-            SquadManagement.FactionHeads(_world, faction) > constants.MaxFactionSize ||
-            SquadManagement.PlayerSquads(_world, faction).Count > constants.MaxSquads)
+            SquadManagement.CappedHeads(_world, faction) > constants.MaxFactionSize ||
+            SquadManagement.LedSquads(_world, faction).Count > constants.MaxSquads)
             throw new InvalidOperationException("Creation output exceeds its quota or changed squad ownership.");
 
         var roles = squads.SelectMany(s => s.Members).Select(id => _world.Players.ControlOf(id)).ToArray();

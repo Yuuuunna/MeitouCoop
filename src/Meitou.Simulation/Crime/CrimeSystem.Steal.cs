@@ -85,8 +85,23 @@ public sealed partial class CrimeSystem
     }
 
     /// <summary>
-    /// The stolen mark of goods of <paramref name="building"/> owned by <paramref name="faction"/> (an item of one of its containers, a loose item
-    /// of one of its slots): its resident squad's leader of that faction, else the faction alone. The original names a character (<b>Observed</b>,
+    /// The stolen mark goods taken out of <paramref name="goods"/>' window get (<c>Item::notifyTheftFrom</c>, <c>FUN_140792780</c> ->
+    /// <c>FUN_140792680</c>, <b>Verified</b> decompile): the residents hand of the building they stand in (<see cref="StealSource.StandsIn"/>, else
+    /// the holder itself), here its resident squad's (<see cref="ResidentSquad"/>) leader, whatever its faction; none when nobody lives there (a null
+    /// hand leaves the item ownerless, so goods of a town mine are never stolen and no shop asks to fence them).
+    /// </summary>
+    public static StolenMark GoodsMark(World world, StealSource goods)
+    {
+        var table = world.Characters;
+        if (ResidentSquad(world, goods.StandsIn ?? goods.Building) is not { } squad || !table.TryResolveNext(squad.Leader, out int s))
+            return StolenMark.None;
+
+        return table.Cold(s) is { } leader ? StolenMark.Of(leader, squad.Leader) : StolenMark.None;
+    }
+
+    /// <summary>
+    /// The stolen mark of a loose item of one of <paramref name="building"/>'s slots owned by <paramref name="faction"/>: its resident squad's leader
+    /// of that faction, else the faction alone. The original names a character (<b>Observed</b>,
     /// docs/game/economy.md "Fencing, stealing and smuggling": the item's <c>ownedby</c> is the bar's barman); that it is the leader rather than
     /// another resident is <b>Unknown</b>.
     /// </summary>
@@ -190,6 +205,24 @@ public sealed partial class CrimeSystem
             return -1;
         }
 
+        return ResidentLeader(world, building);
+    }
+
+    /// <summary>
+    /// <see cref="ResidentLeader"/> as a character id, <see cref="CharacterId.None"/> when nobody lives in <paramref name="building"/>.
+    /// </summary>
+    static CharacterId ResidentVictim(World world, string building)
+    {
+        int leader = ResidentLeader(world, building);
+        return leader >= 0 ? world.Characters.IdOf(leader) : CharacterId.None;
+    }
+
+    /// <summary>
+    /// The effective leader of <paramref name="building"/>'s resident squad (<see cref="ResidentSquad"/>,
+    /// <see cref="Population.PopulationSystem.EffectiveLeader"/>, <c>FUN_140547ba0</c> -> <c>FUN_140792b90</c>); -1 when nobody lives there.
+    /// </summary>
+    static int ResidentLeader(World world, string building)
+    {
         if (ResidentSquad(world, building) is not { } squad) return -1;
 
         var lead = world.SystemOf<Population.PopulationSystem>()?.EffectiveLeader(world, squad) ?? squad.Leader;
@@ -335,6 +368,25 @@ public sealed partial class CrimeSystem
     }
 
     /// <summary>
+    /// The steal roll for a code mod's own theft (docs/modding.md "Crimes"): <paramref name="watcher"/> (none or gone: nobody, never caught)
+    /// notices the thief unless a draw falls under <paramref name="chance"/> (0: always caught, 1 or more: never), with the game's outcome of
+    /// <see cref="Steal(World, int, StealSource, TakeKind)"/>: a watcher in bed may only speak, else it gets up, says event 8 and remembers the
+    /// thief, and the thief gets a Theft (timer 30) against <paramref name="faction"/> with <paramref name="victim"/> as its victim; thievery XP
+    /// as the game's roll. The draw is the world seed's, the thief's, the victim's (else the watcher's) and the tick's. No pending crime is set
+    /// before the roll (<see cref="SetPending"/> does that). True when caught. Serial phases.
+    /// </summary>
+    public bool StealRoll(World world, CharacterId thief, CharacterId watcher, float chance, int faction, CharacterId victim)
+    {
+        var table = world.Characters;
+        if (!table.TryResolveNext(thief, out int t)) throw new ArgumentException($"thief {thief} is not in the world", nameof(thief));
+        if (!float.IsFinite(chance)) throw new ArgumentOutOfRangeException(nameof(chance), chance, "not a finite number");
+
+        int w = table.TryResolveNext(watcher, out int found) ? found : -1;
+        var salted = victim.IsNone ? watcher : victim;
+        return Roll(world, t, w, chance, faction, victim, Rng.Key(salted));
+    }
+
+    /// <summary>
     /// The pending crime of a take out of another faction's character (<see cref="TakeCode"/>) without the steal roll, as
     /// <see cref="PendSteal(World, int, Locks.Fixture, TakeKind)"/> for a thief without room. False when the take is no steal.
     /// </summary>
@@ -423,13 +475,18 @@ public sealed partial class CrimeSystem
     }
 
     /// <summary>
-    /// A ground item of another faction picked up inside a building (<c>Task_Pickup</c>, <b>Observed</b>): a pending Theft against the owner and
-    /// thievery XP 20; no steal roll.
+    /// A ground item of faction <paramref name="owner"/> picked up inside <paramref name="building"/> (<c>Task_Pickup</c> <c>FUN_14034f340</c>,
+    /// <b>Verified</b> decompile): a pending Theft against the faction of that building (<see cref="Locks.FixtureRegistry.OwnerOf"/>) with its
+    /// resident leader as the victim (<see cref="ResidentLeader"/>, none when nobody lives there), so that leader and its squad mates witness it as
+    /// stolen from them; with <see cref="World.PickUpTheftFix"/> (Meitou) against <paramref name="owner"/> with the item's owner character
+    /// <paramref name="ownerCharacter"/> as the victim. Thievery XP 20; no steal roll.
     /// </summary>
-    public void StolePickUp(World world, int thief, int owner)
+    public void StolePickUp(World world, int thief, int owner, CharacterId ownerCharacter, string building)
     {
         if (world.Characters.Cold(thief) is not { } c || owner < 0 || owner == c.Faction) return;
-        SetPending(world, thief, CrimeCode.Theft, owner, CharacterId.None, MinTimer);
+
+        var (faction, victim) = world.PickUpTheftFix ? (owner, ownerCharacter) : (world.Fixtures.OwnerOf(building), ResidentVictim(world, building));
+        SetPending(world, thief, CrimeCode.Theft, faction, victim, MinTimer);
         if (c.Stats is { } stats && c.Race is { } race)
             Xp?.Continuous(stats, race, StatsEnumerated.Thieving, 1, PickUpXp, ExperienceSource.Thievery);
     }

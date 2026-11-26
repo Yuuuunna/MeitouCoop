@@ -70,6 +70,10 @@ Managed packages retain .NET host/runtime and UI native libraries beside the exe
 
 **Unknown**: Coop self-update between two installed launcher versions; Linux/macOS live Coop gameplay.
 
+Tooltips open beside the pointer, never under it (`ToolTipPlacement.cs`): below the cursor, else above it with a 4 px gap. **Observed**
+(Avalonia 12.1.4 `ManagedPopupPositioner`, decompiled): a flip keeps the popup's offset, so the stock pointer placement (offset 20 px down)
+flipped above the pointer near the screen's bottom covered the cursor and took the next click; the gaps are part of the anchor box instead.
+
 ## Releases
 
 - Coop games use `coop-v<version>` (`coop-release.yml`), while inherited cross-platform `release.yml`/`nightly.yml` use `v<version>`;
@@ -166,6 +170,19 @@ requires its version to match `.github/launcher-portable.json`; later full Velop
   <v>" / "Update to <v>" to retry. Launchers up to 1.0.4 only offer the buttons. Run from anywhere else (a build, a copied folder):
   the same buttons open the newest `launcher-v*` release page.
 - **Unknown**: Coop self-update end to end between published launcher versions.
+
+## App menu (Linux)
+
+- Run from the AppImage (`APPIMAGE` is set, by the AppImage runtime), the first-start dialog offers "Add to the app menu" (ticked) and
+  Settings has an Add/Remove button. `AppMenuEntry` writes `wiki.kenshi.meitou.launcher.desktop` and a 128 px `.png` to
+  `$XDG_DATA_HOME/applications` (`~/.local/share/applications`), with `Exec` and `TryExec` set to the AppImage, so the menu hides the entry
+  once the AppImage is deleted. While the entry exists, each start rewrites it for the AppImage's current path.
+- The window's X11 class is `MeitouLauncher` (`X11PlatformOptions.WmClass`; Avalonia's default is the executable name), Velopack's packId
+  and the `StartupWMClass` of both this entry and the AppImage's embedded one. **Verified** with `xprop` in a headless gamescope:
+  `WM_CLASS = "meitou-launcher", "MeitouLauncher"`.
+- The AppImage's file icon is its 64 px `.DirIcon`; Dolphin shows it only through KDE's AppImage thumbnailer, which needs `libappimage`
+  (an optional dependency of `kio-extras`). **Observed** on CachyOS: without it `ldd` reports `libappimage.so.1.0` not found for
+  `appimagethumbnail.so`, and Dolphin shows the generic icon.
 
 ## Unsigned macOS packages
 
@@ -306,11 +323,12 @@ setting reaches the launcher with its release; the launcher knows none of them. 
   saves Custom, so the game keeps that change. No saved preset shows High without saved graphics, else Custom.
 - Detect (when `presets.detect` names the game's option, `--recommend-preset <file>`) runs the played version's game, which makes a
   headless Vulkan device (the GPU it would pick), reads the memory and the cores, and writes `{ preset, summary, gpu, integrated,
-  videoMemoryMb, memoryMb, cores, problem }`; the launcher saves `preset` as above and shows `summary`. Without Vulkan (a Metal-only Mac)
-  the memory and cores decide alone. a GeForce by its model against the
-  classes the tiers are meant for (`GeForceTier`: RTX 3060 Medium, 3070 to 4070 High, 4070 Ti to 4080 Ultra, 4080 Super and 4090
-  Extreme, other series by their place among these, a laptop GPU a class lower); any other card by video memory (under 6 GB Medium,
-  under 12 GB High, under 24 GB Ultra, else Extreme); under 12 GB memory or 6 threads Medium at most. Observed: Intel Iris Xe (integrated) is Low, in 2.5 s.
+  videoMemoryMb, memoryMb, cores, problem }`; the launcher saves `preset` as above and shows `summary`. Without Vulkan (a Metal-only
+  Mac, a driver that fails `vkCreateInstance`) the memory and cores decide alone; off macOS the summary names the failure
+  (`no Vulkan device: <problem>`). A GeForce goes by its model against the classes the tiers are meant for (`GeForceTier`: RTX 3060
+  Medium, 3070 to 4070 High, 4070 Ti to 4080 Ultra, 4080 Super and 4090 Extreme, other series by their place among these, a laptop
+  GPU a class lower); any other card by video memory (under 6 GB Medium, under 12 GB High, under 24 GB Ultra, else Extreme); under
+  12 GB memory or 6 threads Medium at most. Observed: Intel Iris Xe (integrated) is Low, in 2.5 s.
 - The launcher detects once by itself (`PresetDetected` in `launcher.json`): when the version Play starts can detect and the game has no
   graphics settings or preset saved yet, so the first start (or first install) of a fresh setup gets a preset; saved settings are kept.
   A failed detection is tried again at the next start.
@@ -415,7 +433,7 @@ interpolated string, which no translation could match.
   `steamapps/workshop/appworkshop_233860.acf`, `WorkshopUpdates`), the row adds that it has updated since, with the date, and that some new
   features may be missing. A local copy has no date and gets no such note.
 - Any other RE_Kenshi plugin (not built in, no endorsed port) keeps the ignored-DLLs note and has a Request button opening the public wishlist
-  of RE_Kenshi mods (`CoveredMods.Wishlist`, the roadmap's compatibility sheet), where players ask for one to be covered.
+  of RE_Kenshi mods (`CoveredMods.Wishlist`), where players ask for one to be covered.
 - A mod folder with `meitou.json` is marked as a code mod ([modding](modding.md)); enabled, its code runs, with no question
   ([Trust](modding.md#trust)).
 - A code mod's row lists what it requires, loads after and conflicts with, and each refusal the game would make without its code
@@ -525,3 +543,52 @@ it). vcpkg's Windows libvpx is static only, so a Debug build copies `vpx-runtime
 `link /DLL /DEF:vpx.def` exporting the six `vpx_codec_*` calls `VpxDecoder` imports; Linux/macOS Debug builds load the system's libvpx.
 **Verified** 2026-10-25: VP8 and VP9 + Vorbis clips from ffmpeg demux and decode in a console check (pictures match ffmpeg's
 within rounding, sound length matches), and the win-x64 publish contains libvpx 1.16.0. OpenAL Soft is embedded like Skia (`native/`).
+
+## Benchmark
+
+The Benchmark page (`Benchmarks/`) runs the game's launcher benchmarks and submits them to the reports service
+(`https://gear-pastry-chorus.cloudovna.app`, the game's `FeedbackSender.ServiceUrl`). Everything it writes is under `benchmark/` in the data
+folder, never in the installed versions or Kenshi's save folder:
+`builds/<version>-<rid>/` (the build, with its `benchmark-scenarios.json`), `downloads/` (the save zip, kept), `save/` (the unpacked save),
+`save-copy/` (made fresh before each run), `proton-prefix/`, `sessions/<version>/<platform>/<scenario>/<tier>/run1|run2/` (the game's
+`--benchmark-out`; `submitted.txt` holds the service's id once submitted).
+
+- Build: every game release GitHub lists, marked target or not from `GET /bench/targets`; the newest target is chosen. Install (shown when
+  not yet installed) or Start unpacks its zip for the platform (`win-x64` under Proton) into `builds/`, then `--benchmark-list <file>` names
+  its scenarios.
+- Platform: the host's build (`native` on Linux, `windows`, `macos`), and on Linux each Proton with a `proton` script in
+  `steamapps/common/Proton*` of every Steam library (`libraryfolders.vdf`) or in `compatibilitytools.d/` (Flatpak Steam's are not used).
+  Proton runs `python3 <proton> run ./MeitouClient.exe` from the build's folder with `STEAM_COMPAT_DATA_PATH` = `proton-prefix/` (made
+  first: Proton refuses a missing one) and `STEAM_COMPAT_CLIENT_INSTALL_PATH` = the Steam folder; every path the game gets (arguments,
+  `KENSHI_PATH`) is `Z:` + the path with backslashes. macOS adds the Vulkan loader's environment like Play and refuses without one.
+- Choices: scenario check boxes from the build's list (`bases` ticked; before install only `bases`), tiers Low..Extreme with Medium and the
+  tier the played version's `--recommend-preset` names ticked (nothing is saved to `meitou.user.json`) and Recommended / All quick links;
+  Ultra and Extreme are greyed ("Needs ray tracing") once a probe said `rayQueries: false`. The estimate is two runs per ticked scenario
+  and tier, each its `seconds` plus 90 s (8 min while the list is unknown).
+- Start: before the first target benchmark (`AutoSubmit` unset in `launcher.json`), a dialog asks whether to submit results automatically
+  after finishing (with an optional handle field); the choice is saved and can be toggled on the Run row. Start then ensures the build and
+  list, downloads/unpacks the save only when a ticked scenario has `save` (checked against `ceb2fb18…`, redownloaded once on mismatch), runs
+  `--benchmark-probe <file>` (kept as `Hardware` in `launcher.json`, seeding `MachineId` if empty), then per scenario and tier runs two
+  launches of `--benchmark <tier> --benchmark-scenario <id> --benchmark-out <run dir>` plus `--load <save copy>` for a scenario with a save.
+  The native game works from the data folder like Play; neither gets Steam's app id variables. Exit 5 (no ray queries) and 7 (unknown
+  scenario) skip the session with a notice; 6 (save hash), any other non-zero code, no `result.json`, or 30 minutes stop the Start with the
+  reason. Cancel and closing the window kill the game's process tree. Play refuses while a benchmark runs and the page refuses while the
+  game Play started runs. When `AutoSubmit` is on and the build is a target, completed unsubmitted sessions are submitted automatically upon
+  normal completion.
+- Results: one framed table (`BenchmarkTable`) for the chosen build and platform with scenario and tier tabs above it (plus an `All tiers`
+  overview when a scenario has multiple tiers, rows clickable to open that tier's groups). Each session shows its `groups` in `result.json`
+  order (`all` / Whole run last) with each run's `avgFps`, `p99Ms`, `over33Pct`. A single Submit button submits all unsubmitted complete
+  sessions for the build and platform (or resubmits all once every one is submitted); `POST /bench` sends one session per request with both
+  runs agreeing on scenario, tier, version and fingerprint, a target build whose version matches `game.version`, and the auto-generated
+  machine id (`BenchmarkMachineId`: GPU + OS family slug plus a 6-hex-character SHA-256 suffix of a per-PC OS identifier — Windows
+  `MachineGuid`, Linux `/etc/machine-id`, macOS `gethostuuid`, falling back to `InstallId` — never editable and never exposing the computer
+  name or raw OS id). The body is `{ installId, handle, machine, platform, target, runs, summary }`: the runs' `result.json` as written,
+  run 2's `summary.md`, `machine` = `{id, name: "", notes}`, `cpu`, `gpu`, `ramGb`, `os`, `osFamily` from run 2's `hardware` and
+  `resolution` from the primary screen.
+- `launcher.json` `Benchmark`: `InstallId` (a GUID made at the first submit or as a machine-id fallback), `Handle`, `MachineId` (generated
+  automatically from the probed hardware and per-PC hash, not editable), `MachineNotes`, `MachineLocked` (set by the first accepted submit,
+  locking `MachineNotes`), `AutoSubmit` (`null` until asked on first target benchmark or toggled; defaults to `true` and remembered between
+  launches), `Hardware`.
+- **Verified** (2026-11-23, `BenchmarkSave` run from a scratch program on the published zip, Linux): unpacking, a re-unpack over a changed
+  folder and two run copies all give the save hash `ceb2fb18…`. The zip holds the save as its single top folder and stores its folders
+  without write permission (`dr-xr-xr-x`), so the launcher adds the owner's after unpacking.

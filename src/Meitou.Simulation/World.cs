@@ -236,6 +236,7 @@ public sealed partial class World : IDisposable
         GameHours = settings.StartHours;
         Walkability = walkability;
         LastingIds = new LastingIds(this);
+        SaveFields = new Saving.CharacterSaveFields(this);
         this._systems = [.. systems ?? []];
         foreach (var system in this._systems) ModFaults.Add(system);
         for (int k = 0; k < this._systems.Count; k++) _phases.Add(new SystemPhases(this, this._systems[k], k));
@@ -258,6 +259,7 @@ public sealed partial class World : IDisposable
             ArmourFilters.Register(this._systems[k], k);
             CombatDefenceObservers.Register(this._systems[k], k);
             StorageFilters.Register(this._systems[k], k);
+            StoragePriorities.Register(this._systems[k], k);
             ItemUseObservers.Register(this._systems[k], k);
             GoodsTakenObservers.Register(this._systems[k], k);
             TownSwitchObservers.Register(this._systems[k], k);
@@ -267,6 +269,21 @@ public sealed partial class World : IDisposable
             OffscreenFightRules.Register(this._systems[k], k);
             ExperienceFilters.Register(this._systems[k], k);
             CrimeObservers.Register(this._systems[k], k);
+            NeedRateFilters.Register(this._systems[k], k);
+            HealthObservers.Register(this._systems[k], k);
+            StateObservers.Register(this._systems[k], k);
+            DialogueChoiceObservers.Register(this._systems[k], k);
+            RemovalVetoes.Register(this._systems[k], k);
+            ItemCreatedObservers.Register(this._systems[k], k);
+            CombatEngageFilters.Register(this._systems[k], k);
+            BlowReactionFilters.Register(this._systems[k], k);
+            CombatDefenceFilters.Register(this._systems[k], k);
+            ArrangeFilters.Register(this._systems[k], k);
+            TargetScoreFilters.Register(this._systems[k], k);
+            DitchItemFilters.Register(this._systems[k], k);
+            BedFilters.Register(this._systems[k], k);
+            JobScoreFilters.Register(this._systems[k], k);
+            PartMaxFilters.Register(this._systems[k], k);
         }
         for (int k = 0; k < this._systems.Count; k++) RegisterTasks(this._systems[k], k);
         foreach (var owner in this._systems.OfType<IDecisionOwner>()) Decisions.RegisterFrom(owner);
@@ -388,6 +405,22 @@ public sealed partial class World : IDisposable
     }
 
     /// <summary>
+    /// How the world came to be and the save folder it came from (<see cref="WorldStart"/>), as the host told it with
+    /// <see cref="TellReady(WorldStart)"/>; <see cref="WorldStartKind.Unknown"/> before. Display and file information only: never read by a system
+    /// of the engine, not saved, not hashed.
+    /// </summary>
+    public WorldStart Start { get; private set; }
+
+    /// <summary>
+    /// Notes how the world came to be (<see cref="Start"/>), then tells the <see cref="IWorldReady"/> systems (<see cref="TellReady(bool)"/>).
+    /// </summary>
+    public void TellReady(WorldStart start)
+    {
+        Start = start;
+        TellReady(start.FromSave);
+    }
+
+    /// <summary>
     /// Tells every <see cref="IWorldReady"/> system, in system order, that the world is ready to run (<paramref name="fromSave"/>: loaded from a
     /// save, else a new game); one that throws is logged and the rest are still told, and a mod's is stopped with the player's notice
     /// (<see cref="ModSystemFaults.Fault"/>). Between ticks, before the first.
@@ -471,6 +504,11 @@ public sealed partial class World : IDisposable
     /// </summary>
     public bool BenchFacingFix { get; set; } = true;
     /// <summary>
+    /// A seat playing a bed's clip (UWE's "Bed (job)") lies its sitter at its nearest use node as a bed does (Fixes settings, Meitou); off, on the
+    /// seat's origin as the game does, across the foot of the bed (docs/game/ai-tasks.md "Town goals").
+    /// </summary>
+    public bool SeatBedFix { get; set; } = true;
+    /// <summary>
     /// A prisoner in a cage or on a pole plays only the fixture's pose, no hurt-part hold over it (Fixes settings, Meitou); off, it holds its wounds
     /// there as the game does (docs/animation.md "Injury holds").
     /// </summary>
@@ -485,6 +523,12 @@ public sealed partial class World : IDisposable
     /// the grid and the worn backpack, as the game does (docs/game/dialogue.md "Conditions", docs/game/carry-loot.md "NPC looting").
     /// </summary>
     public bool BagSearchFix { get; set; } = true;
+    /// <summary>
+    /// A ground item of another faction picked up inside a building is a Theft from the item's owner, its faction and owner character (Fixes
+    /// settings, Meitou); off, from the faction of the building the picker stands in with that building's resident leader as the victim, as the game
+    /// does (docs/game/economy.md "Fencing, stealing and smuggling").
+    /// </summary>
+    public bool PickUpTheftFix { get; set; } = true;
     /// <summary>
     /// A shopkeeper at its counter is talked to and traded with from the counter's front (Gameplay settings, Meitou): its talk reach is
     /// <see cref="Dialogue.DialogueSystem.CounterTalkReach"/>; off, the game's reach, so the customer walks round behind the counter
@@ -533,6 +577,10 @@ public sealed partial class World : IDisposable
     /// </summary>
     internal Combat.CombatHitFilters CombatHitFilters { get; } = new();
     /// <summary>
+    /// The systems replacing inventory arranges (<see cref="Items.IInventoryArrangeFilter"/>).
+    /// </summary>
+    internal Items.InventoryArrangeFilters ArrangeFilters { get; } = new();
+    /// <summary>
     /// The systems adjusting trade prices (<see cref="Trading.ITradePriceFilter"/>).
     /// </summary>
     internal Trading.TradePriceFilters TradePriceFilters { get; } = new();
@@ -556,6 +604,11 @@ public sealed partial class World : IDisposable
     /// The systems asked about a storage the game picks for a character (<see cref="Items.IStorageFilter"/>).
     /// </summary>
     internal Items.StorageFilters StorageFilters { get; } = new();
+
+    /// <summary>
+    /// The systems asked how much a character prefers a storage the game picks for it (<see cref="Items.IStoragePriority"/>).
+    /// </summary>
+    internal Items.StoragePriorities StoragePriorities { get; } = new();
     /// <summary>
     /// The systems observing changed faction relations (<see cref="IRelationChangeObserver"/>).
     /// </summary>
@@ -581,6 +634,63 @@ public sealed partial class World : IDisposable
     /// </summary>
     internal Crime.CrimeObservers CrimeObservers { get; } = new();
     /// <summary>
+    /// The systems asked about the rates of characters' needs (<see cref="Bodies.INeedRateFilter"/>).
+    /// </summary>
+    internal Bodies.NeedRateFilters NeedRateFilters { get; } = new();
+    /// <summary>
+    /// The systems told of health changes (<see cref="Bodies.IHealthChangeObserver"/>).
+    /// </summary>
+    internal Bodies.HealthObservers HealthObservers { get; } = new();
+    /// <summary>
+    /// The systems told of character lifecycle and state changes (knockout, limb state, carry, held state, faction, recruit, equip, removal).
+    /// </summary>
+    internal CharacterStateObservers StateObservers { get; } = new();
+    /// <summary>
+    /// The systems observing or intercepting player dialogue choices (<see cref="Dialogue.IDialogueChoiceObserver"/>,
+    /// <see cref="Dialogue.IDialogueChoiceFilter"/>).
+    /// </summary>
+    internal Dialogue.DialogueChoiceObservers DialogueChoiceObservers { get; } = new();
+    /// <summary>
+    /// The systems asked before a character or body is taken out of the world (<see cref="Bodies.IRemovalVeto"/>).
+    /// </summary>
+    internal Bodies.RemovalVetoes RemovalVetoes { get; } = new();
+    /// <summary>
+    /// The systems told of items the world makes (<see cref="Items.IItemCreatedObserver"/>).
+    /// </summary>
+    internal Items.ItemCreatedObservers ItemCreatedObservers { get; } = new();
+    /// <summary>
+    /// The systems asked which carried items the automatic carry-off leaves with their carrier (<see cref="Items.IDitchItemFilter"/>).
+    /// </summary>
+    internal Items.DitchItemFilters DitchItemFilters { get; } = new();
+    /// <summary>
+    /// The systems asked whether a fighter may take on a target (<see cref="Combat.ICombatEngageFilter"/>).
+    /// </summary>
+    internal Combat.CombatEngageFilters CombatEngageFilters { get; } = new();
+    /// <summary>
+    /// The systems asked about a hit's reaction (<see cref="Combat.IBlowReactionFilter"/>).
+    /// </summary>
+    internal Combat.BlowReactionFilters BlowReactionFilters { get; } = new();
+    /// <summary>
+    /// The systems asked about a defender's choice of defence (<see cref="Combat.ICombatDefenceFilter"/>).
+    /// </summary>
+    internal Combat.CombatDefenceFilters CombatDefenceFilters { get; } = new();
+    /// <summary>
+    /// The systems asked about the scores of target choice candidates (<see cref="Combat.ITargetScoreFilter"/>).
+    /// </summary>
+    internal Combat.TargetScoreFilters TargetScoreFilters { get; } = new();
+    /// <summary>
+    /// The systems asked about the beds the bed search weighs (<see cref="Locks.IBedFilter"/>).
+    /// </summary>
+    internal Locks.BedFilters BedFilters { get; } = new();
+    /// <summary>
+    /// The systems asked to score the AI's job candidates (<see cref="Ai.IJobScoreFilter"/>).
+    /// </summary>
+    internal Ai.JobScoreFilters JobScoreFilters { get; } = new();
+    /// <summary>
+    /// The systems asked about the body parts' maximum health (<see cref="Bodies.IPartMaxFilter"/>).
+    /// </summary>
+    internal Bodies.PartMaxFilters PartMaxFilters { get; } = new();
+    /// <summary>
     /// The camera the host last passed (<see cref="CameraViewCommand"/>); null: none, nothing is tested against a screen.
     /// </summary>
     public CameraViewCommand? View { get; internal set; }
@@ -601,6 +711,10 @@ public sealed partial class World : IDisposable
     /// The characters' lasting ids, which code mods key their data per character by (docs/modding.md "Character ids").
     /// </summary>
     public LastingIds LastingIds { get; }
+    /// <summary>
+    /// The code mods' per-character fields in the vanilla save (docs/modding.md "Character save fields").
+    /// </summary>
+    public Saving.CharacterSaveFields SaveFields { get; }
     /// <summary>
     /// The values code mods set on their world states (docs/modding.md "World states"), to read; null until the first, so a world without one is the
     /// game's. Values are set only through the claimed <see cref="ModWorldState"/> handles.
@@ -692,11 +806,44 @@ public sealed partial class World : IDisposable
     internal void ParallelFor(int count, Action<int> body) => _pool.ForEach(count, body);
 
     /// <summary>
-    /// Whether the storage filters let <paramref name="who"/> use <paramref name="storage"/> for <paramref name="record"/> (null: not one item,
-    /// such as any food); true without a filter. Thread-safe, for the game's own storage searches.
+    /// Whether <paramref name="who"/> may use <paramref name="storage"/> for <paramref name="record"/> (null: not one item, such as any food): the
+    /// storage filters allow it and no priority system forbids it; true without either. Thread-safe, for the game's own storage searches.
     /// </summary>
     internal bool StorageAllows(CharacterCold who, string storage, Items.StorageUse use, string? record) =>
-        !StorageFilters.Active || StorageFilters.Allows(this, who.Id, storage, use, record);
+        StorageRank(who.Id, storage, use, record) != Items.StoragePriority.Forbidden;
+
+    /// <summary>
+    /// How much <paramref name="who"/> prefers <paramref name="storage"/> for <paramref name="record"/> (null: not one item) when the game picks a
+    /// storage for it: <see cref="Items.StoragePriority.Forbidden"/> when a storage filter refuses it (<see cref="Items.IStorageFilter"/>) or the
+    /// storage's own setting or a priority system forbids it; else the storage's own setting on its panel (<see cref="Production.Machine.PutPriority"/>,
+    /// <see cref="Production.Machine.TakePriority"/>) unless Normal, then the priority systems' answer (<see cref="Items.IStoragePriority"/>), Normal
+    /// without one. Thread-safe;
+    /// a mod ranks its own storage picks with it as the game's searches do (docs/modding.md "Storage priority").
+    /// </summary>
+    public Items.StoragePriority StorageRank(CharacterId who, string storage, Items.StorageUse use, string? record)
+    {
+        if (StorageFilters.Active && !StorageFilters.Allows(this, who, storage, use, record)) return Items.StoragePriority.Forbidden;
+
+        var own = Machines.AnyStoragePriority && Machines.Find(storage) is { } m ? m.PriorityFor(use) : Items.StoragePriority.Normal;
+        if (own == Items.StoragePriority.Forbidden) return own;
+
+        var modded = StoragePriorities.Of(this, who, storage, use, record);
+        return modded == Items.StoragePriority.Forbidden || own == Items.StoragePriority.Normal ? modded : own;
+    }
+
+    /// <summary>
+    /// <see cref="StorageRank(CharacterId, string, Items.StorageUse, string?)"/> for a character's cold record, the game's own searches' form.
+    /// </summary>
+    internal Items.StoragePriority StorageRank(CharacterCold who, string storage, Items.StorageUse use, string? record) =>
+        StorageRank(who.Id, storage, use, record);
+
+    /// <summary>
+    /// Whether a storage farther than the best a search has found could still outrank it: a priority system is registered or a storage has a
+    /// priority of its own, and the best is below <see cref="Items.StoragePriority.Critical"/>. Without either a search keeps the original's
+    /// nearest-first shortcuts.
+    /// </summary>
+    internal bool StorageMayOutrank(Items.StoragePriority best) =>
+        (StoragePriorities.Active || Machines.AnyStoragePriority) && best < Items.StoragePriority.Critical;
 
     /// <summary>
     /// Game seconds per game hour (docs/game/game-loop.md "The clock", Verified; the engine's <c>GameClock</c> has the same).
@@ -837,6 +984,7 @@ public sealed partial class World : IDisposable
         ArmourFilters.Register(system, _systems.Count - 1);
         CombatDefenceObservers.Register(system, _systems.Count - 1);
         StorageFilters.Register(system, _systems.Count - 1);
+        StoragePriorities.Register(system, _systems.Count - 1);
         ItemUseObservers.Register(system, _systems.Count - 1);
         GoodsTakenObservers.Register(system, _systems.Count - 1);
         TownSwitchObservers.Register(system, _systems.Count - 1);
@@ -846,6 +994,21 @@ public sealed partial class World : IDisposable
         OffscreenFightRules.Register(system, _systems.Count - 1);
         ExperienceFilters.Register(system, _systems.Count - 1);
         CrimeObservers.Register(system, _systems.Count - 1);
+        NeedRateFilters.Register(system, _systems.Count - 1);
+        HealthObservers.Register(system, _systems.Count - 1);
+        StateObservers.Register(system, _systems.Count - 1);
+        DialogueChoiceObservers.Register(system, _systems.Count - 1);
+        RemovalVetoes.Register(system, _systems.Count - 1);
+        ItemCreatedObservers.Register(system, _systems.Count - 1);
+        CombatEngageFilters.Register(system, _systems.Count - 1);
+        BlowReactionFilters.Register(system, _systems.Count - 1);
+        CombatDefenceFilters.Register(system, _systems.Count - 1);
+        ArrangeFilters.Register(system, _systems.Count - 1);
+        TargetScoreFilters.Register(system, _systems.Count - 1);
+        DitchItemFilters.Register(system, _systems.Count - 1);
+        BedFilters.Register(system, _systems.Count - 1);
+        JobScoreFilters.Register(system, _systems.Count - 1);
+        PartMaxFilters.Register(system, _systems.Count - 1);
         RegisterTasks(system, _systems.Count - 1);
         if (system is IDecisionOwner owner) Decisions.RegisterFrom(owner);
         Ai.ChooserRegistry.Collect(this, system, _systems.Count - 1, Extensions(), [], goalsOpen: false);
@@ -855,8 +1018,8 @@ public sealed partial class World : IDisposable
     }
 
     /// <summary>
-    /// Sets the table's watch on characters entering and leaving it (<see cref="CharacterWatch"/>) once a death observer or an experience filter
-    /// needs it, binding the stats of the characters already in it for the filters; none otherwise.
+    /// Sets the table's watch on characters entering and leaving it (<see cref="CharacterWatch"/>) once a death observer, an experience filter
+    /// or a health change observer needs it, binding the stats of the characters already in it for the filters; none otherwise.
     /// </summary>
     void WatchCharacters()
     {
@@ -867,7 +1030,7 @@ public sealed partial class World : IDisposable
             Bodies.ExperienceFilters.UnbindAll(this);
         }
 
-        if (!DeathObservers.Active && !ExperienceFilters.Active) return;
+        if (!DeathObservers.Active && !ExperienceFilters.Active && !HealthObservers.Active && !StateObservers.Active) return;
 
         Characters.Watch ??= new CharacterWatch(this);
         if (ExperienceFilters.Active) Bodies.ExperienceFilters.BindAll(this);
@@ -980,6 +1143,8 @@ public sealed partial class World : IDisposable
         // lose a tick (nothing without registered effects).
         RunSlowWorld(prof);
         DeathObservers.Sweep(this);
+        HealthObservers.Tell(this);
+        StateObservers.Tell(this);
         PlatoonObservers.Tell(this);
         Bodies.StatusEffects.Step(this);
         AfterPhase?.Invoke(this, "slow world");
@@ -1479,6 +1644,9 @@ public sealed partial class World : IDisposable
         // only once a mod asked for a character id or a save held some
         ("lasting ids", static (World w, ref StateHasher h) => { if (w.LastingIds.Any) w.LastingIds.Hash(ref h); }),
 
+        // only once a code mod set a character save field
+        ("save fields", static (World w, ref StateHasher h) => { if (w.SaveFields.Any) w.SaveFields.Hash(ref h); }),
+
         // only while a code mod's world state has a value
         ("mod states", static (World w, ref StateHasher h) => w.HashModStates(ref h)),
 
@@ -1553,6 +1721,7 @@ public sealed partial class World : IDisposable
         ArmourFilters.HashFaults(ref h);
         CombatDefenceObservers.HashFaults(ref h);
         StorageFilters.HashFaults(ref h);
+        StoragePriorities.HashFaults(ref h);
         ItemUseObservers.HashFaults(ref h);
         GoodsTakenObservers.HashFaults(ref h);
         TownSwitchObservers.HashFaults(ref h);
@@ -1562,6 +1731,21 @@ public sealed partial class World : IDisposable
         OffscreenFightRules.HashFaults(ref h);
         ExperienceFilters.HashFaults(ref h);
         CrimeObservers.HashFaults(ref h);
+        NeedRateFilters.HashFaults(ref h);
+        HealthObservers.HashFaults(ref h);
+        StateObservers.HashFaults(ref h);
+        DialogueChoiceObservers.HashFaults(ref h);
+        RemovalVetoes.HashFaults(ref h);
+        ItemCreatedObservers.HashFaults(ref h);
+        CombatEngageFilters.HashFaults(ref h);
+        BlowReactionFilters.HashFaults(ref h);
+        CombatDefenceFilters.HashFaults(ref h);
+        ArrangeFilters.HashFaults(ref h);
+        TargetScoreFilters.HashFaults(ref h);
+        DitchItemFilters.HashFaults(ref h);
+        BedFilters.HashFaults(ref h);
+        JobScoreFilters.HashFaults(ref h);
+        PartMaxFilters.HashFaults(ref h);
         Decisions.HashFaults(ref h);
         ModFaults.HashFaults(ref h);
     }

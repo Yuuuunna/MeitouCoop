@@ -14,6 +14,12 @@ sealed class CraftOptionsCache(Func<World, Machine, IReadOnlyList<CraftOptionVie
     IReadOnlyDictionary<string, IReadOnlyList<CraftOptionView>>? _published;
 
     /// <summary>
+    /// The shown text revision (<see cref="ShownText.Revision"/>) the option lists were made at: their names are made again when a mod's text
+    /// changes.
+    /// </summary>
+    int _shownRevision;
+
+    /// <summary>
     /// The crafting machines and their owners at the last publication, in registry order.
     /// </summary>
     (Machine Machine, int Faction)[] _benches = [];
@@ -57,10 +63,18 @@ sealed class CraftOptionsCache(Func<World, Machine, IReadOnlyList<CraftOptionVie
     }
 
     /// <summary>
-    /// Drops one faction's cached options when its immutable unlock set is replaced.
+    /// Drops the option lists and the site map when the unlocks are not the ones they were made with, or the shown text changed (their names are
+    /// shown text).
     /// </summary>
     void Sync(World world, int faction)
     {
+        if (_shownRevision != ShownText.Revision)
+        {
+            _shownRevision = ShownText.Revision;
+            _unlocked.Clear();
+            _lists.Clear();
+            _published = null;
+        }
         var unlocked = faction < 0 ? world.Research.UnlockedCrafts : world.Factions.GetOrCreate(faction).Research.UnlockedCrafts;
         if (_unlocked.TryGetValue(faction, out var previous) && ReferenceEquals(previous, unlocked)) return;
 

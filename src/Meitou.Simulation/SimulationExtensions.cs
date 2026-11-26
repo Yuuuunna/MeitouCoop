@@ -127,9 +127,69 @@ public readonly record struct ItemUse(World World, CharacterId User, Items.ItemI
 public delegate bool ItemUseHandler(ItemUse use);
 
 /// <summary>
-/// A combat move a mod has a character play: the technique and its progress (0 to 1). Animation only: it lands no blow.
+/// A move a mod has a character play (docs/modding.md "Combat moves"): a combat technique, or any ANIMATION clip by name
+/// (<see cref="Animation"/>, e.g. <c>medic</c>, <c>squat T</c>), and its progress (0 to 1). Animation only: it lands no blow.
 /// </summary>
-public readonly record struct CombatMove(Data.Gameplay.Combat.CombatTechnique Technique, float Progress);
+public readonly record struct CombatMove(Data.Gameplay.Combat.CombatTechnique? Technique, float Progress)
+{
+    /// <summary>
+    /// The ANIMATION record (its name, else its string id) played instead of a technique; null: <see cref="Technique"/>'s.
+    /// </summary>
+    public string? Animation { get; init; }
+
+    /// <summary>
+    /// The ANIMATION clip <paramref name="animation"/> (a record's name or string id) at <paramref name="progress"/> (0 to 1).
+    /// </summary>
+    public static CombatMove Clip(string animation, float progress) => new(null, progress) { Animation = animation };
+}
+
+/// <summary>
+/// What keeps a mod's combat move off a character (<see cref="Combat.CombatSystem.ModMoveBlockOf"/>, docs/modding.md "Combat moves"): the game
+/// plays something of its own, so a move a mod answers is not played (replaced, or cut short).
+/// </summary>
+public enum ModMoveBlock : byte
+{
+    /// <summary>
+    /// Nothing: a mod's move plays (the first source's answer).
+    /// </summary>
+    None,
+    /// <summary>
+    /// The character is not in the world, or not alive.
+    /// </summary>
+    Gone,
+    /// <summary>
+    /// A swing of its own is under way (or about to start).
+    /// </summary>
+    Attacking,
+    /// <summary>
+    /// A block, dodge or hit reaction plays.
+    /// </summary>
+    Reacting,
+    /// <summary>
+    /// A crossbow pose plays (aim, shot, reload).
+    /// </summary>
+    RangedPose,
+    /// <summary>
+    /// Someone carries it.
+    /// </summary>
+    Carried,
+    /// <summary>
+    /// It is getting up.
+    /// </summary>
+    GettingUp,
+    /// <summary>
+    /// It is down in the fight (knocked out, dead).
+    /// </summary>
+    Down,
+    /// <summary>
+    /// A stumble plays.
+    /// </summary>
+    Stumbling,
+    /// <summary>
+    /// It is stunned by a blow.
+    /// </summary>
+    Stunned,
+}
 
 /// <summary>
 /// A mod's combat move for a character the game plays nothing for (docs/modding.md "Combat moves"); null for none. Asked in the animation's

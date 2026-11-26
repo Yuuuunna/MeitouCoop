@@ -166,6 +166,12 @@ msgstr "Una squadra che torna nell'area delle tue squadre si è curata per il te
 msgid "A swamp turtle butts and bites when it fights. In the game it fights with a sword or club drawn for it, whose moves its body cannot play, so its blows land without any motion."
 msgstr "Una tartaruga di palude dà testate e morde quando combatte. Nel gioco combatte con una spada o una mazza estratta per lei, i cui movimenti il suo corpo non può eseguire, così i suoi colpi arrivano senza alcun movimento."
 
+msgid "Pick-up thefts from the owner"
+msgstr "Furti raccolti: al proprietario"
+
+msgid "Taking someone else's item from the floor of a building is a theft from the item's owner. The game counts it as stolen from whoever owns the building you stand in, even when the item belongs to someone else."
+msgstr "Raccogliere dal pavimento di un edificio un oggetto altrui è un furto al suo proprietario. Il gioco lo conta come rubato a chi possiede l'edificio in cui ti trovi, anche quando l'oggetto appartiene a qualcun altro."
+
 msgid "Turret fire is a crime"
 msgstr "Sparare con le torrette è reato"
 
@@ -4849,6 +4855,120 @@ msgstr "Salva il preset corrente"
 msgid "Sort by"
 msgstr "Ordina per"
 
+msgid "Beds used as seats"
+msgstr "Letti usati come sedili"
+
+msgid "A character sleeping on furniture that works as a seat, such as Bed (job), lies along the mattress as in a real bed. The game seats it on the furniture's middle, so it lies across the foot of the bed."
+msgstr "Un personaggio che dorme su un mobile che funziona da sedile, come Bed (job), si sdraia lungo il materasso come in un vero letto. Il gioco lo fa sedere al centro del mobile, così si sdraia di traverso ai piedi del letto."
+
+#. machine-translated
+msgid "Outpost:"
+msgstr "Avamposto:"
+
+#. machine-translated
+msgid "This building stands outside every outpost's build limit, so no generator can power it. Dismantle it and build it again inside the red ring."
+msgstr "Questo edificio si trova fuori dal limite di costruzione di ogni avamposto, quindi nessun generatore può alimentarlo. Smantellalo e ricostruiscilo all'interno dell'anello rosso."
+
+#. machine-translated
+msgid "A tall two-story building shell with stairs inside."
+msgstr "Un alto involucro di edificio a due piani con scale all'interno."
+
+#. machine-translated
+msgid "Makes basic first aid kits and sleeping bags from fabrics. Needs power."
+msgstr "Produce kit di pronto soccorso base e sacchi a pelo dai tessuti. Richiede energia."
+
+#. machine-translated
+msgid "Makes first aid kits and splint kits from fabrics and hemp. Needs power."
+msgstr "Produce kit di pronto soccorso e kit di stecche da tessuti e canapa. Richiede energia."
+
+#. machine-translated
+msgid "Grows hemp indoors, safe from the weather. Needs power and water."
+msgstr "Coltiva canapa al chiuso, al riparo dalle intemperie. Richiede energia e acqua."
+
+#. machine-translated
+msgid "Grows riceweed indoors, safe from the weather. Needs power and water."
+msgstr "Coltiva erba di riso al chiuso, al riparo dalle intemperie. Richiede energia e acqua."
+
+#. machine-translated
+msgid "Grows greenfruit indoors, safe from the weather. Needs power and water."
+msgstr "Coltiva fruttaverde al chiuso, al riparo dalle intemperie. Richiede energia e acqua."
+
+#. machine-translated
+msgid "Collects water when it rains."
+msgstr "Raccoglie l'acqua quando piove."
+
+#. machine-translated
+msgid "A sturdy metal table."
+msgstr "Un robusto tavolo di metallo."
+
+#. machine-translated
+msgid "A simple round table."
+msgstr "Un semplice tavolo rotondo."
+
+#. machine-translated
+msgid "A wooden shelf, for decoration."
+msgstr "Uno scaffale di legno, come decorazione."
+
+#. machine-translated
+msgid "A simple stool to sit on."
+msgstr "Un semplice sgabello su cui sedersi."
+
+#. machine-translated
+msgid "Stores power for when your generators fall short."
+msgstr "Accumula energia per quando i tuoi generatori non bastano."
+
+#. machine-translated
+msgid "A larger wind generator with twice the power of the first when the wind is up. Keep batteries as a backup."
+msgstr "Un generatore eolico più grande, con il doppio della potenza del primo quando c'è vento. Tieni delle batterie di riserva."
+
+#. machine-translated
+msgid "A large storage tank for fuel."
+msgstr "Un grande serbatoio per il carburante."
+
+#. machine-translated
+msgid "A stack of boxes you can store anything in."
+msgstr "Una pila di casse in cui riporre qualsiasi cosa."
+
+#. machine-translated
+msgid "A storage barrel for cactus."
+msgstr "Un barile per conservare i cactus."
+
+#. machine-translated
+msgid "A storage barrel for greenfruit."
+msgstr "Un barile per conservare la fruttaverde."
+
+#. machine-translated
+msgid "A storage barrel for riceweed."
+msgstr "Un barile per conservare l'erba di riso."
+
+#. machine-translated
+msgid "A low, crude wall that won't keep enemies out for long."
+msgstr "Un muro basso e rozzo che non terrà lontani i nemici a lungo."
+
+#. machine-translated
+msgid "A proper defensive wall, taller than a makeshift one."
+msgstr "Un vero muro difensivo, più alto di uno improvvisato."
+
+#. machine-translated
+msgid "A taller, heavier defensive wall."
+msgstr "Un muro difensivo più alto e pesante."
+
+#. machine-translated
+msgid "A towering fortified wall."
+msgstr "Un imponente muro fortificato."
+
+#. machine-translated
+msgid "The gate for Defensive Wall II."
+msgstr "Il cancello del Muro difensivo II."
+
+#. machine-translated
+msgid "The gate for Defensive Wall III."
+msgstr "Il cancello del Muro difensivo III."
+
+#. machine-translated
+msgid "The gate for Defensive Wall IV."
+msgstr "Il cancello del Muro difensivo IV."
+
 #. machine-translated
 msgid "Simple terrain shading"
 msgstr "Ombreggiatura del terreno semplice"
@@ -4856,6 +4976,844 @@ msgstr "Ombreggiatura del terreno semplice"
 #. machine-translated
 msgid "Faster ground for weak graphics: one biome and two texture layers a pixel, no bump detail. Blends between biomes show harder edges."
 msgstr "Terreno più veloce per grafica modesta: un bioma e due strati di texture per pixel, senza dettaglio in rilievo. I passaggi tra biomi mostrano bordi più netti."
+
+#. machine-translated
+msgid "Loading the target builds..."
+msgstr "Caricamento delle versioni di riferimento..."
+
+#. machine-translated
+msgid "{1} target builds"
+msgstr "{1} versioni di riferimento"
+
+#. machine-translated
+msgid "Benchmark"
+msgstr "Benchmark"
+
+#. machine-translated
+msgid "Target builds unknown: {1}"
+msgstr "Versioni di riferimento sconosciute: {1}"
+
+#. machine-translated
+msgid "Download the build into the benchmark's own folder and list its benchmarks"
+msgstr "Scarica la versione nella cartella del benchmark ed elenca i suoi benchmark"
+
+#. machine-translated
+msgid "Target builds (full releases and the daily nightlies) count for comparisons; others can be run but not submitted."
+msgstr "Le versioni di riferimento (versioni complete e nightly giornaliere) contano per i confronti; le altre si possono eseguire ma non inviare."
+
+#. machine-translated
+msgid "Build"
+msgstr "Versione"
+
+#. machine-translated
+msgid "target"
+msgstr "di riferimento"
+
+#. machine-translated
+msgid "not a target"
+msgstr "non di riferimento"
+
+#. machine-translated
+msgid "installed"
+msgstr "installata"
+
+#. machine-translated
+msgid "Proton runs the Windows build, with its own prefix in the launcher's folder."
+msgstr "Proton esegue la versione Windows, con un proprio prefisso nella cartella del launcher."
+
+#. machine-translated
+msgid "Platform"
+msgstr "Piattaforma"
+
+#. machine-translated
+msgid "Install the build to see all the benchmarks it has."
+msgstr "Installa la versione per vedere tutti i suoi benchmark."
+
+#. machine-translated
+msgid "Each ticked benchmark is run at each ticked tier."
+msgstr "Ogni benchmark selezionato viene eseguito a ogni livello selezionato."
+
+#. machine-translated
+msgid "Benchmarks"
+msgstr "Benchmark"
+
+#. machine-translated
+msgid "Needs ray tracing"
+msgstr "Richiede il ray tracing"
+
+#. machine-translated
+msgid "Medium and {1}, recommended for this computer, are ticked first."
+msgstr "Medio e {1}, consigliato per questo computer, sono già selezionati."
+
+#. machine-translated
+msgid "The game's quality presets."
+msgstr "I preset di qualità del gioco."
+
+#. machine-translated
+msgid "Tiers"
+msgstr "Livelli"
+
+#. machine-translated
+msgid "Start"
+msgstr "Avvia"
+
+#. machine-translated
+msgid "Do not use the computer while it runs."
+msgstr "Non usare il computer mentre è in corso."
+
+#. machine-translated
+msgid "Sessions: {1}, two runs each, about {2} minutes."
+msgstr "Sessioni: {1}, due esecuzioni ciascuna, circa {2} minuti."
+
+#. machine-translated
+msgid "{1} ({2} elapsed)"
+msgstr "{1} ({2} trascorso)"
+
+#. machine-translated
+msgid "Benchmark finished."
+msgstr "Benchmark completato."
+
+#. machine-translated
+msgid "The build is installed."
+msgstr "La versione è installata."
+
+#. machine-translated
+msgid "A benchmark is already running."
+msgstr "Un benchmark è già in corso."
+
+#. machine-translated
+msgid "Meitou is running: close it before benchmarking."
+msgstr "Meitou è in esecuzione: chiudilo prima del benchmark."
+
+#. machine-translated
+msgid "Choose a build first."
+msgstr "Scegli prima una versione."
+
+#. machine-translated
+msgid "Tick at least one benchmark and one tier."
+msgstr "Seleziona almeno un benchmark e un livello."
+
+#. machine-translated
+msgid "Cancelled."
+msgstr "Annullato."
+
+#. machine-translated
+msgid "The benchmark stopped: {1}"
+msgstr "Il benchmark si è fermato: {1}"
+
+#. machine-translated
+msgid "Benchmarking: the game window opens and closes by itself."
+msgstr "Benchmark in corso: la finestra del gioco si apre e si chiude da sola."
+
+#. machine-translated
+msgid "{1} at {2}: run {3} of {4}, launch {5} of {6}"
+msgstr "{1} a {2}: esecuzione {3} di {4}, avvio {5} di {6}"
+
+#. machine-translated
+msgid "Proton: {1}"
+msgstr "Proton: {1}"
+
+#. machine-translated
+msgid "Native Linux build"
+msgstr "Versione Linux nativa"
+
+#. machine-translated
+msgid "This computer's build"
+msgstr "Versione per questo computer"
+
+#. machine-translated
+msgid "Results"
+msgstr "Risultati"
+
+#. machine-translated
+msgid "No results for this build and platform yet."
+msgstr "Ancora nessun risultato per questa versione e piattaforma."
+
+#. machine-translated
+msgid "Machine id (letters, digits, dashes)"
+msgstr "ID della macchina (lettere, cifre, trattini)"
+
+#. machine-translated
+msgid "Machine name (optional)"
+msgstr "Nome della macchina (facoltativo)"
+
+#. machine-translated
+msgid "Notes (cooling, power plan, ...)"
+msgstr "Note (raffreddamento, piano energetico, ...)"
+
+#. machine-translated
+msgid "Kept as it was first submitted, so the site keeps your results together."
+msgstr "Mantenuta come al primo invio, così il sito tiene insieme i tuoi risultati."
+
+#. machine-translated
+msgid "Can be edited until the first session is submitted; then it is kept, so the site keeps your results together."
+msgstr "Modificabile fino all'invio della prima sessione; poi resta invariata, così il sito tiene insieme i tuoi risultati."
+
+#. machine-translated
+msgid "Machine"
+msgstr "Macchina"
+
+#. machine-translated
+msgid "Your name on the benchmarks site (optional)"
+msgstr "Il tuo nome sul sito dei benchmark (facoltativo)"
+
+#. machine-translated
+msgid "Submitted by"
+msgstr "Inviato da"
+
+#. machine-translated
+msgid "Shown beside your results."
+msgstr "Mostrato accanto ai tuoi risultati."
+
+#. machine-translated
+msgid "The hardware is probed when a benchmark starts."
+msgstr "L'hardware viene rilevato all'avvio di un benchmark."
+
+#. machine-translated
+msgid "{1}, {2}, {3} GB, {4}"
+msgstr "{1}, {2}, {3} GB, {4}"
+
+#. machine-translated
+msgid "{1} at {2}"
+msgstr "{1} a {2}"
+
+#. machine-translated
+msgid "Run {1}: FPS"
+msgstr "Esecuzione {1}: FPS"
+
+#. machine-translated
+msgid "Run {1}: 99% ms"
+msgstr "Esecuzione {1}: 99% ms"
+
+#. machine-translated
+msgid "Run {1}: over 33 ms"
+msgstr "Esecuzione {1}: oltre 33 ms"
+
+#. machine-translated
+msgid "Submitted (#{1})."
+msgstr "Inviato (#{1})."
+
+#. machine-translated
+msgid "Submitting..."
+msgstr "Invio..."
+
+#. machine-translated
+msgid "Submit"
+msgstr "Invia"
+
+#. machine-translated
+msgid "Submit again"
+msgstr "Invia di nuovo"
+
+#. machine-translated
+msgid "Incomplete: both runs are needed to submit."
+msgstr "Incompleto: servono entrambe le esecuzioni per inviare."
+
+#. machine-translated
+msgid "Not a target build: its results can be seen here but not submitted."
+msgstr "Non è una versione di riferimento: i risultati si vedono qui ma non si possono inviare."
+
+#. machine-translated
+msgid "The runs were made by {1}, not {2}: they cannot be submitted."
+msgstr "Le esecuzioni sono state fatte da {1}, non da {2}: non si possono inviare."
+
+#. machine-translated
+msgid "Fill in the machine's id to submit."
+msgstr "Inserisci l'ID della macchina per inviare."
+
+#. machine-translated
+msgid "The service refused it: {1}"
+msgstr "Il servizio l'ha rifiutato: {1}"
+
+#. machine-translated
+msgid "Could not reach the reports service: {1}"
+msgstr "Impossibile raggiungere il servizio dei report: {1}"
+
+#. machine-translated
+msgid "{1} skipped: it needs ray tracing, which this graphics card does not have."
+msgstr "{1} saltato: richiede il ray tracing, che questa scheda grafica non ha."
+
+#. machine-translated
+msgid "{1} has no download for {2}."
+msgstr "{1} non ha un download per {2}."
+
+#. machine-translated
+msgid "{1} has no game in its download."
+msgstr "Il download di {1} non contiene il gioco."
+
+#. machine-translated
+msgid "Asking the build for its benchmarks..."
+msgstr "Richiesta dei benchmark alla versione..."
+
+#. machine-translated
+msgid "This build did not list its benchmarks (exit code {1}): it may be older than launcher benchmarks."
+msgstr "Questa versione non ha elencato i suoi benchmark (codice di uscita {1}): potrebbe essere precedente ai benchmark del launcher."
+
+#. machine-translated
+msgid "{1} skipped: this build has no such benchmark."
+msgstr "{1} saltato: questa versione non ha questo benchmark."
+
+#. machine-translated
+msgid "{1} skipped: it needs the save {2}, which this launcher cannot download."
+msgstr "{1} saltato: richiede il salvataggio {2}, che questo launcher non può scaricare."
+
+#. machine-translated
+msgid "Checking the benchmark save..."
+msgstr "Verifica del salvataggio del benchmark..."
+
+#. machine-translated
+msgid "The benchmark save is damaged: its download does not match the expected hash."
+msgstr "Il salvataggio del benchmark è danneggiato: il download non corrisponde all'hash previsto."
+
+#. machine-translated
+msgid "Probing the hardware..."
+msgstr "Rilevamento dell'hardware..."
+
+#. machine-translated
+msgid "This build did not report the hardware (exit code {1}): it may be older than launcher benchmarks."
+msgstr "Questa versione non ha segnalato l'hardware (codice di uscita {1}): potrebbe essere precedente ai benchmark del launcher."
+
+#. machine-translated
+msgid "Copying the save..."
+msgstr "Copia del salvataggio..."
+
+#. machine-translated
+msgid "{1} skipped: the game says it needs ray tracing, which this graphics card does not have."
+msgstr "{1} saltato: il gioco indica che serve il ray tracing, che questa scheda grafica non ha."
+
+#. machine-translated
+msgid "{1} skipped: the game does not know this benchmark (exit code 7)."
+msgstr "{1} saltato: il gioco non conosce questo benchmark (codice di uscita 7)."
+
+#. machine-translated
+msgid "The game refused the save: its hash is not the benchmark's (exit code 6)."
+msgstr "Il gioco ha rifiutato il salvataggio: il suo hash non è quello del benchmark (codice di uscita 6)."
+
+#. machine-translated
+msgid "The game stopped with exit code {1} in {2}, run {3}; its log is {4}"
+msgstr "Il gioco si è fermato con codice di uscita {1} in {2}, esecuzione {3}; il suo log è {4}"
+
+#. machine-translated
+msgid "The game wrote no result.json into {1}; its log is {2}"
+msgstr "Il gioco non ha scritto result.json in {1}; il suo log è {2}"
+
+#. machine-translated
+msgid "The Vulkan loader is not installed: run 'brew install molten-vk vulkan-loader' in a terminal, then try again."
+msgstr "Il loader Vulkan non è installato: esegui 'brew install molten-vk vulkan-loader' in un terminale, poi riprova."
+
+#. machine-translated
+msgid "The game did not start."
+msgstr "Il gioco non si è avviato."
+
+#. machine-translated
+msgid "The game ran over {1} minutes and was stopped."
+msgstr "Il gioco ha superato {1} minuti ed è stato fermato."
+
+#. machine-translated
+msgid "Bases: the play bench on a save"
+msgstr "Basi: il banco di prova di gioco su un salvataggio"
+
+#. machine-translated
+msgid "Shark fly-by: a new game, flying round Shark"
+msgstr "Sorvolo di Shark: una nuova partita, volando intorno a Shark"
+
+#. machine-translated
+msgid "Low"
+msgstr "Basso"
+
+#. machine-translated
+msgid "Medium"
+msgstr "Medio"
+
+#. machine-translated
+msgid "High"
+msgstr "Alto"
+
+#. machine-translated
+msgid "Whole run"
+msgstr "Esecuzione intera"
+
+#. machine-translated
+msgid "Streaming"
+msgstr "Streaming"
+
+#. machine-translated
+msgid "Views"
+msgstr "Viste"
+
+#. machine-translated
+msgid "Flight"
+msgstr "Volo"
+
+#. machine-translated
+msgid "BENCHMARK"
+msgstr "BENCHMARK"
+
+#. machine-translated
+msgid "A benchmark is running: cancel it on the Benchmark page first."
+msgstr "È in corso un benchmark: annullalo prima nella pagina Benchmark."
+
+#. machine-translated
+msgid "The benchmark stopped."
+msgstr "Il benchmark si è fermato."
+
+#. machine-translated
+msgid "{1} squad(s) given their own squad AI options by a mod that is not loaded follow yours again."
+msgstr "{1} squadra/e a cui una mod non caricata aveva dato opzioni IA di squadra proprie seguono di nuovo le tue."
+msgid "Unavailable menu rows"
+msgstr "Righe di menu non disponibili"
+
+msgid "Greyed: a menu row your selection can't do now, such as First Aid without a medkit, is greyed; Shift-click it to set up the job anyway. Faithful: every row as in the game."
+msgstr "Disattivate: una riga del menu che la selezione non può eseguire ora, come Primo soccorso senza kit medico, è in grigio; fai Maiusc+clic per impostare comunque il lavoro. Fedele: ogni riga come nel gioco."
+
+#. machine-translated
+msgid "Lockpick chance on the pointer"
+msgstr "Probabilità di scasso sul puntatore"
+
+#. machine-translated
+msgid "Pointing at a lock too hard to pick shows 0%, as its Pick Lock menu entry does, since the character cannot pick it. The game shows the chance before that limit there, such as 3% for a lock the menu gives 0%."
+msgstr "Puntare una serratura troppo difficile da scassinare mostra 0%, come la sua voce Scassina del menu, perché il personaggio non può scassinarla. Il gioco vi mostra la probabilità prima di quel limite, ad esempio 3% per una serratura a cui il menu dà 0%."
+
+#. machine-translated
+msgid "Mute corpse flies"
+msgstr "Silenzia le mosche dei cadaveri"
+
+#. machine-translated
+msgid "Mute corpse flies in the Audio settings"
+msgstr "Silenzia le mosche dei cadaveri nelle impostazioni Audio"
+
+#. machine-translated
+msgid "Mute corpse flies in the Audio settings is on"
+msgstr "Silenzia le mosche dei cadaveri nelle impostazioni Audio è attivo"
+
+#. machine-translated
+msgid "Silences the buzzing of the flies over corpses; the flies are still shown (the game: off)."
+msgstr "Zittisce il ronzio delle mosche sopra i cadaveri; le mosche restano visibili (il gioco: disattivato)."
+
+#. machine-translated
+msgid "Quiet corpse flies"
+msgstr "Mosche dei cadaveri discrete"
+
+#. machine-translated
+msgid "Quiet corpse flies in the Audio settings"
+msgstr "Mosche dei cadaveri discrete nelle impostazioni Audio"
+
+#. machine-translated
+msgid "Quiet corpse flies in the Audio settings is on"
+msgstr "Mosche dei cadaveri discrete nelle impostazioni Audio è attivo"
+
+#. machine-translated
+msgid "Corpse flies range"
+msgstr "Portata delle mosche dei cadaveri"
+
+#. machine-translated
+msgid "The flies over corpses are heard only close to them, not from across the base (the game: off)."
+msgstr "Le mosche sopra i cadaveri si sentono solo da vicino, non da un capo all'altro della base (il gioco: disattivato)."
+
+#. machine-translated
+msgid "How far the corpse flies are heard, of the game's distance: lower to hear them less, higher for more."
+msgstr "Fin dove si sentono le mosche dei cadaveri, rispetto alla distanza del gioco: più basso per sentirle meno, più alto per sentirle di più."
+
+#. machine-translated
+msgid "Guards give up lost suspects"
+msgstr "Le guardie rinunciano ai sospetti persi"
+
+#. machine-translated
+msgid "A guard who loses sight of the character he was arresting gives up and goes back to his duties. The game has him take the fight up again wherever the character is, so he can run straight to someone hiding out of sight."
+msgstr "Una guardia che perde di vista il personaggio che stava arrestando rinuncia e torna ai suoi compiti. Il gioco le fa riprendere lo scontro ovunque si trovi il personaggio, così può correre dritta verso qualcuno nascosto fuori vista."
+
+#. machine-translated
+msgid "Max faction size"
+msgstr "Dimensione massima della fazione"
+
+#. machine-translated
+msgid "Max squad size"
+msgstr "Dimensione massima della squadra"
+
+#. machine-translated
+msgid "Max squads"
+msgstr "Numero massimo di squadre"
+
+#. machine-translated
+msgid "Max faction size, Max squad size and Max squads in the Advanced settings"
+msgstr "Dimensione massima della fazione, Dimensione massima della squadra e Numero massimo di squadre nelle impostazioni Avanzate"
+
+#. machine-translated
+msgid "its limits are now Max faction size, Max squad size and Max squads in the Advanced settings"
+msgstr "i suoi limiti ora sono Dimensione massima della fazione, Dimensione massima della squadra e Numero massimo di squadre nelle impostazioni Avanzate"
+
+#. machine-translated
+msgid "The faction's recruitment limit: how many characters and animals your faction may hold (the game: 30). Existing members stay if you lower it. Click the number to type an exact value."
+msgstr "Il limite di reclutamento della fazione: quanti personaggi e animali può contenere la tua fazione (il gioco: 30). I membri esistenti restano se lo abbassi. Fai clic sul numero per digitare un valore esatto."
+
+#. machine-translated
+msgid "How many members one of your squads may hold (the game: 20). Full squads put new recruits into a new squad."
+msgstr "Quanti membri può contenere una delle tue squadre (il gioco: 20). Le squadre piene inseriscono le nuove reclute in una nuova squadra."
+
+#. machine-translated
+msgid "How many squads your faction may create (the game: 10)."
+msgstr "Quante squadre può creare la tua fazione (il gioco: 10)."
+
+#. machine-translated
+msgid "App menu"
+msgstr "Menu delle applicazioni"
+
+#. machine-translated
+msgid "Could not change the app menu entry: {1}"
+msgstr "Impossibile modificare la voce del menu delle applicazioni: {1}"
+
+#. machine-translated
+msgid "Meitou Launcher was added to the app menu."
+msgstr "Meitou Launcher è stato aggiunto al menu delle applicazioni."
+
+#. machine-translated
+msgid "Meitou Launcher was removed from the app menu."
+msgstr "Meitou Launcher è stato rimosso dal menu delle applicazioni."
+
+#. machine-translated
+msgid "Remove"
+msgstr "Rimuovi"
+
+#. machine-translated
+msgid "Add"
+msgstr "Aggiungi"
+
+#. machine-translated
+msgid "Meitou Launcher is in your desktop's app launcher."
+msgstr "Meitou Launcher è nel menu delle applicazioni del tuo desktop."
+
+#. machine-translated
+msgid "Add Meitou Launcher, with its icon, to your desktop's app launcher."
+msgstr "Aggiungi Meitou Launcher, con la sua icona, al menu delle applicazioni del tuo desktop."
+
+#. machine-translated
+msgid "Add to the app menu"
+msgstr "Aggiungi al menu delle applicazioni"
+
+#. machine-translated
+msgid "Meitou Launcher, with its icon, in your desktop's app launcher."
+msgstr "Meitou Launcher, con la sua icona, nel menu delle applicazioni del tuo desktop."
+
+#. machine-translated
+msgid "Benchmarks site"
+msgstr "Sito dei benchmark"
+
+#. machine-translated
+msgid "~{1} min per tier"
+msgstr "~{1} min per livello"
+
+#. machine-translated
+msgid "Recommended for this computer"
+msgstr "Consigliato per questo computer"
+
+#. machine-translated
+msgid "Recommended"
+msgstr "Consigliato"
+
+#. machine-translated
+msgid "Submit results automatically when done"
+msgstr "Invia automaticamente i risultati al termine"
+
+#. machine-translated
+msgid "Applies to target builds only."
+msgstr "Si applica solo alle build obiettivo."
+
+#. machine-translated
+msgid "Submit your results to the Meitou benchmarks site automatically when the benchmark finishes? Hardware specs, timings and your optional handle are sent; your computer name is not."
+msgstr "Inviare automaticamente i risultati al sito dei benchmark di Meitou al termine del test? Vengono inviati i dati hardware, i tempi e il tuo nome facoltativo; il nome del computer non viene inviato."
+
+#. machine-translated
+msgid "You can change this anytime on the Benchmark page."
+msgstr "Puoi cambiare questa impostazione in qualsiasi momento nella pagina Benchmark."
+
+#. machine-translated
+msgid "Don't submit"
+msgstr "Non inviare"
+
+#. machine-translated
+msgid "Submit benchmark results?"
+msgstr "Inviare i risultati del benchmark?"
+
+#. machine-translated
+msgid "Wait for the current submission to finish."
+msgstr "Attendi il completamento dell’invio in corso."
+
+#. machine-translated
+msgid "Open this build's benchmark results folder"
+msgstr "Apri la cartella dei risultati benchmark di questa build"
+
+#. machine-translated
+msgid "1 session"
+msgstr "1 sessione"
+
+#. machine-translated
+msgid "{1} sessions"
+msgstr "{1} sessioni"
+
+#. machine-translated
+msgid "1 session · submitted"
+msgstr "1 sessione · inviata"
+
+#. machine-translated
+msgid "{1} sessions · all submitted"
+msgstr "{1} sessioni · tutte inviate"
+
+#. machine-translated
+msgid "{1} of {2} submitted"
+msgstr "{1} di {2} inviate"
+
+#. machine-translated
+msgid "All tiers"
+msgstr "Tutti i livelli"
+
+#. machine-translated
+msgid "Submitted (#{1})"
+msgstr "Inviato (#{1})"
+
+#. machine-translated
+msgid "Incomplete ({1} of {2} runs)"
+msgstr "Incompleta ({1} di {2} esecuzioni)"
+
+#. machine-translated
+msgid "Built by {1}, not {2}"
+msgstr "Eseguita con {1}, non {2}"
+
+#. machine-translated
+msgid "Not a target build"
+msgstr "Non è una build obiettivo"
+
+#. machine-translated
+msgid "Ready to submit"
+msgstr "Pronta per l’invio"
+
+#. machine-translated
+msgid "Submit results"
+msgstr "Invia risultati"
+
+#. machine-translated
+msgid "Submit all ({1})"
+msgstr "Invia tutto ({1})"
+
+#. machine-translated
+msgid "Submit all again"
+msgstr "Invia di nuovo tutto"
+
+#. machine-translated
+msgid "All {1} sessions submitted."
+msgstr "Tutte le {1} sessioni sono state inviate."
+
+#. machine-translated
+msgid "1 session ready to submit ({1} incomplete skipped)."
+msgstr "1 sessione pronta per l’invio ({1} incomplete saltate)."
+
+#. machine-translated
+msgid "{1} sessions ready to submit ({2} incomplete skipped)."
+msgstr "{1} sessioni pronte per l’invio ({2} incomplete saltate)."
+
+#. machine-translated
+msgid "{1} of {2} sessions not yet submitted."
+msgstr "{1} di {2} sessioni non ancora inviate."
+
+#. machine-translated
+msgid "1 session ready to submit."
+msgstr "1 sessione pronta per l’invio."
+
+#. machine-translated
+msgid "{1} sessions ready to submit."
+msgstr "{1} sessioni pronte per l’invio."
+
+#. machine-translated
+msgid "Submitting {1} of {2}..."
+msgstr "Invio di {1} di {2}..."
+
+#. machine-translated
+msgid "Submitted 1 session."
+msgstr "1 sessione inviata."
+
+#. machine-translated
+msgid "Submitted {1} sessions."
+msgstr "{1} sessioni inviate."
+
+#. machine-translated
+msgid "Submission failed."
+msgstr "Invio non riuscito."
+
+#. machine-translated
+msgid "Submitted {1} of {2} sessions; {3} failed: {4}"
+msgstr "Inviate {1} di {2} sessioni; {3} non riuscite: {4}"
+
+#. machine-translated
+msgid "Bases"
+msgstr "Basi"
+
+#. machine-translated
+msgid "Shark fly-by"
+msgstr "Sorvolo di Shark"
+
+#. machine-translated
+msgid "The play bench on a save"
+msgstr "Il banco di prova di gioco su un salvataggio"
+
+#. machine-translated
+msgid "A new game, flying round Shark"
+msgstr "Una nuova partita, volando intorno a Shark"
+
+#. machine-translated
+msgid "Tier"
+msgstr "Livello"
+
+#. machine-translated
+msgid "Run {1} · Whole run"
+msgstr "Esecuzione {1} · Esecuzione intera"
+
+#. machine-translated
+msgid "Run {1}"
+msgstr "Esecuzione {1}"
+
+#. machine-translated
+msgid "FPS"
+msgstr "FPS"
+
+#. machine-translated
+msgid "99% ms"
+msgstr "99% ms"
+
+#. machine-translated
+msgid "Over 33 ms"
+msgstr "Oltre 33 ms"
+
+#. machine-translated
+msgid "Status"
+msgstr "Stato"
+
+#. machine-translated
+msgid "Click to view groups for {1}"
+msgstr "Fai clic per visualizzare i gruppi per {1}"
+
+#. machine-translated
+msgid "Hardware must be probed before submitting."
+msgstr "L’hardware deve essere rilevato prima dell’invio."
+
+#. machine-translated
+msgid "Generated when hardware is probed."
+msgstr "Generato al rilevamento dell’hardware."
+
+#. machine-translated
+msgid "Generated for this computer so the site keeps your results together."
+msgstr "Generato per questo computer affinché il sito raggruppi i tuoi risultati."
+
+#. machine-translated
+msgid "Benchmark settings"
+msgstr "Impostazioni benchmark"
+
+#. machine-translated
+msgid "Benchmarks always use fixed settings so results stay comparable:"
+msgstr "I benchmark usano sempre impostazioni fisse affinché i risultati restino confrontabili:"
+
+#. machine-translated
+msgid "• Windowed 1920×1080, Vulkan, VSync & frame limit off, HDR off"
+msgstr "• In finestra 1920×1080, Vulkan, VSync e limite FPS disattivati, HDR disattivato"
+
+#. machine-translated
+msgid "• Chosen quality tier (Meitou look), TAA at 100% scale (Low: no AA at 83%), no upscaler"
+msgstr "• Livello di qualità scelto (aspetto Meitou), TAA al 100% (Basso: nessun AA all’83%), nessun upscaler"
+
+#. machine-translated
+msgid "• Ray tracing only on Ultra and Extreme"
+msgstr "• Ray tracing solo su Ultra ed Estremo"
+
+#. machine-translated
+msgid "• Your saved graphics settings and mods are ignored and never modified"
+msgstr "• Le impostazioni grafiche salvate e le mod vengono ignorate e mai modificate"
+
+msgid "Settings window opacity"
+msgstr "Opacità della finestra impostazioni"
+
+msgid "How opaque the in-game settings window is (lower to see the world behind it while adjusting settings)."
+msgstr "Quanto è opaca la finestra delle impostazioni in gioco (riducila per vedere il mondo dietro mentre regoli le opzioni)."
+
+msgid "No mod matches the filter."
+msgstr "Nessuna mod corrisponde al filtro."
+
+msgid "Issues"
+msgstr "Problemi"
+
+msgid "Name A-Z"
+msgstr "Nome A-Z"
+
+msgid "Filter mods"
+msgstr "Filtra mod"
+
+msgid "Show"
+msgstr "Mostra"
+
+msgid "Opacity"
+msgstr "Opacità"
+
+msgid "Restore"
+msgstr "Ripristina"
+
+msgid "{1} of {2}"
+msgstr "{1} di {2}"
+
+msgid "{1} mod"
+msgid_plural "{1} mods"
+msgstr[0] "{1} mod"
+msgstr[1] "{1} mod"
+
+#. machine-translated
+msgid "Monitor"
+msgstr "Monitor"
+
+#. machine-translated
+msgid "Monitor {1}: {2}"
+msgstr "Monitor {1}: {2}"
+
+#. machine-translated
+msgid "The monitor the game starts and goes full screen on. Automatic: the one its window is on (on Wayland, the first monitor)."
+msgstr "Il monitor su cui il gioco si avvia e passa a schermo intero. Automatico: quello su cui si trova la sua finestra (su Wayland, il primo monitor)."
+msgid "Put priority:"
+msgstr "Priorità di deposito:"
+
+#. machine-translated
+msgid "Take priority:"
+msgstr "Priorità di prelievo:"
+
+#. machine-translated
+msgid "Haulers and workers put things into the storage of the highest put priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower."
+msgstr "Trasportatori e lavoratori ripongono le cose prima nel deposito con la priorità di deposito più alta, a parità nel più vicino. Vietato: mai. Clic per alzare, clic destro o Maiusc+clic per abbassare."
+
+#. machine-translated
+msgid "Workers and builders take things from the storage of the highest take priority first, the nearest among equals. Forbidden: never. Click to raise, right-click or Shift+click to lower."
+msgstr "Lavoratori e costruttori prendono le cose prima dal deposito con la priorità di prelievo più alta, a parità dal più vicino. Vietato: mai. Clic per alzare, clic destro o Maiusc+clic per abbassare."
+
+#. machine-translated
+msgid "Forbidden"
+msgstr "Vietato"
+
+#. machine-translated
+msgid "Deferred"
+msgstr "Rinviato"
+
+#. machine-translated
+msgid "Preferred"
+msgstr "Preferito"
+
+#. machine-translated
+msgid "Important"
+msgstr "Importante"
+
+#. machine-translated
+msgid "Rename"
+msgstr "Rinomina"
+
+#. machine-translated
+msgid "Give the building a name of your own, shown on its panel, its inventory and the jobs that use it."
+msgstr "Dai all'edificio un nome tuo, mostrato nel suo pannello, nel suo inventario e nei lavori che lo usano."
+
+#. machine-translated
+msgid "Leave it empty for the building's own name."
+msgstr "Lascia vuoto per il nome originale dell'edificio."
 
 #. machine-translated
 msgid "Select a self-contained client or an installed compatible runtime."

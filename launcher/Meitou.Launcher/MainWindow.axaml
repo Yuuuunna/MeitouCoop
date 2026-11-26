@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:l="using:Meitou.Launcher"
+        xmlns:bench="using:Meitou.Launcher.Benchmarks"
         x:Class="Meitou.Launcher.MainWindow"
         Title="Meitou Coop Launcher" Icon="avares://meitou-launcher/Assets/meitou.ico"
         WindowDecorations="None" TransparencyLevelHint="Transparent"
@@ -146,6 +147,13 @@
               <!-- A monitor on its stand -->
               <Path Data="F1 M0,1 H16 V11 H0 Z M2,3 V9 H14 V3 Z M7,11 H9 V13 H7 Z M4,13.5 H12 V15.5 H4 Z" />
               <TextBlock Text="GRAPHICS" />
+            </StackPanel>
+          </ToggleButton>
+          <ToggleButton x:Name="NavBenchmark" Classes="nav" Click="Nav_Click">
+            <StackPanel Orientation="Horizontal">
+              <!-- A gauge: its dial and needle -->
+              <Path Data="F1 M8,2 A8,8 0 0 1 16,10 H13.5 A5.5,5.5 0 0 0 2.5,10 H0 A8,8 0 0 1 8,2 Z M7,10.5 L12,5 L13,6 L9,11.5 Z M6,12 H10 V14 H6 Z" />
+              <TextBlock Text="BENCHMARK" />
             </StackPanel>
           </ToggleButton>
           <ToggleButton x:Name="NavSettings" Classes="nav" Click="Nav_Click">
@@ -421,6 +429,9 @@
           </ScrollViewer>
         </DockPanel>
 
+        <!-- Benchmark: builds, benchmarks and tiers to run, and the sessions to submit (Benchmarks/BenchmarkPage.cs), built in code -->
+        <bench:BenchmarkPage x:Name="BenchmarkPage" IsVisible="False" />
+
         <!-- Settings: one row per option, name and description left, control right -->
         <ScrollViewer x:Name="SettingsPage" Classes="page" IsVisible="False">
           <StackPanel Margin="0,0,14,0">
@@ -481,6 +492,16 @@
                   <TextBlock Classes="desc" Text="Steam sees the game as Kenshi: the overlay, play time and Steam's screenshot key. Needs the Steam copy of Kenshi." TextWrapping="Wrap" />
                 </StackPanel>
                 <CheckBox Grid.Column="1" x:Name="SteamBox" Click="Steam_Click" VerticalAlignment="Center" />
+              </Grid>
+            </Border>
+            <!-- Linux AppImage: the launcher's app menu entry (AppMenuEntry.cs) -->
+            <Border x:Name="AppMenuRow" Classes="row" IsVisible="False">
+              <Grid ColumnDefinitions="*,150">
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock Classes="name" Text="App menu" />
+                  <TextBlock x:Name="AppMenuStatus" Classes="desc" TextWrapping="Wrap" />
+                </StackPanel>
+                <Button Grid.Column="1" x:Name="AppMenuButton" HorizontalAlignment="Stretch" Click="AppMenu_Click" />
               </Grid>
             </Border>
             <!-- macOS: Auto prefers Vulkan when MoltenVK exists, else native Metal. No Homebrew is needed for Metal. -->

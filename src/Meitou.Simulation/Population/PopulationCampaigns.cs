@@ -497,6 +497,23 @@ public sealed partial class PopulationSystem : IStateHashed
         t.Site >= 0 ? _data.Sites[t.Site].Town.Name : world.Buildings.FindTown(t.PlayerTown)?.Name ?? "";
 
     /// <summary>
+    /// <see cref="NameOf"/> as the mods' text sources show it, for the player's messages.
+    /// </summary>
+    string ShownNameOf(World world, CampaignTown t)
+    {
+        if (!ShownText.Any) return NameOf(world, t);
+        if (t.Site >= 0) return _data.Sites[t.Site].Town.ShownName();
+        if (world.Buildings.FindTown(t.PlayerTown) is { } town) return world.ShownName(town);
+
+        return PlayerFactionOf(world) is >= 0 and var pf ? World.ShownName(_data.Factions[pf]) : "";
+    }
+
+    /// <summary>
+    /// Campaign <paramref name="c"/>'s <c>display name</c> as the mods' text sources show it, for the player's messages.
+    /// </summary>
+    static string Shown(CampaignData c) => ShownText.Record(c.Id, c.DisplayName, "display name");
+
+    /// <summary>
     /// Whether a campaign town is still there: a site in range, or a player town that stands.
     /// </summary>
     bool Exists(World world, CampaignTown t) => t.Site >= 0 ? t.Site < _data.Sites.Count : world.Buildings.FindTown(t.PlayerTown) is not null;
@@ -838,14 +855,14 @@ public sealed partial class PopulationSystem : IStateHashed
         Gather(world, m, c, inst, made);
         if (inst.Men <= inst.Required)
         {
-            if (world.IsPlayerFaction(inst.Enemy)) world.PostFaction(inst.Enemy, Loc.Tr("Assault to {1} canceled due to faction weakness", c.DisplayName));
+            if (world.IsPlayerFaction(inst.Enemy)) world.PostFaction(inst.Enemy, Loc.Tr("Assault to {1} canceled due to faction weakness", Shown(c)));
             Disband(world, inst, made);
             Log($"{_data.Factions[m.Faction].Name}: {c.Name} against {NameOf(world, target)} canceled ({inst.Men} of {inst.Required} men)");
             return StartResult.Weak;
         }
         m.Actives.Add(inst);
         if (world.IsPlayerFaction(inst.Enemy))
-            world.PostFaction(inst.Enemy, c.IsHostile ? Loc.Tr("Warning: {1} moving towards {2}", c.DisplayName, NameOf(world, target)) : Loc.Tr("{1} on the way to {2}", c.DisplayName, NameOf(world, target)));
+            world.PostFaction(inst.Enemy, c.IsHostile ? Loc.Tr("Warning: {1} moving towards {2}", Shown(c), ShownNameOf(world, target)) : Loc.Tr("{1} on the way to {2}", Shown(c), ShownNameOf(world, target)));
         var known = m.Know(c.Id);
         known.TargetLastStarts[target] = now;
         if (!world.Players.RequiresExplicitControl) known.LastStart = now;
@@ -1324,7 +1341,7 @@ public sealed partial class PopulationSystem : IStateHashed
         if (FindTarget(world, inst.Faction, c, inst.Enemy, out var target, out _) && target != inst.Target)
         {
             inst.Target = target;
-            world.PostFaction(inst.Enemy, Loc.Tr("{1} has redirected to {2}", c.DisplayName, NameOf(world, target)));
+            world.PostFaction(inst.Enemy, Loc.Tr("{1} has redirected to {2}", Shown(c), ShownNameOf(world, target)));
         }
 
         inst.RedirectStart = now;
@@ -1418,7 +1435,7 @@ public sealed partial class PopulationSystem : IStateHashed
         {
             if (!LeaderDelivered(world, leader)) return false;
         }
-        else world.PostFaction(inst.Enemy, Loc.Tr("{1} has arrived at {2}", c.DisplayName, NameOf(world, inst.Target)));
+        else world.PostFaction(inst.Enemy, Loc.Tr("{1} has arrived at {2}", Shown(c), ShownNameOf(world, inst.Target)));
 
         inst.Phase = c.HasPt2 ? 1 : 2;
         inst.PhaseStart = now;
@@ -1579,7 +1596,7 @@ public sealed partial class PopulationSystem : IStateHashed
         inst.Phase = 2;
         inst.PhaseStart = now;
         inst.FightStart = -1;
-        if (c.IsHostile) world.PostFaction(inst.Enemy, Loc.Tr("{1} against {2} has ended", c.DisplayName, NameOf(world, inst.Target)));
+        if (c.IsHostile) world.PostFaction(inst.Enemy, Loc.Tr("{1} against {2} has ended", Shown(c), ShownNameOf(world, inst.Target)));
 
         Log($"{_data.Factions[m.Faction].Name}: {c.Name} against {NameOf(world, inst.Target)} won");
         FollowUp(world, m, c.VictoryTriggers, inst, now, 1);
@@ -1590,8 +1607,11 @@ public sealed partial class PopulationSystem : IStateHashed
         inst.Phase = 2;
         inst.PhaseStart = now;
         inst.FightStart = -1;
-        string target = NameOf(world, inst.Target);
-        world.PostFaction(inst.Enemy, !c.IsHostile ? Loc.Tr("{1} was defeated on their way to {2}", c.DisplayName, target) : inst.FoughtPlayer ? Loc.Tr("{1} against {2} has been defeated", c.DisplayName, target) : Loc.Tr("{1} to {2} has failed", c.DisplayName, target));
+        string target = NameOf(world, inst.Target), shown = ShownNameOf(world, inst.Target);
+        string message = !c.IsHostile ? Loc.Tr("{1} was defeated on their way to {2}", Shown(c), shown)
+            : inst.FoughtPlayer ? Loc.Tr("{1} against {2} has been defeated", Shown(c), shown)
+            : Loc.Tr("{1} to {2} has failed", Shown(c), shown);
+        world.PostFaction(inst.Enemy, message);
         Log($"{_data.Factions[m.Faction].Name}: {c.Name} against {target} lost");
         if (c.IsHostile && inst.Reached || inst.FoughtPlayer) FollowUp(world, m, c.LossTriggers, inst, now, 2);
         else if (c.IsHostile)
@@ -1924,7 +1944,7 @@ public sealed partial class PopulationSystem : IStateHashed
         if (world.Platoons.Find(squad.PlatoonId) is not { Campaign: { } inst } || CampaignOf(inst.CampaignId) is not { } c) return false;
 
         if (arrival && inst.Target is { IsNone: false, Nest: 0 })
-            world.PostFaction(inst.Enemy, Loc.Tr("{1} has arrived at {2}", c.DisplayName, NameOf(world, inst.Target)));
+            world.PostFaction(inst.Enemy, Loc.Tr("{1} has arrived at {2}", Shown(c), ShownNameOf(world, inst.Target)));
 
         return TryAnnounce(world, inst, c, speaker, table.Next[s].Position);
     }

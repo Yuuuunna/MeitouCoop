@@ -12,10 +12,10 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-1e317e34-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
+The current identity is `meitou-upstream-29c61c20-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
 named mod sounds, cage-click commands, item-tag digests, compressed JSON component envelopes,
 experience rules, corpse-machine sound metadata, sparse binary ragdoll poses, shared authority visuals, counted stack lifts,
-shown-machine hints and turret-shot sound selection,
+shown-machine hints, turret-shot sound selection, shared item-tag definitions, trail/tint/pulse/audio state and portable WAV playback identities,
 the [diagnostic control messages](diagnostics.md), mod-presentation components and editor-open command, in addition to the presentation-event
 and bounty contracts in [networking-next](networking-next.md).
 Ground-item material IDs and optional blood-event attacker IDs
@@ -31,6 +31,17 @@ remote settings are read-only; head-turn release, photo poses/lights and other p
 the compatibility digest and read-only remote settings. Campaign clocks and offscreen AI are evaluated by the server.
 `CounterTalk`, `TurretAssault`, `KeepDowned` and per-skill `SquadSkillXp` rates also belong to the authoritative rules and compatibility digest.
 Faction home is shared faction state; player membership and asset permissions still gate home assignment.
+
+**Observed** (source): nullable `MaxFactionSize`, `MaxSquadSize` and `MaxSquads` overrides, plus `SeatBedFix`, `PickUpTheftFix` and
+`ArrestLostFix`, belong to the same authority rule digest and remote read-only settings. Capacity overrides range from 1 to 256;
+fields 1070/1071/1072 publish the effective authority limits. Creation, recruitment and squad changes use those effective limits,
+including faction counts and independent squads where the operation requires them. Remote UI mods cannot change the authority clock.
+
+**Observed** (source): `MoveResearch` (87), `SetStoragePriority` (88) and `RenameSite` (102) use typed commands. Research mutations bind
+the displayed queue revision and faction; site mutations bind the canonical site/root revisions and current asset permission.
+Worksite views include record, shown name and kind without granting inventory access. `Engineering`/`Attacking` use fields 2107/2108;
+the private `HasMedkit`/`HasSplintKit` details use 2109/2110 only for controlled characters. Paused execution preserves these checks and
+does not advance world ticks; only issuerless authority commands may use the trusted mod paused-handler path.
 
 Trusted code-mod data phases run before derived game content. Both endpoints independently fingerprint the actual merged-record edits
 under `code-data/*`; copying the server's rule strings cannot substitute for running the locally trusted phase. The client reuses the
@@ -175,7 +186,7 @@ remain server-only configuration; ordinary players use their attributed trade se
 
 ### Shared mod effects, glows and machine windows
 
-**Observed** (source): snapshot collection 1068 carries authority `PlayEffect`/`KeepEffect`/`StopEffect` and glow requests. Server combat-mod
+**Observed** (source): snapshot collection 1068 carries authority effects, glows, trails and audio modulation. Server combat-mod
 callbacks enqueue these requests on the authority. Clients use compatible particle assets and the shared request data; they do not need to
 execute that server mod to display them. Local UI-mod callbacks remain local. Character/bone/weapon effects and glows require a visible
 character; point effects require a nearby position; building effects include observable player, level and nest buildings. Recipient
@@ -186,6 +197,11 @@ unchanged anchors and names. The client deduplicates
 one-shots, skips already expired initial history and clears handles on world/view replacement. The authority retains expired requests for
 three seconds so short effects survive a publication boundary; clients still apply expiry at their presentation clock. A kept effect is
 identified by owner, effect and anchor, so choosing a different anchor creates a different request. Shared visuals are cosmetic and unsaved.
+Effect size/pulse and glow tint/through-wall mode retain exact values. Trails carry anchors and styles, with client-local sampling and a
+bounded five-second retired tail; they never stream per-frame trajectory history. Audio state is keyed by mod owner, including identity
+values that replace earlier modulation. Headless projectile callbacks read the live projectile source once per authority tick even when
+ordinary snapshots are disabled. Vulkan consumes the effect/glow/trail render paths; upstream Metal has no equivalent visual renderer.
+Authority audio state is consumed by both hosts. See [mod presentation](modding.md) for initialization, disposal and sound lifecycles.
 Binary values, reliable burst staging and lossless compression are specified in [the wire contract](networking-next.md#shared-visual-collection).
 
 Fields 1065/1066 carry the inspected canonical town-machine panel and manageable machine site. They reuse the authorized machine projection
@@ -197,75 +213,55 @@ open-container session is also scoped to that player's shown window. Changing on
 Single-player host snapshots use the same shown-window optimization; multiplayer capture does not read the host's hint as a global filter.
 Obsolete character `Inventory` component 2016 is retired, without reusing its wire ID.
 
-**Verified** (repository-external .NET 11 diagnostics using real `World`/`AuthorityGateway` and the production publisher/replica): 39 machine
-window/permission checks cover two recipients, alternating snapshot caches, close/reopen, permission withdrawal and unauthorized hints.
-Shared-visual diagnostics preserve exact float/double values and signed zero, leave unchanged visuals without a delta, reject late baseline
-resurrection, process 70,000 cumulative transient identities, and deliver a 10,000-effect burst through 29 reliable publications. Replacing
-40,000 current effects with 40,000 new effects keeps the old manifest complete until the final new manifest; an old baseline interleaved
-midway and replayed afterward cannot restore withdrawn entries. Four independent cross-lane checks cover a bulk definition overtaken by
-a critical reading, critical definition delivery before an old baseline, and exact membership/value A-to-B-to-A changes overtaken by old
-bulk. Each asserts the immediately visible result before later bulk can repair it. These checks do not establish renderer or installed-game acceptance.
+**Verified** (2026-11-26, repository-external .NET 11 diagnostics, 40 assertions): production publisher/replica and presentation joins
+preserve exact UTF-16 tags, including NUL and isolated surrogates. Same-bucket and cross-bucket retags survive repeated late baselines in
+both initialized and uninitialized replicas. Inventory/definition withdrawal and a later digest-only item cannot restore old text.
+Actual `World.Authority.CaptureView` projections exclude another nearby player's private inventory, distant actors and unreferenced
+known definitions, while retaining the recipient's authorized item text. A full 65,536-definition table also survives an FF-to-00 retag
+whose new bucket is delivered before the old bucket's withdrawal, plus a later old baseline; the final count and every item tag stay exact.
+This capacity diagnostic uses eight 8192-item inventories and is separate from the ordinary-load bandwidth traces below.
+These checks are separate from the repository test count and
+do not establish installed-game or renderer acceptance.
 
 ### Incremental component bandwidth
 
-**Observed** (2026-11-23, .NET 11 Release, repository-external deterministic diagnostics): the production `GameStatePublisher`,
-`GameStateReplica`, `MotionReplicationProducer`, scheduler, bulk/control framing and reverse acknowledgements encode detached recipient
-views. Each trace covers ten seconds after its initial baseline, world time at 30 Hz, motion capture at 20 Hz and full/critical capture at
-10 Hz. All 500 characters are interactive combat actors with independent scattered positions, drift rates and changing head targets.
-DrawYaw is Yaw + 0.151527 radians, so this trace benefits from the existing reversible bit predictor. Every scenario delivers 100,000
-motion records, each compared bit-for-bit against its capture, with no reduced-cadence result. The first moving transition's 500 reliable
-checkpoint records are included in the ten-second totals. The one-time entry baseline is reported separately.
+**Observed** (2026-11-26, .NET 11 Release, repository-external deterministic diagnostics): the production `GameStatePublisher`,
+`GameStateReplica`, `MotionReplicationProducer`, scheduler, bulk/control framing and reverse acknowledgements encode recipient views.
+Each trace covers ten seconds after its initial baseline, world time at 30 Hz, motion at 20 Hz and full/critical captures at 10 Hz.
+All 500 characters are interactive combat actors with independently scattered positions, drift and changing head targets. DrawYaw is
+Yaw + 0.151527 radians, preserving the existing reversible bit predictor. Each scenario verifies 100,000 motion records against their
+captured bits, 500 initial moving-transition reliable checkpoints, 100 full publications and no reduced-cadence result.
 
-Application rates include both directions: ordinary components, critical frames, motion, checkpoints, bulk manifests/chunks/commit and
-reverse ACKs. The separate budget column adds **96 bytes per application message**, including reverse messages; this is a model, not
-measured QUIC/TLS/UDP/IP overhead. KiB means 1024 bytes. Turret-sound traces generate 100 new sounds/s with exact selector 0–3 and retain
-300 source sounds across a rolling three-second history. `PendingPresentationEvents.Admit` releases only extended unadmitted retention;
-it does not remove still-current source history. The diagnostic follows that contract rather than dropping admitted journal entries.
+Application rates count both directions: components, critical frames, motion, checkpoints, reliable framing, bulk manifests/chunks,
+commit/ready/active messages and reverse ACKs. The separate budget column adds **96 bytes per application message**, including reverse
+messages. This is a planning allowance per application message, not a transport upper bound or measured QUIC/TLS/UDP/IP overhead. KiB means 1024 bytes. Initial baseline bytes
+are separate from the ten-second means. The in-memory trace has no RTT, packet loss, encryption or retransmissions.
 
-#### Authority API workload
+The visual workloads use actual `World.ModVisuals` APIs. They renew 64 kept effects and 256 glows at fixed anchors/targets with independently
+changing colour/strength/expiry. Their source journal retains three seconds of 100 turret sounds/s (exact selector 0–3), while the sender
+only emits events not already admitted to reliable delivery. The client consumes and acknowledges every half-second, checking unique IDs.
 
-The renewal rows call the real `ModVisuals.Play`/`Glow`/`Capture` APIs on a ticking `World`: 64 kept effects retain their exact anchors and
-256 glows retain their targets, while tint, colour, strength and expiry change at the stated frequency. The seeded values have independent
-high entropy. Bone following remains local and does not mutate the shared relative anchor. No particle instances enter the snapshots.
+The new-feature workloads add size/pulse, alternating Light/Tint glows with 32 through-wall targets, 64 trails, two owner audio settings,
+10 portable-WAV starts and 10 stop events/s, 64 distinct 1024-code-unit tags with four retags/s, eight eight-item inventories changing
+quantities at 10 Hz, and 500 Attacking/10 Engineering flags changing at 1 Hz. Visual changes use the row's 4 or 10 Hz cadence. All API
+requests are accepted; replica visuals, tags, quantities and new flags are checked, and all 1200 sounds are consumed once. Trail points,
+bone transforms and particle instances remain local. This constructed load is an encoding diagnostic, not a typical-play traffic claim.
 
 | Scene | Application KiB/s | With 96 B/message KiB/s | Entry baseline KiB |
 | --- | ---: | ---: | ---: |
-| 500 combat actors, no shared visual changes | 374.12 | 413.01 | 90.94 |
-| 64 effects + 256 glows renewed at 1 Hz | 379.75 | 418.73 | 105.40 |
-| Same renewals at 4 Hz | 396.62 | 435.88 | 105.40 |
-| Same renewals at 10 Hz | 430.38 | 470.20 | 105.40 |
-| 4 Hz renewals + 100 turret sounds/s | 423.65 | 463.29 | 106.68 |
-| 10 Hz renewals + 100 turret sounds/s | 458.12 | 498.88 | 106.68 |
+| 500 combat actors | 328.16 | 372.23 | 92.70 |
+| 64 effects + 256 glows at 4 Hz + 100 turret sounds/s | 355.14 | 399.58 | 103.81 |
+| New-feature workload, visual updates at 4 Hz | 399.24 | 445.94 | 183.94 |
+| New-feature workload, visual updates at 10 Hz | 450.18 | 498.00 | 183.94 |
 
-An identical-input comparison isolates the representation change: the reference uses complete keyed JSON visual entries, uncompressed
-critical bodies and quality-1 bulk compression; the current encoder uses exact binary definition/reading pairs, quality-6 critical and
-quality-4 bulk compression. Other traffic, sampling, field precision and event counts are the same.
+The 10 Hz row leaves only about 2.00 KiB/s (0.40%) of the modeled 500 KiB/s target. It does not establish headroom for real transport
+loss/retransmissions, extra gameplay churn or arbitrary mod traffic. Compared with the 4 Hz effects/glows row, adding the listed new
+features at the same visual cadence costs 44.10 KiB/s of application data and 46.35 KiB/s including the message allowance. This compares
+these complete constructed loads; it is not an attribution of every byte to a single feature.
 
-| API workload | Reference application KiB/s | Reference +96 B KiB/s | Current application KiB/s | Current +96 B KiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 4 Hz renewals | 785.09 | 833.72 | 396.62 | 435.88 |
-| 10 Hz renewals | 1397.79 | 1461.06 | 430.38 | 470.20 |
-| 4 Hz renewals + 100 sounds/s | 811.83 | 860.68 | 423.65 | 463.29 |
-| 10 Hz renewals + 100 sounds/s | 1424.72 | 1488.40 | 458.12 | 498.88 |
-
-In one separate compression-only probe of that ten-second mixed 10 Hz trace, Brotli `TryCompress` time for critical plus bulk bodies was
-77.75 ms at the selected qualities, versus 16.41 ms with quality 1 for both (about 6.1 ms additional encoding work per simulated second).
-This runner-local sample excludes serialization, allocations, decoding, rendering and transport; it is not a server capacity measurement.
-Higher critical qualities provided no useful size reduction in the same probe. The 498.88 KiB/s modeled result leaves little margin and
-does not establish that a real encrypted link stays below 500 KiB/s.
-
-#### DTO encoding stress and limits
-
-A separate input changes every anchor transform and colour in the same 64 effect IDs plus 256 glow IDs at 10 Hz. This tests encoding
-entropy, not normal `KeepEffect` renewal: the authority keys kept effects by anchor, so changing an anchor creates another identity.
-Its final application/model rates are 457.47/498.23 KiB/s without sound and 484.62/525.38 KiB/s with 100 turret sounds/s. A separate
-10-new-one-shot-requests/s DTO trace measures 380.73/419.62 KiB/s (92.39 KiB entry baseline). These inputs retain all requested values.
-The target cannot be guaranteed for arbitrary new high-entropy values or arbitrarily many requests. No rate cap, event dropping,
-quantization or reduced cadence hides an overrun.
-
-These diagnostics do not simulate installed Kenshi animation, equipment/inventory churn, all combat event families simultaneously,
-player commands, RTT, loss or retransmissions. They verify the measured encoding path and its limits, not real-game wire acceptance.
-500 KiB/s/player remains an average optimization target; mixed gameplay and sustained mod workloads require installed-game measurement.
+No application bytes/s limiter, cadence reduction, quantization or event dropping enforces the target. These traces omit installed Kenshi
+animation/equipment churn, concurrent gameplay command families, player count scaling and impaired links. The 500 KiB/s/player average
+optimization target requires a separate installed-game wire measurement, including cold sync, stable play, reconnect and retransmission.
 
 ### Item actions and shared stock
 
@@ -278,10 +274,17 @@ command, whose handler resolves the registered offer and rechecks current site, 
 
 **Observed** (source): mod item-use handlers run only on the authority, with the issuing player's current character grant, inventory
 revision and item identity. Each inventory or trade item carries an optional 32-character `ModTagDigest` instead of its raw mod
-tag; empty tags send no property. It is the first 128 bits of SHA-256 over exact UTF-16 code units, used alongside inventory revisions
+tag in its changing item fields; empty tags send no property. It is the first 128 bits of SHA-256 over exact UTF-16 code units, used alongside inventory revisions
 and actor grants. The authority and saves retain the complete tag, and retagging
 advances inventory revisions. Tokens created by local windows retain raw tags; remote tokens echo the digest and cannot combine it with
 a different raw tag. Nullable stolen-owner labels are omitted when absent.
+
+Field 1069 carries the recipient's referenced tag definitions separately. Only tags from the already authorized character, ground,
+held, trade, barter, craft and open-machine views enter it. Quantity, charge and stock changes therefore reuse unchanged definitions.
+The presentation join restores exact UTF-16 text, including isolated surrogate code units; missing or withdrawn definitions produce
+empty text, never an older item's tag. Definition-table changes invalidate the join cache, while command tokens retain only the digest.
+The independently revisioned 256 digest-prefix buckets prevent late baselines from reviving withdrawn definitions and avoid sending a
+whole digest table on each retag. Bounds and encoding are specified in [the wire contract](networking-next.md#shared-item-tag-definitions).
 
 Building-shop stock stays in physical containers. Trading uses one shared projection, settles each mutation before the next command,
 and rebuilds after external container changes. A held stock item remembers its original shop, so rollback uses the current projection

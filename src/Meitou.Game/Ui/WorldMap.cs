@@ -3,13 +3,14 @@ using System.Globalization;
 using System.Numerics;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Ui;
+using Meitou.Game.Host.Input;
+using Meitou.Simulation;
 using Meitou.Simulation.Carrying;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Population;
 using Meitou.Simulation.Production;
 using Meitou.Simulation.Trading;
-using Meitou.Simulation;
 
 namespace Meitou.Game.Ui;
 
@@ -159,11 +160,18 @@ sealed class WorldMap(PlayerInterface player)
     int MapZoomLevel => MapScale < 0.4f * UiScale ? 0 : MapScale <= 0.75f * UiScale ? 1 : 2;
 
     /// <summary>
-    /// Left or middle button: pans.
+    /// The map as last drawn for the code mods (<see cref="UiWorldMapView"/>); null while it does not show.
     /// </summary>
-    internal bool MapPointerDown(Vector2 p)
+    internal UiWorldMapView? ModView { get; private set; }
+
+    /// <summary>
+    /// Left or middle button (<paramref name="button"/>): pans; a press on a code mod's control over the map is left to its screen, and a code mod
+    /// may take the press first (<see cref="ModMapPress"/>).
+    /// </summary>
+    internal bool MapPointerDown(Vector2 p, MouseButton button)
     {
-        if (!OverMap(p)) return false;
+        if (!OverMap(p) || OverModControl(p)) return false;
+        if (ModMapPress(p, button)) return true;
 
         MapDrag = p;
         _mapPickFrom = p;
@@ -219,10 +227,56 @@ sealed class WorldMap(PlayerInterface player)
     /// </summary>
     internal bool MapRightDown(Vector2 p)
     {
-        if (!OverMap(p)) return false;
+        if (!OverMap(p) || OverModControl(p)) return false;
+        if (ModMapPress(p, MouseButton.Right)) return true;
 
         MapRightPressed = true;
         return true;
+    }
+
+    /// <summary>
+    /// Whether a code mod's control (screen controls, <see cref="ScreenControls.OwnerProperty"/>) is under <paramref name="p"/>.
+    /// </summary>
+    bool OverModControl(Vector2 p) =>
+        player.FaithfulScreens.HitTest(p) is { } hit && hit.Control.Properties.ContainsKey(ScreenControls.OwnerProperty);
+
+    /// <summary>
+    /// A press over the map handed to the code mods (<see cref="UiRegistration.AddMapInput"/>): true when one took it.
+    /// </summary>
+    bool ModMapPress(Vector2 p, MouseButton button)
+    {
+        if (!player.HasModMapInput || ModView is not { } view) return false;
+
+        return player.ModMapInput(new UiMapInput(UiMapInputKind.Press, view, player.Session.CurrentSnapshot, () => player.Session.CommandTick,
+            player.Say)
+        {
+            Button = button, Point = p, Shift = player.SlowModifier, Ctrl = player.CtrlHeld, Alt = player.AltHeld,
+            Typing = player.FaithfulScreens.HasKeyboardFocus,
+        });
+    }
+
+    /// <summary>
+    /// A key while the map shows, handed to the code mods: true when one took it.
+    /// </summary>
+    internal bool ModMapKey(Key key, bool ctrl, bool shift)
+    {
+        if (!player.HasModMapInput || !MapTabOpen || ModView is not { } view) return false;
+
+        return player.ModMapInput(new UiMapInput(UiMapInputKind.Key, view, player.Session.CurrentSnapshot, () => player.Session.CommandTick, player.Say)
+        {
+            Key = key, Point = player.Mouse, Shift = shift, Ctrl = ctrl, Alt = player.AltHeld, Typing = player.FaithfulScreens.HasKeyboardFocus,
+        });
+    }
+
+    /// <summary>
+    /// The map stopped showing: the code mods hear it.
+    /// </summary>
+    void ModMapClosed()
+    {
+        ModView = null;
+        if (!player.HasModMapInput) return;
+
+        player.ModMapInput(new UiMapInput(UiMapInputKind.Closed, null, player.Session.CurrentSnapshot, () => player.Session.CommandTick, player.Say));
     }
 
     /// <summary>
@@ -301,6 +355,8 @@ sealed class WorldMap(PlayerInterface player)
         {
             player.Say(new SeenDiscoveriesCommand { Tick = player.Session.CommandTick });
         }
+
+        if (!shown && MapShown) ModMapClosed();
 
         if (!shown)
         {
@@ -412,6 +468,7 @@ sealed class WorldMap(PlayerInterface player)
 
         int imageIndex = controls.FindIndex(c => c.Name == "MapImage");
 
+        ModView = null;
         if (imageIndex < 0)
         {
             _mapViewport = default;
@@ -427,6 +484,7 @@ sealed class WorldMap(PlayerInterface player)
         var bounds = _mapView.ImageBounds(_mapViewport);
         controls[imageIndex] = image with { Bounds = bounds, Clip = _mapViewport, Pickable = true };
         int level = MapZoomLevel;
+        if (MapTabOpen) ModView = new(bounds, _mapViewport, level, ui);
 
         // Towns, camps and nests: discovered ones only; which zoom levels show each kind, its size, label and tooltip (docs/game/ui-screens.md
         // "Map").
@@ -537,7 +595,8 @@ sealed class WorldMap(PlayerInterface player)
             {
                 if ((snapshot.Towns[i] & TownKnowledge.Discovered) != 0 && towns[i].Town.Type is not (TownType.NestMarker or TownType.Null))
                 {
-                    AddPlace(ref frame, "map-town-" + i, towns[i].Town.Type, towns[i].Town.Name, towns[i].Town.UnexploredName, towns[i].Town.Faction,
+                    var town = towns[i].Town;
+                    AddPlace(ref frame, "map-town-" + i, town.Type, town.ShownName(), town.ShownName(unexplored: true), town.Faction,
                         towns[i].Position, snapshot.Towns[i]);
                 }
             }
@@ -546,13 +605,14 @@ sealed class WorldMap(PlayerInterface player)
         foreach (var camp in snapshot.Camps)
         {
             if ((camp.Known & TownKnowledge.Discovered) != 0 && camp.Position is { } at)
-                AddPlace(ref frame, "map-camp-" + camp.Site, TownType.Nest, camp.Name, "", camp.FactionId, at, camp.Known);
+                AddPlace(ref frame, "map-camp-" + camp.Site, TownType.Nest, camp.ShownName(), "", camp.FactionId, at, camp.Known);
         }
 
         // The player's outposts: TOWN player_town_template (type 1), in the same town list, made discovered and explored (FUN_140934e10).
         foreach (var outpost in snapshot.Outposts)
         {
-            AddPlace(ref frame, "map-outpost-" + outpost.Number, TownType.Outpost, outpost.Name, "", MapFactionId?.Invoke(outpost.Owner),
+            AddPlace(ref frame, "map-outpost-" + outpost.Number, TownType.Outpost,
+                player.ShownName("outpost", Simulation.Construction.PlayerTown.Template, outpost.Name), "", MapFactionId?.Invoke(outpost.Owner),
                 outpost.Position, TownKnowledge.Discovered | TownKnowledge.Explored);
         }
     }

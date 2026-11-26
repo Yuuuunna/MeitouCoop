@@ -175,7 +175,7 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
         var own = session.First.Player == player ? session.First : session.Second;
         var other = ReferenceEquals(own, session.First) ? session.Second : session.First;
         PlayerTradeSideView View(Side side) => new(side.Player, side.Actor, side.Faction, side.Accepted, side.Confirmed, side.Money, side.InventoryRevision,
-            Array.AsReadOnly(side.Items.Select(row => new PlayerTradeGoods(row.Token, row.Item.Name, row.Count)).ToArray()));
+            Array.AsReadOnly(side.Items.Select(row => new PlayerTradeGoods(row.Token with { ModTag = row.Item.ModTag, ModTagDigest = "" }, row.Item.Name, row.Count)).ToArray()));
         var inventory = own.Inventory;
         if (inventory is null && world.Characters.TryResolveNext(own.Actor, out int slot)) inventory = world.Characters.Cold(slot)?.Inventory;
         PlayerTradeGoods[] available = inventory is null ? [] : inventory.All().Select((item, index) => (item, index)).Where(p => Movable(inventory, p.item, out _))

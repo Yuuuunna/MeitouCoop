@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Numerics;
 using Meitou.Game;
+using Meitou.Game.Audio;
 using Meitou.Connections;
 using Meitou.Game.DevTools;
 using Meitou.Game.Effects;
@@ -56,6 +57,18 @@ sealed class GameMods(GameHost host)
     /// </summary>
     AuthorityModVisualPlayer? _authorityVisuals;
     /// <summary>
+    /// Pure audio authority controls shared by both rendering backends.
+    /// </summary>
+    readonly AuthorityModAudioPlayer _authorityAudio = new(host);
+    /// <summary>
+    /// Ribbon geometry sampled by local UI mods after authority ribbons.
+    /// </summary>
+    readonly List<TrailQuad> _frameTrails = [];
+    /// <summary>
+    /// Recipient generation observed by local projectile callbacks.
+    /// </summary>
+    ulong _boltsEpoch;
+    /// <summary>
     /// The world the mods' glows were set for and its game second at the last frame; a new world drops them.
     /// </summary>
     (object? World, double Seconds) _glowsFor;
@@ -63,6 +76,22 @@ sealed class GameMods(GameHost host)
     /// This frame's glows, kept to avoid allocating.
     /// </summary>
     readonly List<(GlowTarget Target, GlowNow Glow)> _frameGlows = [];
+    /// <summary>
+    /// The bolts the projectile feeds saw last, and the world and snapshot they were seen in; a new world starts them again.
+    /// </summary>
+    readonly ProjectileWatch _bolts = new();
+    /// <summary>
+    /// The world and snapshot tick <see cref="_bolts"/> last looked at.
+    /// </summary>
+    (object? World, long Tick) _boltsAt = (null, long.MinValue);
+    /// <summary>
+    /// This frame's bolt changes, kept to avoid allocating.
+    /// </summary>
+    readonly List<ProjectileEvent> _frameBolts = [];
+    /// <summary>
+    /// The world the mods' trails were kept for; a new world drops them.
+    /// </summary>
+    object? _trailsFor;
 
     /// <summary>
     /// Starts the JIT warm-up now, or (with code mods enabled) once they are initialized.
@@ -95,6 +124,8 @@ sealed class GameMods(GameHost host)
     /// </summary>
     internal void StartMods(Data.GameDatabase db, PopulationData data)
     {
+        Game.Ui.UiHost.FontFallbackRegistrar = Game.Rendering.Ui.UiFontFallbacks.Add;
+
         // The world's body options were made from the config before this, so settings taken in from a mod reach them here.
         if (host.OnlineConnection is null)
         {
@@ -105,6 +136,11 @@ sealed class GameMods(GameHost host)
                 ShowSquadXp = host.Config.ShowSquadXp,
                 FixAnimalMoves = host.Config.FixAnimalMoves,
                 HoverOutline = host.Config.HoverOutline,
+                MaxSquads = host.Config.MaxSquads,
+                MaxSquadSize = host.Config.MaxSquadSize,
+                MaxFactionSize = host.Config.MaxFactionSize,
+                QuietCorpseFlies = host.Config.QuietCorpseFlies,
+                MuteCorpseFlies = host.Config.MuteCorpseFlies,
                 AdoptedMods = host.Config.AdoptedMods,
                 ModSettings = host.Config.ModSettings,
             };
@@ -116,11 +152,18 @@ sealed class GameMods(GameHost host)
                 host.Config.ShowSquadXp = adopted.ShowSquadXp;
                 host.Config.FixAnimalMoves = adopted.FixAnimalMoves;
                 host.Config.HoverOutline = adopted.HoverOutline;
+                host.Config.MaxSquads = adopted.MaxSquads;
+                host.Config.MaxSquadSize = adopted.MaxSquadSize;
+                host.Config.MaxFactionSize = adopted.MaxFactionSize;
+                host.Config.QuietCorpseFlies = adopted.QuietCorpseFlies;
+                host.Config.MuteCorpseFlies = adopted.MuteCorpseFlies;
                 host.Config.Save();
             }
         }
         (data.BodyOptions.SquadXp, data.BodyOptions.OthersXp) = (host.Config.SquadXp, host.Config.OthersXp);
         data.BodyOptions.SquadSkillXp = Meitou.Game.Settings.SkillXp.Rates(host.Config.SquadSkillXp);
+        (data.BodyOptions.MaxFactionSize, data.BodyOptions.MaxSquadSize, data.BodyOptions.MaxSquads) =
+            (host.Config.MaxFactionSize, host.Config.MaxSquadSize, host.Config.MaxSquads);
 
         if (host.DataPhase?.Mods is { } prepared) StartPrepared(prepared, host.DataPhase.Enabled, db, data);
         else LoadMods(db, data);
@@ -139,6 +182,7 @@ sealed class GameMods(GameHost host)
         if (enabled.Count == 0) return;
         LogEnabled(enabled.Count);
         Mods = ModHost.Load(Options(enabled, db, data, disabled));
+        Mods.AudioModulations.Attach(snapshot => host.Sound.Audio?.Player.SetModAudio(snapshot));
 
         // No mod was found with a data phase, so an entry that is one anyway has it where the scan cannot see it.
         foreach (var mod in Mods.Mods.Where(m => m.Instance is IModDataPhase)) ModHost.NoteUnscannedDataPhase(mod);
@@ -157,6 +201,7 @@ sealed class GameMods(GameHost host)
         prepared.Start(Options(enabled, db, data));
         Mods = prepared;
         CheckTrustedMods(prepared);
+        Mods.AudioModulations.Attach(snapshot => host.Sound.Audio?.Player.SetModAudio(snapshot));
         KeepModSettings(prepared);
     }
 
@@ -166,7 +211,12 @@ sealed class GameMods(GameHost host)
     /// </summary>
     void KeepModSettings(ModHost mods)
     {
-        foreach (var group in mods.Settings) group.Changed += host.Config.KeepModSetting;
+        foreach (var group in mods.Settings)
+        {
+            group.Changed += host.Config.KeepModSetting;
+            group.UsePresets(host.Config.ModSettingPresets.GetValueOrDefault(group.ModId));
+            group.PresetsChanged += host.Config.KeepModPresets;
+        }
     }
 
     /// <summary>
@@ -234,7 +284,8 @@ sealed class GameMods(GameHost host)
     {
         foreach (var notice in _builtInNotices) ui.Notice(notice);
         if (Mods is null) return;
-        Mods.RegisterUi((extension, folder) => ui.RegisterUiExtension(extension, folder));
+        Mods.RegisterUi((extension, folder, texts) => ui.RegisterUiExtension(extension, folder, texts));
+        Mods.AttachInterface(new Game.Ui.PlayerModInterface(ui));
         if (Mods.ArrangesFactionList) ui.FactionWindow.ArrangeList = Mods.ArrangeFactionList;
         foreach (var notice in Mods.Notices) ui.Notice(notice, true);
     }
@@ -261,6 +312,39 @@ sealed class GameMods(GameHost host)
     }
 
     /// <summary>
+    /// Once a frame, after the hits: the bolts' changes between the shown snapshots to the mods' projectile feeds (docs/modding.md "Projectile
+    /// feed"). Nothing without a feed; a new world is taken as it is, telling nothing of its bolts already there.
+    /// </summary>
+    internal void UpdateModProjectiles()
+    {
+        if (Mods is not { WantsProjectiles: true }) return;
+        if (host.Session is not { HasWorldView: true } session)
+        {
+            _bolts.Reset([]);
+            _boltsAt = (null, long.MinValue);
+            _boltsEpoch = 0;
+            return;
+        }
+
+        var snapshot = session.CurrentSnapshot;
+        var world = session.WorldIdentity;
+        ulong epoch = session is RemotePlayerSession remote ? remote.PresentationEpoch : 0;
+        if (!ReferenceEquals(_boltsAt.World, world) || _boltsEpoch != epoch)
+        {
+            _bolts.Reset(snapshot.Projectiles);
+            _boltsAt = (world, snapshot.Tick);
+            _boltsEpoch = epoch;
+            return;
+        }
+        if (snapshot.Tick == _boltsAt.Tick) return;
+
+        _boltsAt.Tick = snapshot.Tick;
+        _frameBolts.Clear();
+        _bolts.Look(snapshot.Projectiles, _frameBolts);
+        Mods.DeliverProjectiles(_frameBolts);
+    }
+
+    /// <summary>
     /// Once a frame, after the hits: the mods' queued effects start and the playing ones follow their characters (docs/modding.md "Visual
     /// effects"). Shared requests also play without client code mods; a new world drops the old world's effects.
     /// </summary>
@@ -280,6 +364,7 @@ sealed class GameMods(GameHost host)
         var effects = Mods.Effects;
         effects.Resolve ??= _effectPlayer.Resolve;
         effects.Exists ??= _effectPlayer.Exists;
+        effects.Locate ??= _effectPlayer.Place;
         var world = host.Session?.WorldIdentity;
         if (!ReferenceEquals(_effectsFor, world))
         {
@@ -290,12 +375,44 @@ sealed class GameMods(GameHost host)
     }
 
     /// <summary>
+    /// Once a frame, after the effects: the mods' trails sample their anchors by the particles' frame clock and hand their quads to the particles
+    /// (docs/modding.md "Trails"). Shared trails also render without client code mods; a new world drops the old world's trails.
+    /// </summary>
+    internal void UpdateModTrails()
+    {
+        if (host.Gpu?.Particles is not { } particles) return;
+        particles.Ribbons.Clear();
+        if (host.Session is not { HasWorldView: true }) return;
+
+        _effectPlayer ??= new ModEffectPlayer(host);
+        _authorityVisuals ??= new AuthorityModVisualPlayer(host, _effectPlayer);
+        _authorityVisuals.UpdateTrails(particles.LastStep, particles.Ribbons);
+        if (Mods is null) return;
+
+        var trails = Mods.Trails;
+        var world = host.Session.WorldIdentity;
+        if (!ReferenceEquals(_trailsFor, world))
+        {
+            _trailsFor = world;
+            trails.Clear();
+        }
+        trails.Advance(particles.LastStep, _effectPlayer, _frameTrails);
+        particles.Ribbons.AddRange(_frameTrails);
+    }
+
+    /// <summary>
+    /// Updates shared controls before the common audio loop's guards, without starting or depending on visuals.
+    /// </summary>
+    internal void UpdateModAudio() => _authorityAudio.Update(Mods?.AudioModulations);
+
+    /// <summary>
     /// Once a frame: ages the mods' glows by the game clock (pause and game speed hold and hasten them) and hands them to the character
     /// renderer by draw key (docs/modding.md "Glow"). Shared requests do not require client code mods; a new world drops local glows.
     /// </summary>
     internal void UpdateModGlows()
     {
         if (host.Gpu?.Characters is { } crowd) crowd.Glows.Clear();
+        host.Gpu?.ThroughKeys.Clear();
         if (host.Session?.CurrentSnapshot.ModVisuals is { Glows.Length: > 0 })
         {
             _effectPlayer ??= new ModEffectPlayer(host);
@@ -327,7 +444,12 @@ sealed class GameMods(GameHost host)
         if (glows.Count == 0) return;
 
         glows.Current(_frameGlows);
-        foreach (var (target, glow) in _frameGlows) crowd.SetGlow(host.DrawKey(target.On), target, glow.Colour, glow.Strength);
+        foreach (var (target, glow) in _frameGlows)
+        {
+            long key = host.DrawKey(target.On);
+            crowd.SetGlow(key, target, glow.Colour, glow.Strength, glow.Mode);
+            if (glow.ThroughWalls) host.Gpu.ThroughKeys.Add((key, new Vector4(glow.Colour, Math.Clamp(glow.Strength, 0, 1))));
+        }
     }
 
     /// <summary>
@@ -403,6 +525,28 @@ sealed class GameMods(GameHost host)
     }
 
     /// <summary>
+    /// Once a frame, after the hits: the mods' per-frame callbacks get what the host shows (docs/modding.md "Frame"). Nothing without one, or over
+    /// the title (no world shown).
+    /// </summary>
+    internal void UpdateModFrames()
+    {
+        if (Mods is not { WantsFrames: true } mods || host.Player is null || host.Player.TitleOpen
+            || host.Session is not { HasWorldView: true }) return;
+
+        mods.DeliverFrame(_frame ??= new ModFrame(new GameModFrameHost(host)));
+    }
+
+    /// <summary>
+    /// The frame the mods read, made with the first callback (its reads are live).
+    /// </summary>
+    ModFrame? _frame;
+
+    /// <summary>
+    /// A save folder was written: its full path to the mods' save-written listeners (docs/modding.md "Persistence"); on the host's thread.
+    /// </summary>
+    internal void TellSaveWritten(string folder) => Mods?.TellSaveWritten(Path.GetFullPath(folder));
+
+    /// <summary>
     /// The save's mod data into the systems of the world just loaded from it; between ticks, before the first.
     /// </summary>
     internal void RestoreModData(World world, Data.Save.SaveGame save) => Mods?.RestoreSaveData(world, save.ModData);
@@ -410,8 +554,9 @@ sealed class GameMods(GameHost host)
     /// <summary>
     /// The squads of the world just loaded that a code mod made autonomous or kept out of the faction size count, when that mod is not running now
     /// (not installed, refused or failed to start), go back to the player (<see cref="Simulation.Ai.SquadAutonomy.DropUnowned"/>) and count again
-    /// (<see cref="Simulation.Factions.SquadManagement.DropUnownedUncounted"/>), and lose the shops, purses and sleep it gave them, each with a
-    /// notice; the NPC platoons it held in its name move on their own again (<see cref="Simulation.Population.PopulationSystem.DropUnownedHolds"/>,
+    /// (<see cref="Simulation.Factions.SquadManagement.DropUnownedUncounted"/>), and lose the shops, purses, sleep and squad AI options it
+    /// gave them, each with a notice; the NPC platoons it held in its name move on their own again
+    /// (<see cref="Simulation.Population.PopulationSystem.DropUnownedHolds"/>,
     /// a log line only); between ticks, before the first.
     /// </summary>
     internal void DropUnownedAutonomy(World world)
@@ -433,6 +578,13 @@ sealed class GameMods(GameHost host)
 
         int woken = Simulation.Factions.SquadManagement.DropUnownedDormant(world, running.Contains);
         if (woken > 0) Notice($"{woken} squad(s) a mod that is not loaded put to sleep are awake again.");
+
+        int options = Simulation.Factions.SquadManagement.DropUnownedOptions(world, running.Contains);
+        if (options > 0)
+        {
+            Notice(Meitou.Localisation.Loc.Tr(
+                "{1} squad(s) given their own squad AI options by a mod that is not loaded follow yours again.", options));
+        }
 
         // NPC platoons a missing mod held go back to the population; the player sees no change, so the log only.
         int released = Simulation.Population.PopulationSystem.DropUnownedHolds(world, running.Contains);
@@ -494,6 +646,7 @@ sealed class GameMods(GameHost host)
         return new Game.Host.Input.ModKeyContext(host.Session.CurrentSnapshot, host.Player.SelectedIds(), host.Session.CommandTick,
             host.Player.Say)
         {
+            Frame = _frame ??= new ModFrame(new GameModFrameHost(host)),
             Ctrl = Held(Game.Host.Input.Key.LeftControl, Game.Host.Input.Key.RightControl),
             Shift = Held(Game.Host.Input.Key.LeftShift, Game.Host.Input.Key.RightShift),
             Alt = Held(Game.Host.Input.Key.LeftAlt, Game.Host.Input.Key.RightAlt),

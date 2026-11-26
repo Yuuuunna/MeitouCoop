@@ -32,7 +32,7 @@ internal sealed class SiteVersions
         public string Record = "";
         public bool Complete, Destroyed, Upgrading;
         public bool Paused, Public;
-        public string? Parent, WallParent;
+        public string? Parent, WallParent, CustomName;
     }
     readonly ConditionalWeakTable<BuildSite, Stamp> _stamps = new();
     ulong _revision;
@@ -41,10 +41,10 @@ internal sealed class SiteVersions
         var stamp = _stamps.GetOrCreateValue(site);
         if (stamp.Revision == 0 || stamp.Owner != site.Owner || stamp.Record != site.Record || stamp.Complete != site.Complete
             || stamp.Destroyed != site.Destroyed || stamp.Upgrading != site.Upgrading || stamp.Paused != site.Paused || stamp.Public != site.Public
-            || stamp.Parent != site.Parent || stamp.WallParent != site.WallParent)
+            || stamp.Parent != site.Parent || stamp.WallParent != site.WallParent || stamp.CustomName != site.CustomName)
         {
             stamp.Owner = site.Owner; stamp.Record = site.Record; stamp.Complete = site.Complete; stamp.Destroyed = site.Destroyed; stamp.Upgrading = site.Upgrading;
-            stamp.Paused = site.Paused; stamp.Public = site.Public; stamp.Parent = site.Parent; stamp.WallParent = site.WallParent;
+            stamp.Paused = site.Paused; stamp.Public = site.Public; stamp.Parent = site.Parent; stamp.WallParent = site.WallParent; stamp.CustomName = site.CustomName;
             stamp.Revision = _revision = checked(_revision + 1);
         }
         return stamp.Revision;

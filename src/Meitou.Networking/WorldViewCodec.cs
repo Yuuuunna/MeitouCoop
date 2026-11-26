@@ -39,19 +39,24 @@ public sealed partial class WorldViewCodec
                 if (info.Properties[i].Set is null)
                     info.Properties.RemoveAt(i);
             if (info.Type == typeof(InventoryItemView) || info.Type == typeof(Meitou.Simulation.Trading.TradeItemView)
-                || info.Type == typeof(Meitou.Simulation.Items.InventoryItemToken))
+                || info.Type == typeof(Meitou.Simulation.Items.InventoryItemToken)
+                || info.Type == typeof(Meitou.Simulation.Items.GroundItemSnapshot)
+                || info.Type == typeof(Meitou.Simulation.Items.HeldItemView))
             {
                 if (info.Type == typeof(InventoryItemView))
                     info.Properties.Single(p => p.Name == nameof(InventoryItemView.StealChance)).ShouldSerialize = (_, value) => value is not null;
-                if (info.Type != typeof(Meitou.Simulation.Items.InventoryItemToken))
+                if (info.Type == typeof(InventoryItemView) || info.Type == typeof(Meitou.Simulation.Trading.TradeItemView))
                     info.Properties.Single(p => p.Name == nameof(InventoryItemView.StolenOwner)).ShouldSerialize = (_, value) => value is not null;
                 info.Properties.Single(p => p.Name == nameof(InventoryItemView.ModTag)).ShouldSerialize = (_, _) => false;
+                info.Properties.Single(p => p.Name == nameof(InventoryItemView.ModTag)).CustomConverter = new ItemTagCodec.NoInlineTag();
                 var tag = info.Properties.Single(p => p.Name == nameof(InventoryItemView.ModTagDigest));
                 tag.Get = value => value switch
                 {
-                    InventoryItemView item => item.ModTag.Length > 0 ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest,
-                    Meitou.Simulation.Trading.TradeItemView item => item.ModTag.Length > 0 ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest,
-                    Meitou.Simulation.Items.InventoryItemToken item => item.ModTag.Length > 0 ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest,
+                    InventoryItemView item => !string.IsNullOrEmpty(item.ModTag) ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest ?? "",
+                    Meitou.Simulation.Trading.TradeItemView item => !string.IsNullOrEmpty(item.ModTag) ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest ?? "",
+                    Meitou.Simulation.Items.InventoryItemToken item => !string.IsNullOrEmpty(item.ModTag) ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest ?? "",
+                    Meitou.Simulation.Items.GroundItemSnapshot item => !string.IsNullOrEmpty(item.ModTag) ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest ?? "",
+                    Meitou.Simulation.Items.HeldItemView item => !string.IsNullOrEmpty(item.ModTag) ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest ?? "",
                     _ => "",
                 };
                 tag.ShouldSerialize = (_, value) => value is string { Length: > 0 };
@@ -86,6 +91,7 @@ public sealed partial class WorldViewCodec
             RespectRequiredConstructorParameters = true,
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         };
+        _json.Converters.Add(new ItemTagCodec.FullJson());
         _json.Converters.Add(new RecordReference(database));
         _json.Converters.Add(new TownBuildingDisplay(database));
         _json.Converters.Add(new SingleNumber());
@@ -203,6 +209,7 @@ public sealed partial class WorldViewCodec
     internal byte[] EncodeReplicationView(PlayerWorldView view)
     {
         Validate(view);
+        view = ItemTagProjection.Capture(view);
         using var stream = new BoundedBuffer(MaximumBytes);
         JsonSerializer.Serialize(stream, view, _json);
         return stream.ToArray();
@@ -241,7 +248,7 @@ public sealed partial class WorldViewCodec
             ValidateJson(bytes);
             var view = JsonSerializer.Deserialize<PlayerWorldView>(bytes, _json) ?? throw new InvalidDataException("Empty world view.");
             Validate(view);
-            return view;
+            return new ItemTagProjection().Join(view);
         }
         catch (Exception e)when (e is JsonException or NotSupportedException or ArgumentException or OverflowException)
         {
@@ -310,6 +317,7 @@ public sealed partial class WorldViewCodec
     {
         if (view.World == Guid.Empty || view.Player.IsNone || view.ConnectionGeneration == 0 || view.Publication == 0 || !double.IsFinite(view.GameHours) || view.TimeScale is not (0 or 1 or 2 or 5) || view.ActiveFaction < -1 || view.Snapshot is null || view.Snapshot.Tick < 0 || view.Roles is null || view.Factions is null || view.Messages is null || view.Messages.Items is null || view.FactionCatalogue is null)
             throw new InvalidDataException("Invalid view identity.");
+        ItemTagProjection.Validate(view.Snapshot.ItemTags);
         view.Weather?.Validate();
         view.WeatherEffects?.Validate();
         if (!float.IsFinite(view.SimulationStepSeconds) || view.SimulationStepSeconds is <= 0 or > 1)
@@ -367,7 +375,8 @@ public sealed partial class WorldViewCodec
     /// </summary>
     static void ValidateModVisuals(ModVisualSnapshot visuals)
     {
-        if (visuals?.Effects is null || visuals.Glows is null || (long)visuals.Effects.Length + visuals.Glows.Length > 65536)
+        if (visuals?.Effects is null || visuals.Glows is null || visuals.Trails is null || visuals.Audio is null
+            || (long)visuals.Effects.Length + visuals.Glows.Length + visuals.Trails.Length + visuals.Audio.Length > 65536)
             throw new InvalidDataException("Invalid shared visual collection.");
         if (visuals.Effects.Any(effect => effect is null || effect.Id <= 0 || !Name(effect.Owner, 256)
                 || !Name(effect.Effect, 4096) || !Name(effect.System, 4096) || !ModVisuals.ValidAnchor(effect.Anchor)
@@ -375,9 +384,19 @@ public sealed partial class WorldViewCodec
             || visuals.Effects.Select(effect => effect.Id).Distinct().Count() != visuals.Effects.Length)
             throw new InvalidDataException("Invalid shared mod effect.");
         if (visuals.Glows.Any(glow => glow is null || glow.Id <= 0 || !Name(glow.Owner, 256) || !ModVisuals.ValidTarget(glow.Target)
-                || !Times(glow.StartedAt, glow.ExpiresAt) || !Colour(glow.Colour) || glow.Strength is not (>= 0 and <= 4))
+                || !Times(glow.StartedAt, glow.ExpiresAt) || !Colour(glow.Colour) || glow.Strength is not (>= 0 and <= 4)
+                || !ModVisuals.ValidGlow(glow.Mode, glow.Target, glow.Colour, glow.Strength, glow.ThroughWalls))
             || visuals.Glows.Select(glow => glow.Id).Distinct().Count() != visuals.Glows.Length)
             throw new InvalidDataException("Invalid shared mod glow.");
+        if (visuals.Trails.Any(trail => trail is null || trail.Id <= 0 || !Name(trail.Owner, 256)
+                || !ModVisuals.ValidAnchor(trail.Anchor) || !ModVisuals.ValidTrail(trail.Style) || !Times(trail.StartedAt, trail.ExpiresAt))
+            || visuals.Trails.Select(trail => trail.Id).Distinct().Count() != visuals.Trails.Length)
+            throw new InvalidDataException("Invalid shared mod trail.");
+        if (visuals.Audio.Any(audio => audio is null || audio.Id <= 0 || !Name(audio.Owner, 256)
+                || audio.Modulation != audio.Modulation.Clamped())
+            || visuals.Audio.Select(audio => audio.Id).Distinct().Count() != visuals.Audio.Length
+            || visuals.Audio.Select(audio => audio.Owner).Distinct(StringComparer.Ordinal).Count() != visuals.Audio.Length)
+            throw new InvalidDataException("Invalid shared mod audio.");
 
         static bool Name(string value, int maximum) => !string.IsNullOrWhiteSpace(value) && value.Length <= maximum;
         static bool Times(double started, double expires) => double.IsFinite(started) && double.IsFinite(expires) && expires >= started;
@@ -401,7 +420,8 @@ public sealed partial class WorldViewCodec
     {
         if (snapshot.WorkSites is null || snapshot.WorkSites.Count > 65536
             || snapshot.WorkSites.Any(s => string.IsNullOrEmpty(s.Id) || s.Id.Length > 4096 || !Finite(s.Position)
-                || s.Owner < -1 || s.SiteRevision == 0)
+                || s.Owner < -1 || s.SiteRevision == 0 || s.Record is null || s.Record.Length > 4096
+                || s.Name is null || s.Name.Length > 4096 || !Enum.IsDefined(s.Kind))
             || snapshot.WorkSites.Select(s => s.Id).Distinct(StringComparer.Ordinal).Count() != snapshot.WorkSites.Count)
             throw new InvalidDataException("Invalid public work targets.");
         if (snapshot.MapSquads is null || snapshot.MapSquads.Count > 65536

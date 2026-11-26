@@ -1,3 +1,4 @@
+using System.Numerics;
 using Meitou.Data.Particles;
 using Meitou.Modding;
 using Meitou.Simulation;
@@ -34,6 +35,30 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
     /// </summary>
     readonly Dictionary<long, Playing> _effects = [];
     /// <summary>
+    /// Every authority unit still alive, including tails retired by a tint change or natural request expiry.
+    /// </summary>
+    readonly Dictionary<EffectUnit, long> _units = [];
+    /// <summary>
+    /// Requests withdrawn before their natural retention ends; all their units disappear together.
+    /// </summary>
+    readonly HashSet<long> _withdrawn = [];
+    /// <summary>
+    /// Completed or withdrawn units removed after walking the ledger.
+    /// </summary>
+    readonly List<EffectUnit> _finishedUnits = [];
+    /// <summary>
+    /// Ribbons sampled separately from client-local UI requests.
+    /// </summary>
+    readonly ModTrails _trails = new();
+    /// <summary>
+    /// The last accepted ribbon identity and anchor.
+    /// </summary>
+    readonly Dictionary<long, ModTrailView> _trailViews = [];
+    /// <summary>
+    /// Reused output combined with the caller's local ribbons.
+    /// </summary>
+    readonly List<TrailQuad> _quads = [];
+    /// <summary>
     /// One-shots already shown or skipped as baseline history, retained through the server's short history window.
     /// </summary>
     readonly Dictionary<long, double> _seen = [];
@@ -67,6 +92,7 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
         double now = Math.Max(0, session.PresentationTick) * session.SimulationStepSeconds;
         var snapshot = session.CurrentSnapshot.ModVisuals;
         _present.Clear();
+        _withdrawn.Clear();
         foreach (var view in snapshot.Effects)
         {
             _present.Add(view.Id);
@@ -81,9 +107,12 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
         }
         foreach (long id in _effects.Keys.Where(id => !_present.Contains(id)).ToArray())
         {
-            Stop(_effects[id]);
+            var effect = _effects[id];
+            if (now < effect.View.ExpiresAt + 3) _withdrawn.Add(id);
+            Stop(effect);
             _effects.Remove(id);
         }
+        RetireUnits();
         foreach (long id in _seen.Where(pair => pair.Value < now).Select(pair => pair.Key).ToArray()) _seen.Remove(id);
         StartWaiting(now);
     }
@@ -103,8 +132,8 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
             else if (view.ExpiresAt > now)
             {
                 unit.Life = (float)(view.ExpiresAt - now);
-                var request = Request(view, unit.Life);
-                if (!request.Fixed && !player.Follow(unit, request))
+                var request = Request(view, unit.Life) with { Age = Math.Max(0, now - view.StartedAt) };
+                if ((!request.Fixed || effect.View.Anchor != view.Anchor) && !player.Follow(unit, request))
                 {
                     Stop(effect);
                     effect.Started = false;
@@ -130,6 +159,7 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
 
             if (player.StartAuthority(effect.View, now) is not { } unit) continue;
             effect.Unit = unit;
+            _units[unit] = effect.View.Id;
             effect.Started = true;
             _seen[effect.View.Id] = effect.View.ExpiresAt + 3;
             started++;
@@ -157,7 +187,12 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
     /// </summary>
     void Reset(object? world, ulong epoch)
     {
-        foreach (var effect in _effects.Values) Stop(effect);
+        foreach (var unit in _units.Keys) Discard(unit);
+        _units.Clear();
+        _withdrawn.Clear();
+        _finishedUnits.Clear();
+        _trails.Clear();
+        _trailViews.Clear();
         _effects.Clear();
         _seen.Clear();
         _world = world;
@@ -179,7 +214,63 @@ sealed class AuthorityModVisualPlayer(GameHost host, ModEffectPlayer player)
         foreach (var glow in session.CurrentSnapshot.ModVisuals.Glows)
         {
             float envelope = (float)Math.Clamp(Math.Min(now - glow.StartedAt, glow.ExpiresAt - now) / ModGlows.FadeSeconds, 0, 1);
-            if (envelope > 0) crowd.SetGlow(host.DrawKey(glow.Target.On), glow.Target, glow.Colour, glow.Strength * envelope);
+            if (envelope <= 0) continue;
+            long key = host.DrawKey(glow.Target.On);
+            crowd.SetGlow(key, glow.Target, glow.Colour, glow.Strength * envelope, glow.Mode);
+            if (glow.ThroughWalls)
+                host.Gpu.ThroughKeys.Add((key, new Vector4(glow.Colour, Math.Clamp(glow.Strength * envelope, 0, 1))));
         }
+    }
+
+    /// <summary>
+    /// Drops completed tails every frame and all variants of an early-withdrawn request.
+    /// </summary>
+    void RetireUnits()
+    {
+        _finishedUnits.Clear();
+        foreach (var (unit, request) in _units)
+        {
+            if (_withdrawn.Contains(request)) Discard(unit);
+            if (unit.Done) _finishedUnits.Add(unit);
+        }
+        foreach (var unit in _finishedUnits) _units.Remove(unit);
+    }
+
+    /// <summary>
+    /// Ends emission and all existing particles before the renderer's next update.
+    /// </summary>
+    static void Discard(EffectUnit unit)
+    {
+        unit.Life = 0;
+        unit.Stopped = true;
+        unit.Deactivate();
+    }
+
+    /// <summary>
+    /// Samples authorized current anchors. Membership withdrawal drops their complete local ribbon immediately.
+    /// </summary>
+    public void UpdateTrails(float seconds, List<TrailQuad> into)
+    {
+        if (host.Session is not { HasWorldView: true } session) return;
+        double now = Math.Max(0, session.PresentationTick) * session.SimulationStepSeconds;
+        _present.Clear();
+        foreach (var trail in session.CurrentSnapshot.ModVisuals.Trails)
+        {
+            _present.Add(trail.Id);
+            string owner = trail.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (_trailViews.TryGetValue(trail.Id, out var previous) && previous.Anchor.Key != trail.Anchor.Key) _trails.Drop(owner);
+            _trailViews[trail.Id] = trail;
+            if (trail.StartedAt > now) continue;
+            if (trail.ExpiresAt <= now) _trails.Stop(owner, trail.Anchor);
+            else _trails.KeepAuthority(owner, trail.Anchor, trail.Style, (float)Math.Min(30, trail.ExpiresAt - now),
+                Math.Max(0, now - trail.StartedAt - seconds));
+        }
+        foreach (long id in _trailViews.Keys.Where(id => !_present.Contains(id)).ToArray())
+        {
+            _trails.Drop(id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _trailViews.Remove(id);
+        }
+        _trails.Advance(seconds, player, _quads);
+        into.AddRange(_quads);
     }
 }

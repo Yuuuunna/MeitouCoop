@@ -99,6 +99,11 @@ public sealed record TradeItemView(int Index, string Record, string Name, string
     float Quality, long Price, long UnitPrice, bool Stolen)
 {
     /// <summary>
+    /// The item's code-mod tag ("" none; the mods' shown text, docs/modding.md "Shown text").
+    /// </summary>
+    public string ModTag { get; init; } = "";
+
+    /// <summary>
     /// The current transfer reverses a purchase or sale from this trade window at its original price.
     /// </summary>
     public bool Buyback { get; init; }
@@ -193,14 +198,10 @@ public sealed record TradeItemView(int Index, string Record, string Name, string
     /// A good of the customer's that the culture of the trader's faction lists as illegal (the smuggling prompt, <c>FUN_140712920</c>).
     /// </summary>
     public bool Illegal { get; init; }
-    /// <summary>
-    /// The code mod tag, present in local views and replaced by its digest for network recipients.
-    /// </summary>
-    public string ModTag { get; init; } = "";
     /// <summary>The fixed-size identity of a network item tag.</summary>
     public string ModTagDigest { get; init; } = "";
     /// <summary>The token addressing the item in its inventory.</summary>
-    public InventoryItemToken Token => new(Index, Record, Section, X, Y, Quantity, Quality) { ModTag = ModTag, ModTagDigest = ModTagDigest };
+    public InventoryItemToken Token => new(Index, Record, Section, X, Y, Quantity, Quality) { ModTag = ModTagDigest.Length == 0 ? ModTag : "", ModTagDigest = ModTagDigest };
 }
 
 /// <summary>
@@ -678,8 +679,19 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
 
         merged.Fills = (int)world.Tick;
         var fill = ShopFiller.Roll(merged, template, Market(world), _data, world.VendorTables, world.Seed, key, specials: first);
+        ReportFill(world, fill, -1);
         PlaceFill(world, usable, fill, terms, key, merged.Fills);
         LockFilled(usable);
+    }
+
+    /// <summary>
+    /// Tells the code mods' item-created observers of a fill's units and special items (<see cref="ItemCreatedKind.ShopStock"/>), before they are
+    /// placed.
+    /// </summary>
+    static void ReportFill(World world, ShopFill fill, int squad)
+    {
+        ItemCreatedObservers.ReportAll(world, ItemCreatedKind.ShopStock, fill.Units, CharacterId.None, squad);
+        ItemCreatedObservers.ReportAll(world, ItemCreatedKind.ShopStock, fill.Specials, CharacterId.None, squad);
     }
 
     /// <summary>
@@ -783,6 +795,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         if (shop.View.Live && StockHeld(world, shop)) return false;
 
         var fill = ShopFiller.Roll(shop, template, Market(world), _data, world.VendorTables, world.Seed, (ulong)squad.Id, specials: shop.Fills == 0);
+        ReportFill(world, fill, squad.Id);
         var purse = ShopFiller.StockSquad(shop, fill, Market(world));
 
         // A faction shop's purse holds only what trades and its mod put in (Meitou: no fill makes money for the player's faction), and the money
@@ -819,6 +832,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         }
 
         var fill = ShopFiller.Roll(shop, template, Market(world), _data, world.VendorTables, world.Seed, (ulong)squad.Id, specials: shop.Fills == 0);
+        ReportFill(world, fill, squad.Id);
         if (PlaceFill(world, usable, fill, shop.Terms, (ulong)squad.Id, shop.Fills) is { } value) squad.Money = ShopFiller.Purse(fill, value);
 
         LockFilled(usable);
@@ -829,8 +843,9 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     /// <summary>
     /// Places a building fill as the building filler does (<c>FUN_14095b210</c>, <b>Verified</b>, decompile): the usable containers, and only
     /// those, cleared but their unique items (<c>FUN_14074a5b0</c>); each special item into the first that takes it of a fresh shuffle of them
-    /// (<c>FUN_14096ac50</c>); then the units spread over them (<see cref="HomeStock.Spread"/>). What fits nowhere is lost. Returns the placed units'
-    /// value at full price (the original sums the placed items' stack price, <c>vfunc 0x290</c>), or null when the fill made no unit.
+    /// (<c>FUN_14096ac50</c>); then the units spread over them by unit value (<see cref="HomeStock.Spread"/>, <see cref="Market.UnitValue"/>). What
+    /// fits nowhere is lost. Returns the placed units' value at full price (the original sums the placed items' stack price, <c>vfunc 0x290</c>), or
+    /// null when the fill made no unit.
     /// </summary>
     long? PlaceFill(World world, List<StockBox> usable, ShopFill fill, Trader terms, ulong key, int fills)
     {
@@ -841,7 +856,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         if (fill.Units.Count == 0) return null;
 
         var market = Market(world);
-        var placed = HomeStock.Spread(usable, fill.Units, market.BaseValue, ref rng);
+        var placed = HomeStock.Spread(usable, fill.Units, market.UnitValue, ref rng);
         return placed.Sum(i => market.StackPrice(i, false, terms, terms.Faction));
     }
 
@@ -1055,7 +1070,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     void PrepareView(World world, Shop shop)
     {
         SettleView(world, shop);
-        if (!shop.View.Live) shop.View.Build(shop, BoxesOf(world, shop, out _));
+        if (!shop.View.Live) shop.View.Build(world, shop, BoxesOf(world, shop, out _));
     }
 
     /// <summary>
@@ -1083,7 +1098,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         if (!all && shop.View.Pending) return;
         bool external = !shop.View.Pending && shop.View.ContainersChanged(boxes);
         shop.View.Write(shop, boxes);
-        if (external) shop.View.Build(shop, boxes, preserveReceipts: true);
+        if (external) shop.View.Build(world, shop, boxes, preserveReceipts: true);
         if (!Shows(world, shop) && !StockHeld(world, shop)) shop.View.Drop(shop);
     }
 
@@ -1092,7 +1107,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     /// </summary>
     void ReopenView(World world, Shop shop)
     {
-        if (Shows(world, shop)) shop.View.Build(shop, BoxesOf(world, shop, out _));
+        if (Shows(world, shop)) shop.View.Build(world, shop, BoxesOf(world, shop, out _));
         else shop.View.Drop(shop);
     }
 

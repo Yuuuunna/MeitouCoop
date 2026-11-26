@@ -104,8 +104,7 @@ sealed class PlayerTalks(DialogueSystem dialogue)
             return;
         }
 
-        var to = new Vector2(table.Next[n].Position.X, table.Next[n].Position.Z);
-        if (!DialogueOrders.WalkTo(table, p, to, table.Cold(p)!.RunSpeed)) Finish(world, talk, p);
+        if (!DialogueOrders.WalkTo(table, p, table.Next[n].Position, table.Cold(p)!.RunSpeed)) Finish(world, talk, p);
     }
 
     /// <summary>
@@ -122,7 +121,7 @@ sealed class PlayerTalks(DialogueSystem dialogue)
 
         if (talk.Trade) world.SystemOf<Trading.TradeSystem>()?.OpenAt(world, talk.Talker, talk.Target, talk.Source, talk.Trusted);
         else
-            dialogue.Start(world, talk.Target, talk.Talker, DialogueEvents.PlayerTalkToMe);
+            dialogue.Start(world, talk.Target, talk.Talker, DialogueEvents.PlayerTalkToMe, playerStarted: true);
     }
 
     /// <summary>

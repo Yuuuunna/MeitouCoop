@@ -153,7 +153,8 @@ sealed class PlayerBarter(PlayerInterface player)
             money = action.StartsWith("plus-", StringComparison.Ordinal) ? money > long.MaxValue - amount ? long.MaxValue : money + amount : Math.Max(0, money - amount);
         }
         else return true;
-        player.Say(new RevisePlayerTrade(trade.SessionId, trade.Revision, money, trade.Own.InventoryRevision, items.ToArray()) { Tick = player.Session.CommandTick });
+        player.Say(new RevisePlayerTrade(trade.SessionId, trade.Revision, money, trade.Own.InventoryRevision,
+            items.Select(row => row.Item.ModTagDigest.Length == 0 ? row : row with { Item = row.Item with { ModTag = "" } }).ToArray()) { Tick = player.Session.CommandTick });
         return true;
     }
 }

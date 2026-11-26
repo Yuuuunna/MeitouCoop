@@ -166,6 +166,39 @@ public sealed partial class LockSystem
     }
 
     /// <summary>
+    /// Whether the character <paramref name="n"/> is at its work on <paramref name="f"/>: within the reach of its <see cref="WorkSpot"/>
+    /// (<paramref name="at"/>, <paramref name="reach"/>; while it walks, the side its walk aims at, as a walk up a ramp round a building passes nearer
+    /// the door's inner side, #1405), at a cage on its floor and at a door within <see cref="DoorPlan.DoorHeight"/> of the leaf's foot. The rows
+    /// reach it through <c>isAtLocation</c>, <c>AI::isWithinChoppingRange</c> (<c>FUN_14059c6d0</c>, <b>Verified</b>: the flat distance and the
+    /// same floor, <see cref="FixtureRegistry.OnCageFloor"/> for a cage, 130 for a door), so one standing under an upper-storey cage (#1397) or under
+    /// a door up a ramp (#1405) is not at it. Containers keep the flat test: a container's walk floor lies up to 17 off its origin
+    /// (docs/game/locks.md, #292).
+    /// </summary>
+    static bool AtWorkSpot(World world, Fixture f, in CharacterHot n, out Vector2 at, out float reach)
+    {
+        var position = n.Position;
+        (at, reach) = WorkSpot(world, f, n.Task == (byte)CharacterTask.GoTo ? n.Goal : Flat(position));
+        bool level = f.Kind switch
+        {
+            FixtureKind.Cage => world.Fixtures.OnCageFloor(f, position, world.Walkability),
+            FixtureKind.Door => world.Fixtures.DoorSpotOf(f) is not { } spot || MathF.Abs(position.Y - spot.Foot) <= DoorPlan.DoorHeight,
+            _ => true,
+        };
+
+        return level && Vector2.Distance(Flat(position), at) <= reach;
+    }
+
+    /// <summary>
+    /// A work spot <paramref name="at"/> of <paramref name="f"/> (<see cref="WorkSpot"/>) at the height its walk aims for: a door's leaf foot, anything
+    /// else its own height. A door's position is its host building's origin, which can lie far under the door (a door up a ramp, #1405).
+    /// </summary>
+    static Vector3 WorkPoint(World world, Fixture f, Vector2 at)
+    {
+        float y = world.Fixtures.DoorSpotOf(f) is { } spot ? spot.Foot : f.Position.Y;
+        return new Vector3(at.X, y, at.Y);
+    }
+
+    /// <summary>
     /// The <see cref="OrderEntry.TaskPoint"/> of a door's right click: its own order is made at the door on the terrain
     /// (<see cref="OrderEntry.AtBuilding"/>); the walk to a barred one (no Alt) is a move made at the door's <c>getPositionMarker</c> from the zero
     /// point (<c>FUN_1407fc6e0</c> -> <c>FUN_1407fa850</c>, vfunc <c>0x470</c> <c>FUN_14054b850</c> with <c>ZERO</c>, <b>Verified</b>).
@@ -256,8 +289,7 @@ public sealed partial class LockSystem
                 continue;
             }
 
-            var (at, reach) = WorkSpot(world, door, Flat(n.Position));
-            if (Vector2.Distance(Flat(n.Position), at) > reach)
+            if (!AtWorkSpot(world, door, n, out var at, out float reach))
             {
                 // Still walking; another order (a new goal) or a failed path ends it, and so does being led away from the work.
                 if (job.Work > 0 || Redirected(n, at, reach)) c.DoorJob = null;
@@ -278,6 +310,7 @@ public sealed partial class LockSystem
 
             if (c.StaggeredUntil > world.Tick) continue;   // a stagger interrupts the work
             job.Work += world.TickSeconds;
+            StampLockWork(world, c, job.Work, job.Lock);
             if (job.Work < LockWorkSeconds) continue;
             c.DoorJob = null;
             if (job.Lock && door.Kind == FixtureKind.Door)
@@ -290,6 +323,17 @@ public sealed partial class LockSystem
             world.Fixtures.SetLocked(door, job.Lock);
             world.EmitSound(job.Lock ? SoundKind.Locked : SoundKind.Unlocked, s, n.Position);
         }
+    }
+
+    /// <summary>
+    /// Records a lock worker's bar for this tick (<see cref="CharacterCold.LockWork"/>): Task_LockDoor's fill rises from 0 and Task_UnlockDoor's
+    /// falls from 1, by 0.3 per game second (<c>FUN_140337670</c>, <c>FUN_14033d420</c>, <b>Verified</b>: the task's <c>+0x80</c> handed to the
+    /// bar each update).
+    /// </summary>
+    static void StampLockWork(World world, CharacterCold c, float worked, bool locking)
+    {
+        float done = Math.Clamp(worked / LockWorkSeconds, 0, 1);
+        c.LockWork = (world.Tick, locking ? done : 1 - done, locking);
     }
 
     /// <summary>
@@ -319,8 +363,7 @@ public sealed partial class LockSystem
         }
 
         ref var n = ref table.Next[s];
-        var (at, reach) = WorkSpot(world, door, Flat(n.Position));
-        if (Vector2.Distance(Flat(n.Position), at) > reach)
+        if (!AtWorkSpot(world, door, n, out var at, out float reach))
         {
             if (Redirected(n, at, reach)) c.DoorWalk = null;
             return;
@@ -370,6 +413,7 @@ public sealed partial class LockSystem
         HoldAtLeaves(world);
         DoorWalkers(world);
         if (world.Tick % WalkerEveryTicks == 0) OpenForWalkers(world);
+        _closeBehind.Step(world);
     }
 
     /// <summary>
@@ -437,6 +481,10 @@ public sealed partial class LockSystem
         /// </summary>
         public int OpenerFaction;
         /// <summary>
+        /// The slot of the walker that opened the door (-1: none).
+        /// </summary>
+        public int OpenerSlot;
+        /// <summary>
         /// The walkers whose next path leg crosses the door while it is locked (null: none).
         /// </summary>
         public List<int>? Stopped;
@@ -453,7 +501,7 @@ public sealed partial class LockSystem
         {
             if (f.Kind != FixtureKind.Door || f.DoorBroken || f.Motion is DoorMotion.Open or DoorMotion.Opening) continue;
             if (fixtures.DoorSpotOf(f) is not { } spot) continue;
-            var scan = new WalkerScan { World = world, Door = f, Spot = spot, OpenerFaction = -1 };
+            var scan = new WalkerScan { World = world, Door = f, Spot = spot, OpenerFaction = -1, OpenerSlot = -1 };
             world.Grid.Query(spot.Centre.X, spot.Centre.Z, OpenReach + spot.HalfWidth, ref scan, static (int slot, ref WalkerScan s) =>
             {
                 if (s.Opened) return;
@@ -474,9 +522,14 @@ public sealed partial class LockSystem
 
                 if (!Crosses(n.Position, c.Path, n.PathCursor, s.Spot, legs: 2)) return;
                 s.Opened = FixtureRegistry.OpenDoor(s.Door) || s.Door.Motion == DoorMotion.Opening;
-                if (s.Opened) s.OpenerFaction = c.Faction;
+                if (s.Opened) (s.OpenerFaction, s.OpenerSlot) = (c.Faction, slot);
             });
-            if (scan.Opened) NoteDoorOpened(world, f, scan.OpenerFaction);
+            if (scan.Opened)
+            {
+                NoteDoorOpened(world, f, scan.OpenerFaction);
+                _closeBehind.Note(world, f, spot, scan.OpenerSlot);
+            }
+
             if (scan.Stopped is { } stopped) AtLockedDoor(world, f, stopped);
         }
     }
@@ -569,6 +622,21 @@ public sealed partial class LockSystem
     }
 
     /// <summary>
+    /// An owner's door unlocked and opened on its way (Task_UnlockDoor, then Task_OpenDoor): the unlock's end clears the unlocker's squad's house flag
+    /// when the door is its home's (<c>FUN_14033d420</c>, <b>Verified</b>), and the opening clears it as <see cref="NoteDoorOpened"/>.
+    /// </summary>
+    void UnlockAndOpen(World world, int slot, CharacterCold c, Fixture door)
+    {
+        world.Fixtures.SetLocked(door, false);
+        FixtureRegistry.OpenDoor(door);
+        world.EmitSound(SoundKind.Unlocked, slot, world.Characters.Next[slot].Position);
+
+        var squad = world.Squads.Find(c.SquadId);
+        if ((squad?.Ai?.OwnHome ?? squad?.HomeBuilding)?.Key == door.Building) _houseLocked.Remove(door.Building);
+        NoteDoorOpened(world, door, c.Faction);
+    }
+
+    /// <summary>
     /// The open amount from which a door lets walkers through (the original's navmesh treats it as open from 0.6, docs/game/locks.md "Navigation").
     /// </summary>
     public const float PassableOpen = 0.6f;
@@ -631,7 +699,7 @@ public sealed partial class LockSystem
     /// How far <paramref name="at"/> is from the leaf's closed width in X/Z: its centre line, <see cref="DoorSpot.HalfWidth"/> each way along the
     /// wall.
     /// </summary>
-    static float FromLeaf(Vector3 at, DoorSpot door)
+    internal static float FromLeaf(Vector3 at, DoorSpot door)
     {
         var d = new Vector2(at.X - door.Centre.X, at.Z - door.Centre.Z);
         var along = new Vector2(-door.Normal.Z, door.Normal.X);

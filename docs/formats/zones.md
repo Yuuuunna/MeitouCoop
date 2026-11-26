@@ -31,8 +31,9 @@ on one side the body reaches about 96 from the center and the outer wall (`Storm
 **Observed** (original 1.0.68, plain game): a player character on the sand at the Sho-Battai Watchtower's outer foot, below the capsule and
 outside the body, leaves the tower closed.
 
-Meitou: `InteriorVolume.Contains` tests each shape's own footprint and height range, so ground between shapes, or below a roof shape, is not
-indoors; the volume's `Footprint` stays the convex hull of all of them. `ContainsGround` ignores height and holds a point under any shape's
+Meitou: `InteriorVolume.Contains` tests each shape on its own, a convex one (box, capsule, convex mesh) by its faces as the trigger does, a
+triangle mesh by its footprint and height range, so ground between shapes, below a roof shape, or beside a tilted building (the sunken
+`Outpost s-I` of 24.18, #1316: water its upright prism took in) is not indoors; the volume's `Footprint` stays the convex hull of all of them. `ContainsGround` ignores height and holds a point under any shape's
 footprint, as a ray cast down from above hits the shape.
 
 **Verified** (probe: placed part bounds, zone 20.33 in the `Newwworld` and `rebirth` layers, which agree): the Hub's two
@@ -239,7 +240,9 @@ block:  int32 count, count ×
           float32 qw, qx, qy, qz                 rotation, w first
 ```
 
-**Verified** (decompiled, `FUN_14039a4d0` and `FUN_14039a820`): the game reads the magic, the count and the table once (another magic or a count
+**Verified** (decompiled, `FUN_14039a4d0` and `FUN_14039a820`): a missing file gives no map features (the game opens it only after `resourceExists`
+finds it, [overview](overview.md#resource-lookup-and-mod-overrides)); Meitou reads one an enabled mod's `RE_Kenshi.json` hides as missing. The game
+reads the magic, the count and the table once (another magic or a count
 other than 4096: no map features at all), then each zone's block when the zone loads, by seeking to its offset (0: none). The size is never
 read, so blocks may lie anywhere in the file, in any order, and bytes after a block are ignored. Each placement read is compared with the last entry of
 the zone's feature list before its record is looked up: one at exactly the same position (`Vector3 ==`) is skipped. A record the data lacks is logged

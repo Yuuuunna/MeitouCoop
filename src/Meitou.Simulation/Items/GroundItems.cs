@@ -16,18 +16,26 @@ public readonly record struct FallSource(CharacterId Character, string Bone, lon
 /// <see cref="Dropped"/> one turned by it about Y and laid flat on the ground by the host. <see cref="Type"/>, <see cref="Level"/> and
 /// <see cref="Quality"/> are the item's, for its label's grade colour, <see cref="OwnedBy"/> <see cref="GroundItem.OwnedBy"/>. <see cref="Fall"/> is
 /// set for a severed limb, which the host drops from its stump. <see cref="Material"/> is the item's <c>material sid</c> (a weapon's model: its
-/// look).
+/// look), <see cref="ModTag"/> its code-mod tag ("" none; the mods' shown text, docs/modding.md "Shown text").
 /// </summary>
 public readonly record struct GroundItemSnapshot(int Id, string Record, string Name, Vector3 Position, Quaternion Rotation, bool Dropped,
-    Data.Fcs.FcsRecordType Type = default, int Level = 0, float Quality = 0, int OwnedBy = -1, FallSource? Fall = null, string Material = "");
+    Data.Fcs.FcsRecordType Type = default, int Level = 0, float Quality = 0, int OwnedBy = -1, FallSource? Fall = null, string Material = "",
+    string ModTag = "")
+{
+    /// <summary>
+    /// The tag definition's exact UTF-16 identity in a recipient's replicated view.
+    /// </summary>
+    public string ModTagDigest { get; init; } = "";
+}
 
 /// <summary>
-/// One loose item: where it lies and how it is turned (a saved item's whole rotation, written back as read; a dropped one turned about Y).
+/// One loose item: where it lies and how it is turned (a saved item's whole rotation, written back as read; a dropped one turned about Y, saved
+/// where the host draws it).
 /// </summary>
 public sealed record GroundItem(int Id, ItemInstance Item, Vector3 Position, Quaternion Rotation)
 {
     /// <summary>
-    /// Dropped in play (turned about Y only), not put back from the save.
+    /// Laid by the host as a drop (turned about Y only here): dropped in play, or loaded never placed (<see cref="GroundItems.Load"/>).
     /// </summary>
     public bool Dropped { get; init; }
     /// <summary>
@@ -145,19 +153,32 @@ public sealed class GroundItems
         int k = _items.FindIndex(i => i.Id == id);
         if (k < 0) return;
         var g = _items[k];
-        bool yawOnly = MathF.Abs(g.Rotation.X) < 1e-4f && MathF.Abs(g.Rotation.Z) < 1e-4f;
-        _items[k] = g with { Slot = slot, OwnedBy = owner, Dropped = g.Dropped || yawOnly };
+        _items[k] = g with { Slot = slot, OwnedBy = owner, Dropped = g.Dropped || YawOnly(g.Rotation) };
         Revision++;
     }
 
     /// <summary>
-    /// Puts a saved item back where the save had it (no limit), owned by <paramref name="ownedBy"/> (<see cref="GroundItem.OwnedBy"/>).
+    /// Puts a saved item back where the save had it (no limit), owned by <paramref name="ownedBy"/> (<see cref="GroundItem.OwnedBy"/>). The original
+    /// keeps a loaded item's saved pose (docs/game/carry-loot.md "Dropped item placement"); a WEAPON, ARMOUR or CONTAINER saved turned about Y only
+    /// was never placed (a save of an older Meitou wrote its drops so), so it is laid as a dropped one (<see cref="NeverPlaced"/>).
     /// </summary>
     public void Load(ItemInstance item, Vector3 position, Quaternion rotation, int ownedBy = -1)
     {
-        _items.Add(new GroundItem(_nextId++, item, position, rotation) { OwnedBy = ownedBy });
+        _items.Add(new GroundItem(_nextId++, item, position, rotation) { OwnedBy = ownedBy, Dropped = NeverPlaced(item.Type, rotation) });
         Revision++;
     }
+
+    /// <summary>
+    /// Whether a saved item of <paramref name="type"/> turned by <paramref name="rotation"/> cannot be one the original placed: its placement turns
+    /// a WEAPON about its Z axis and lays ARMOUR and CONTAINER on their side, never only about Y (<c>FUN_1407626e0</c>, <b>Verified</b>).
+    /// </summary>
+    static bool NeverPlaced(Data.Fcs.FcsRecordType type, Quaternion rotation) =>
+        type is Data.Fcs.FcsRecordType.Weapon or Data.Fcs.FcsRecordType.Armour or Data.Fcs.FcsRecordType.Container && YawOnly(rotation);
+
+    /// <summary>
+    /// Whether a rotation turns only about Y.
+    /// </summary>
+    static bool YawOnly(Quaternion rotation) => MathF.Abs(rotation.X) < 1e-4f && MathF.Abs(rotation.Z) < 1e-4f;
 
     /// <summary>
     /// The item of <paramref name="id"/>; null when it is gone.
@@ -182,13 +203,25 @@ public sealed class GroundItems
     /// </summary>
     internal IReadOnlyList<GroundItemSnapshot> Published()
     {
+        if (_publishedAt == Revision && TagsChanged()) Revision++;
         if (_publishedAt != Revision)
             (_published,
                     _publishedAt) = ([.. _items.Select(i
                             => new GroundItemSnapshot(i.Id, i.Item.Record, i.Item.Name, i.Position, i.Rotation, i.Dropped, i.Item.Type, i.Item.Level,
-                                    i.Item.Quality, i.OwnedBy, i.Fall, i.Item.MaterialId))], Revision);
+                                    i.Item.Quality, i.OwnedBy, i.Fall, i.Item.MaterialId, i.Item.ModTag))], Revision);
         return _published;
     }
+    /// <summary>
+    /// Mods may retag an existing item without moving it; publish the new display value as a ground revision too.
+    /// </summary>
+    bool TagsChanged()
+    {
+        if (_published.Count != _items.Count) return true;
+        for (int i = 0; i < _items.Count; i++)
+            if (_published[i].Id != _items[i].Id || _published[i].ModTag != _items[i].Item.ModTag) return true;
+        return false;
+    }
+
     /// <summary>
     /// Whether an item of <paramref name="record"/> lies on the ground: a quick test before a finder's scan. The record set is made again only when
     /// <see cref="Revision"/> changed (an item's record never changes); a set once made is only read, so the parallel think may ask too.

@@ -151,8 +151,26 @@ sealed class GroundItemPicks(PlayerInterface player)
     {
         if (player.SelectedIds().Count == 0 || PickGroundItem(p) is not { } item) return false;
 
-        player.Say(new Simulation.Items.PickUpItemOrder([], item) { Tick = player.Session.CommandTick, Alt = player.AltHeld });
+        bool alt = player.AltHeld;
+        void PickUp() => player.Say(new Simulation.Items.PickUpItemOrder([], item) { Tick = player.Session.CommandTick, Alt = alt });
+        if (!ModMenuPress(p, item, PickUp)) PickUp();
         return true;
+    }
+
+    /// <summary>
+    /// A right press on ground item <paramref name="item"/> the code mods give rows for (<see cref="UiMenuTargetKind.GroundItem"/>): held, the
+    /// menu of Pick Up and their rows opens; released quickly, <paramref name="pickUp"/> runs as without them. False without such rows.
+    /// </summary>
+    bool ModMenuPress(Vector2 p, int item, Action pickUp)
+    {
+        var found = player.Session.CurrentSnapshot.GroundItems.Where(g => g.Id == item).Select(g => (Simulation.Items.GroundItemSnapshot?)g).FirstOrDefault();
+        if (found is not { } g) return false;
+
+        var target = new UiMenuTarget(UiMenuTargetKind.GroundItem, g.Name, g.Position) { GroundItem = g, Record = g.Record };
+        if (player.ModTargetVerbs(target) is not { Count: > 0 }) return false;
+
+        var window = player.ContextMenuWindow;
+        return window.ContextPressOn(p, at => window.Menu(LabelName(g), at, [("Pick Up", pickUp), .. player.ModTargetVerbs(target)]), pickUp);
     }
 
     /// <summary>
@@ -177,6 +195,31 @@ sealed class GroundItemPicks(PlayerInterface player)
     /// The labels drawn last frame, front to back, for <see cref="PickGroundItem"/>.
     /// </summary>
     readonly List<(int Id, UiRect Rect)> _itemLabels = [];
+
+    /// <summary>
+    /// Each item name's text width as its label draws it, measured once for the text settings in <see cref="_labelWidthsFor"/>.
+    /// </summary>
+    readonly Dictionary<string, float> _labelWidths = [];
+
+    /// <summary>
+    /// The interface mode, minimum text pixels and font size option <see cref="_labelWidths"/> was measured at; a change empties it.
+    /// </summary>
+    (UiMode Mode, float Minimum, float FontSize) _labelWidthsFor;
+
+    /// <summary>
+    /// The names the labels show, in the order of the items labelled this frame (<see cref="AddItemLabels"/>), kept so each is resolved once.
+    /// </summary>
+    readonly List<string> _labelNames = [];
+
+    /// <summary>
+    /// The font resource a ground item's name is drawn in.
+    /// </summary>
+    const string ItemLabelFont = "Kenshi_StandardFont_Medium";
+
+    /// <summary>
+    /// The name's text scale: fixed, as the font resource sizes it (the window's height does not scale it).
+    /// </summary>
+    const float ItemLabelTextScale = 1;
 
     /// <summary>
     /// The ground item whose label took the left press, until the release.
@@ -220,36 +263,70 @@ sealed class GroundItemPicks(PlayerInterface player)
     internal void AddItemLabels(List<UiControl> controls)
     {
         _itemLabels.Clear();
+        _labelNames.Clear();
         if (HighlightFocus is not { } focus || player.UiPainter is not { } painter || player.CharacterEditor.EditorOpen) return;
 
-        float scale = player.UiScale;
-        float height = player.Height * 0.0259259f;
-        float em = 20 * 50f / 72f * scale;
         var near = NearLabelItems(focus);
-        near.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-        var placed = new List<(int Id, UiRect Rect)>();
-        foreach (var (g, _, at) in near)
-        {
-            float width = painter.MeasureStandard(g.Name, em) + em;
-            var rect = new UiRect(at.X - width / 2, at.Y - 6 * scale - height, width, height);
-            for (bool moved = true; moved;)
-            {
-                moved = false;
-                foreach (var (_, other) in placed)
-                {
-                    if (rect.Intersect(other) is { Width: > 0, Height: > 0 })
-                    {
-                        rect = rect with { Y = other.Y - height - 1 };
-                        moved = true;
-                    }
-                }
-            }
+        if (near.Count == 0) return;
 
-            placed.Add((g.Id, rect));
+        near.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        float height = player.Height * 0.0259259f;
+        foreach (var (item, _, at) in near) PlaceLabel(painter, item, at, height);
+
+        AddLabelControls(controls, near);
+    }
+
+    /// <summary>
+    /// Fits the label to its name and lifts it above any nearer label it would overlap.
+    /// </summary>
+    void PlaceLabel(Rendering.Ui.UiPainter painter, Simulation.Items.GroundItemSnapshot item, Vector2 at, float height)
+    {
+        string label = LabelName(item);
+        _labelNames.Add(label);
+        float scale = player.UiScale;
+        float width = MathF.Ceiling(LabelTextWidth(painter, label)) + 20 * 50f / 72f * scale;
+        var rect = new UiRect(at.X - width / 2, at.Y - 6 * scale - height, width, height);
+
+        for (bool moved = true; moved;)
+        {
+            moved = false;
+            foreach (var (_, other) in _itemLabels)
+            {
+                if (rect.Intersect(other) is not { Width: > 0, Height: > 0 }) continue;
+
+                rect = rect with { Y = other.Y - height - 1 };
+                moved = true;
+            }
         }
 
-        _itemLabels.AddRange(placed);
-        AddLabelControls(controls, near, placed);
+        _itemLabels.Add((item.Id, rect));
+    }
+
+    /// <summary>
+    /// The name a ground item's label shows: the mods' item names (<see cref="PlayerInterface.ShownItemName"/>), else the item's.
+    /// </summary>
+    string LabelName(Simulation.Items.GroundItemSnapshot g) => player.ShownItemName(g.Record, g.Name, g.ModTag);
+
+    /// <summary>
+    /// <paramref name="name"/>'s width as its label draws it: <see cref="ItemLabelFont"/> at <see cref="ItemLabelTextScale"/>, which a locale can map
+    /// to a face other than the standard one (Chinese names measured in the standard face were cut to a few characters and "...", #1288).
+    /// </summary>
+    float LabelTextWidth(Rendering.Ui.UiPainter painter, string name)
+    {
+        var settings = (painter.Mode, player.StandardPixels, painter.FontSizeSetting);
+        if (_labelWidthsFor != settings || _labelWidths.Count > 256)
+        {
+            _labelWidths.Clear();
+            _labelWidthsFor = settings;
+        }
+
+        if (!_labelWidths.TryGetValue(name, out float width))
+        {
+            width = painter.MeasureText(ItemLabelFont, name, player.Height, 0, player.StandardPixels, ItemLabelTextScale).Width;
+            _labelWidths[name] = width;
+        }
+
+        return width;
     }
 
     /// <summary>
@@ -276,14 +353,13 @@ sealed class GroundItemPicks(PlayerInterface player)
     /// <summary>
     /// Adds the plate and the text of each placed label, drawn far to near so the nearer labels lie on top.
     /// </summary>
-    void AddLabelControls(List<UiControl> controls, List<(Simulation.Items.GroundItemSnapshot Item, float Distance, Vector2 At)> near,
-        List<(int Id, UiRect Rect)> placed)
+    void AddLabelControls(List<UiControl> controls, List<(Simulation.Items.GroundItemSnapshot Item, float Distance, Vector2 At)> near)
     {
         int? hovered = PickGroundItem(player.Mouse);
         // Drawn far to near so the nearer labels lie on top.
-        for (int i = placed.Count - 1; i >= 0; i--)
+        for (int i = _itemLabels.Count - 1; i >= 0; i--)
         {
-            var (id, rect) = placed[i];
+            var (id, rect) = _itemLabels[i];
             bool stealing = Stealing(near[i].Item);
             string item = ItemLabelColour(near[i].Item);
             string selected = stealing ? "1 0.4 0.4" : "0.4 1 0.4";
@@ -293,12 +369,12 @@ sealed class GroundItemPicks(PlayerInterface player)
                 new Dictionary<string, string> { ["Colour"] = back }, Vector4.Zero, Pickable: false));
             var font = new Dictionary<string, string>
             {
-                ["FontName"] = "Kenshi_StandardFont_Medium",
+                ["FontName"] = ItemLabelFont,
                 ["TextAlign"] = "Center",
                 ["TextColour"] = text,
             };
-            controls.Add(new($"itemlabel-text-{i}", "TextBox", rect, near[i].Item.Name, "", "", true, font, Vector4.Zero, Pickable: false,
-                TextScale: 1));
+            controls.Add(new($"itemlabel-text-{i}", "TextBox", rect, _labelNames[i], "", "", true, font, Vector4.Zero, Pickable: false,
+                TextScale: ItemLabelTextScale));
         }
     }
 

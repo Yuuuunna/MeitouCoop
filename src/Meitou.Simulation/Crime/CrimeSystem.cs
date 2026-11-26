@@ -289,6 +289,69 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     /// </summary>
     public bool Book(World world, int culprit, int faction, CharacterId witness) => _bounties.Book(this, world, culprit, faction, witness);
 
+    /// <summary>
+    /// A code mod's bounty (engine API; the original's <c>FUN_140853e20</c>, which dialogue's assigned bounty and a new NPC's rolled one use): adds
+    /// <paramref name="amount"/> to the character's ledger entry of <paramref name="faction"/>'s booking faction
+    /// (<see cref="CrimeFactions.BookingOf"/>: its <c>legal system</c>, else itself when it books bounties), stamps the time of the last raise, so
+    /// the entry lasts as a witnessed one does
+    /// (<see cref="CrimeTable.LifetimeHours"/>: for ever from 10000), and reports it as <see cref="CrimeEventKind.Booked"/> with no crime and no
+    /// witness. No pending crime is touched and no message is posted. Any character, the player's or not, alive or dead. Returns the entry's
+    /// amount after the raise; -1, changing nothing, for an amount of 0 or less, a character that is not in the world, a faction with no booking
+    /// faction, or during the parallel phase. Serial phases and <see cref="IWorldReady"/>.
+    /// </summary>
+    public int AssignBounty(World world, CharacterId character, int faction, int amount)
+    {
+        var table = world.Characters;
+        if (table.Phase == TablePhase.Parallel || amount <= 0) return -1;
+        if (!table.TryResolveNext(character, out int slot) || table.Cold(slot) is not { } c) return -1;
+
+        return AddBounty(world, slot, c, faction, amount)?.Amount ?? -1;
+    }
+
+    /// <summary>
+    /// A code mod's pardon (engine API): removes the character's ledger entry of <paramref name="faction"/>'s booking faction, reported as
+    /// <see cref="CrimeEventKind.Cleared"/>, as a paid fine removes it. Relations and recognition are left as they are. Returns the amount removed;
+    /// 0 when there was no such entry, during the parallel phase or for a character that is not in the world. Serial phases and
+    /// <see cref="IWorldReady"/>.
+    /// </summary>
+    public int ClearBounty(World world, CharacterId character, int faction)
+    {
+        var table = world.Characters;
+        if (table.Phase == TablePhase.Parallel || !table.TryResolveNext(character, out int slot)) return 0;
+        if (table.Cold(slot) is not { Bounties: { } ledger } c || ledger.Of(Factions.BookingOf(faction)) is not { } entry) return 0;
+
+        ClearBounty(world, slot, c, ledger, entry);
+        return entry.Amount;
+    }
+
+    /// <summary>
+    /// A mod's bounty on the character in <paramref name="slot"/>: <see cref="Raise"/> on <paramref name="faction"/>'s booking faction, reported as
+    /// a booking with no crime, no witness and no victim (the character's pending crime, if any, is not this booking's). Null, changing nothing,
+    /// when the faction has no booking faction (the original's entry has a null key nothing reads).
+    /// </summary>
+    BountyEntry? AddBounty(World world, int slot, CharacterCold c, int faction, int amount)
+    {
+        int key = Factions.BookingOf(faction);
+        if (key < 0) return null;
+
+        var entry = Raise(world, c, key, Factions.NameOf(key), amount);
+        Note(world, CrimeEventKind.Booked, slot, CrimeCode.None, key, entry.Amount, CharacterId.None, withPending: false);
+        return entry;
+    }
+
+    /// <summary>
+    /// Raises the character's ledger entry of booking faction <paramref name="key"/> (named <paramref name="name"/>) by <paramref name="amount"/>,
+    /// no higher than <see cref="int.MaxValue"/>, and stamps the time of its last raise (<c>FUN_140853e20</c>: added and stamped unconditionally, no
+    /// crime bit), as dialogue's assigned bounty and a mod's do. Returns the entry.
+    /// </summary>
+    internal static BountyEntry Raise(World world, CharacterCold c, int key, string name, int amount)
+    {
+        var entry = (c.Bounties ??= new BountyLedger()).Get(key, name);
+        entry.Amount = (int)Math.Min(int.MaxValue, (long)entry.Amount + amount);
+        entry.RaisedTick = world.Tick;
+        return entry;
+    }
+
     #endregion
 
     #region The sweep
@@ -500,19 +563,34 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
             // The loot already says "was seen looting".
             if (c.IsPlayer && p.Code != CrimeCode.Looting)
             {
-                world.PostCharacter(c, Loc.Tr("{1} has been caught committing {2}!", c.Name, CrimeTable.Name(p.Code)));
+                world.PostCharacter(c, Loc.Tr("{1} has been caught committing {2}!", world.ShownName(c), CrimeTable.Name(p.Code)));
             }
         }
-        // The original fires the event on every reacting run (docs/game/dialogue.md "Witnesses"). Meitou fires it once at the player's
-        // characters; at an NPC culprit again on every sweep from a police-like witness not yet fighting, as the guards' lines want a culprit
-        // within talking range that does not run (engine choice: lines' repetition limits are not kept). Not a Trespassing: its event-17 line
-        // ("intruder law", DA 6 chase forever) needs no range, and repeating it only restarts the chase (#519).
-        if (first || !c.IsPlayer && p.Code != CrimeCode.Trespassing && !wc.InCombat && IsPoliceLike(world, wc))
+        // The original fires the event on every reacting run (docs/game/dialogue.md "Witnesses"). Meitou fires it once per witness at the
+        // player's characters, so the victim's guards that see the crime after the first witness still say their attack lines (#1251); at an NPC
+        // culprit again on every sweep from a police-like witness not yet fighting, as the guards' lines want a culprit within talking range that
+        // does not run (engine choice: lines' repetition limits are not kept). Not a Trespassing: its event-17 line ("intruder law", DA 6 chase
+        // forever) needs no range, and repeating it only restarts the chase (#519).
+        if (FiresWitnessEvent(world, wc, witness, c, p))
             world.Defer(new Dialogue.DialogueEvent(witness, table.IdOf(culprit), WitnessEvent(world, wc, p)) { Tick = world.Tick + 1 });
 
         // No stop once booked: the original runs the witness function per looker, so every witness reacts. A booking police far off
         // (in sight range, too far for its lines) would otherwise keep the guards beside the crime from ever reacting.
         if (!p.Booked && IsPoliceLike(world, wc) && Factions.Books(wf)) Book(world, culprit, wf, witness);
+    }
+
+    /// <summary>
+    /// Whether the reacting witness fires its witness event at the culprit now: at a player's character once per witness and crime
+    /// (<see cref="PendingCrime.Told"/>, which it joins); at an NPC culprit when the witness is police-like and not fighting, and the crime is no
+    /// Trespassing.
+    /// </summary>
+    bool FiresWitnessEvent(World world, CharacterCold wc, CharacterId witness, CharacterCold c, PendingCrime p)
+    {
+        if (!c.IsPlayer) return p.Code != CrimeCode.Trespassing && !wc.InCombat && IsPoliceLike(world, wc);
+        if (p.Told.Contains(witness)) return false;
+
+        p.Told.Add(witness);
+        return true;
     }
 
     /// <summary>
@@ -986,12 +1064,13 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         BountyBook.Lines(c, tick, tickSeconds, local);
 
     /// <summary>
-    /// Records a pending, witnessed, booked or expired crime: <see cref="Report"/> (with the culprit's pending crime, none for an expiry), then the
-    /// world event log's line.
+    /// Records a pending, witnessed, booked or expired crime: <see cref="Report"/> (with the culprit's pending crime, none for an expiry or without
+    /// <paramref name="withPending"/>), then the world event log's line.
     /// </summary>
-    internal void Note(World world, CrimeEventKind kind, int culprit, CrimeCode code, int faction, int amount, CharacterId witness)
+    internal void Note(World world, CrimeEventKind kind, int culprit, CrimeCode code, int faction, int amount, CharacterId witness,
+        bool withPending = true)
     {
-        var pending = kind == CrimeEventKind.Expired ? null : world.Characters.Cold(culprit)?.Pending;
+        var pending = kind == CrimeEventKind.Expired || !withPending ? null : world.Characters.Cold(culprit)?.Pending;
         Report(world, kind, culprit, code, faction, amount, witness, pending);
         world.Events.Line(world, "crime", CrimeLine(world, kind, culprit, code, faction, amount, witness));
     }

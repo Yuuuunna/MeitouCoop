@@ -7,7 +7,8 @@ namespace Meitou.Modding;
 /// <summary>
 /// Marks a public property of an object a mod registers with <see cref = "ModContext.AddSettings"/> (docs/modding.md "Settings") as a setting on the
 /// Settings screen's Mods page: a <c>bool</c> is an Off | On switch, an <c>int</c>, <c>float</c> or <c>double</c> a slider over
-/// <see cref = "Min"/> to <see cref = "Max"/>, an enum or a <c>string</c> with <see cref = "Options"/> a list.
+/// <see cref="Min"/> to <see cref="Max"/>, an enum or a <c>string</c> with <see cref="Options"/> a list, a <c>string</c> without options a free text
+/// (at most <see cref="MaxLength"/> characters, one line), an <see cref="System.Action"/> a button that runs it.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class SettingAttribute(string label) : Attribute
@@ -38,6 +39,11 @@ public sealed class SettingAttribute(string label) : Attribute
     public string[] Options { get; init; } = [];
 
     /// <summary>
+    /// A free text's longest length, 1 to <see cref="ModSetting.MaxTextLength"/>; 0 means <see cref="ModSetting.DefaultTextLength"/>.
+    /// </summary>
+    public int MaxLength { get; init; }
+
+    /// <summary>
     /// The sub-group the setting is shown under on the Mods page: a header row with the setting's rows under it (empty: the mod's group itself).
     /// </summary>
     public string SubGroup { get; init; } = "";
@@ -46,6 +52,11 @@ public sealed class SettingAttribute(string label) : Attribute
     /// The name of a public <c>bool</c> property of the same object: the setting is shown only while it is true (empty: always shown).
     /// </summary>
     public string VisibleWhen { get; init; } = "";
+
+    /// <summary>
+    /// A button's caption (an <see cref="System.Action"/> setting); empty: the label.
+    /// </summary>
+    public string Button { get; init; } = "";
 }
 
 /// <summary>
@@ -64,7 +75,15 @@ public enum ModSettingKind
     /// <summary>
     /// An enum, or a <c>string</c> with options: a list of choices.
     /// </summary>
-    List
+    List,
+    /// <summary>
+    /// A <c>string</c> without options: one line of free text, typed in a box.
+    /// </summary>
+    Text,
+    /// <summary>
+    /// An <see cref="System.Action"/>: a button that runs it (<see cref="ModSetting.Press"/>); it has no value to keep.
+    /// </summary>
+    Action,
 }
 
 /// <summary>
@@ -73,6 +92,16 @@ public enum ModSettingKind
 /// </summary>
 public sealed class ModSetting
 {
+    /// <summary>
+    /// A free text's length when <see cref="SettingAttribute.MaxLength"/> is 0.
+    /// </summary>
+    public const int DefaultTextLength = 256;
+
+    /// <summary>
+    /// The longest <see cref="SettingAttribute.MaxLength"/> a free text may have.
+    /// </summary>
+    public const int MaxTextLength = 4096;
+
     /// <summary>
     /// The object the mod registered, whose property this is.
     /// </summary>
@@ -105,12 +134,14 @@ public sealed class ModSetting
         this._property = property;
         Label = about.Label;
         Hint = about.Hint;
+        Button = about.Button.Length > 0 ? about.Button : about.Label;
         SubGroup = about.SubGroup.Trim();
         VisibleWhen = about.VisibleWhen.Trim();
         var type = property.PropertyType;
         Kind = KindOf(property, type, about);
         _options = type.IsEnum ? Enum.GetNames(type) : about.Options;
         if (Kind == ModSettingKind.Slider) (Min, Max, Step) = Range(property, type, about);
+        if (Kind == ModSettingKind.Text) MaxLength = TextLength(property, about);
         if (VisibleWhen.Length > 0) _visibleWhen = VisibleProperty(target, property, VisibleWhen);
         Default = Get();
         if (Kind == ModSettingKind.List && Choice < 0)
@@ -133,6 +164,10 @@ public sealed class ModSetting
     /// The line under the label: what the setting does.
     /// </summary>
     public string Hint { get; }
+    /// <summary>
+    /// A button's caption (<see cref="ModSettingKind.Action"/>): the attribute's, else the label.
+    /// </summary>
+    public string Button { get; }
     /// <summary>
     /// The sub-group the setting is shown under (empty: the mod's group itself).
     /// </summary>
@@ -190,6 +225,11 @@ public sealed class ModSetting
     /// </summary>
     public object? Default { get; }
     /// <summary>
+    /// A free text's longest length (0 for the other kinds).
+    /// </summary>
+    public int MaxLength { get; }
+
+    /// <summary>
     /// True for an <c>int</c> slider.
     /// </summary>
     public bool Whole => _property.PropertyType == typeof(int);
@@ -204,9 +244,34 @@ public sealed class ModSetting
     /// </summary>
     public void Set(object value) => Apply(Convert(value));
     /// <summary>
-    /// Restores <see cref = "Default"/> as it was registered, not snapped to the step.
+    /// Restores <see cref="Default"/> as it was registered, not snapped to the step; nothing for a button.
     /// </summary>
-    public void Reset() => Apply(Default);
+    public void Reset()
+    {
+        if (Kind != ModSettingKind.Action) Apply(Default);
+    }
+
+    /// <summary>
+    /// Runs a button's action (<see cref="ModSettingKind.Action"/>) as the page's click does, on the interface's thread; throws for another kind.
+    /// </summary>
+    public void Press()
+    {
+        if (Kind != ModSettingKind.Action) throw new InvalidOperationException($"Setting '{Key}' is not a button.");
+        (Get() as Action)?.Invoke();
+    }
+
+    /// <summary>
+    /// Sets a kept value (a preset's) as <see cref="Set"/> does, telling <see cref="ModSettingsGroup.Changed"/>; false when the text is not a value
+    /// of this setting.
+    /// </summary>
+    internal bool Restore(string text)
+    {
+        if (Kind == ModSettingKind.Action || Parse(text) is not { } value) return false;
+
+        Set(value);
+        return true;
+    }
+
     /// <summary>
     /// Sets the property and tells the group's <see cref = "ModSettingsGroup.Changed"/>; nothing when the value is the same.
     /// </summary>
@@ -225,7 +290,8 @@ public sealed class ModSetting
     /// <summary>
     /// Whether the value is the one the mod registered.
     /// </summary>
-    public bool IsDefault => Equals(Get(), Default);
+    public bool IsDefault => Kind == ModSettingKind.Action || Equals(Get(), Default);
+
     /// <summary>
     /// The list's chosen index, -1 when the value is not one of <see cref = "Options"/>.
     /// </summary>
@@ -248,14 +314,22 @@ public sealed class ModSetting
     /// </summary>
     static ModSettingKind KindOf(PropertyInfo property, Type type, SettingAttribute about)
     {
-        if (type == typeof(bool))
-            return ModSettingKind.Switch;
-        if (type == typeof(int) || type == typeof(float) || type == typeof(double))
-            return ModSettingKind.Slider;
-        if (type.IsEnum || type == typeof(string) && about.Options.Length > 0)
-            return ModSettingKind.List;
-        string reason = $"a {type.Name} can't be a setting (bool, int, float, double, an enum, or a string with Options).";
-        throw new ArgumentException($"Setting '{property.Name}': {reason}");
+        if (type == typeof(Action)) return ModSettingKind.Action;
+        if (type == typeof(bool)) return ModSettingKind.Switch;
+        if (type == typeof(int) || type == typeof(float) || type == typeof(double)) return ModSettingKind.Slider;
+        if (type.IsEnum || type == typeof(string) && about.Options.Length > 0) return ModSettingKind.List;
+        if (type == typeof(string)) return ModSettingKind.Text;
+        throw new ArgumentException($"Setting '{property.Name}': {type.Name} is none of bool, int, float, double, an enum, a string or an Action.");
+    }
+
+    /// <summary>
+    /// A free text's longest length from the attribute; throws for one outside 0 to <see cref="MaxTextLength"/>.
+    /// </summary>
+    static int TextLength(PropertyInfo property, SettingAttribute about)
+    {
+        if (about.MaxLength is < 0 or > MaxTextLength)
+            throw new ArgumentException($"Setting '{property.Name}': MaxLength must be 0 to {MaxTextLength}.");
+        return about.MaxLength == 0 ? DefaultTextLength : about.MaxLength;
     }
 
     /// <summary>
@@ -289,7 +363,9 @@ public sealed class ModSetting
     object? Parse(string text) => Kind switch
     {
         ModSettingKind.Switch => bool.TryParse(text, out bool b) ? b : null,
-        ModSettingKind.Slider => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && double.IsFinite(d) ? d : null,
+        ModSettingKind.Slider => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && double.IsFinite(d) ? d
+            : null,
+        ModSettingKind.Text => text.Length <= MaxLength && !text.Any(char.IsControl) ? text : null,
         _ => _options.FirstOrDefault(o => string.Equals(o, text, StringComparison.Ordinal)),
     };
     /// <summary>
@@ -298,8 +374,10 @@ public sealed class ModSetting
     object Convert(object value)
     {
         var type = _property.PropertyType;
-        if (Kind == ModSettingKind.Switch)
-            return (bool)value;
+        if (Kind == ModSettingKind.Action)
+            throw new InvalidOperationException($"Setting '{Key}' is a button: it has no value to set.");
+        if (Kind == ModSettingKind.Switch) return (bool)value;
+        if (Kind == ModSettingKind.Text) return OneLine(value as string ?? Format(value));
         if (Kind == ModSettingKind.List)
         {
             string name = value is string s ? s : Format(value);
@@ -313,6 +391,15 @@ public sealed class ModSetting
         if (type == typeof(int)) return (int)Math.Round(v);
         if (type == typeof(float)) return (float)v;
         return Math.Round(v, 10);
+    }
+
+    /// <summary>
+    /// A free text as kept: control characters (line breaks, tabs) as spaces, cut to <see cref="MaxLength"/>.
+    /// </summary>
+    string OneLine(string text)
+    {
+        var line = new string([.. text.Select(c => char.IsControl(c) ? ' ' : c)]);
+        return line.Length <= MaxLength ? line : line[..MaxLength];
     }
 
     /// <summary>
@@ -333,6 +420,13 @@ public sealed class ModSetting
 /// </summary>
 public sealed class ModSettingsGroup
 {
+    #region Settings
+
+    /// <summary>
+    /// The mod's translations its labels, hints and choices are shown through; null: as written.
+    /// </summary>
+    internal Meitou.Localisation.ModTranslations? Texts { get; init; }
+
     /// <summary>
     /// Reads the public properties of <paramref name = "target"/> marked [Setting], in declaration order; throws when it has none or one cannot be
     /// a setting.
@@ -373,8 +467,10 @@ public sealed class ModSettingsGroup
     /// </summary>
     ModSetting Read(object target, PropertyInfo property)
     {
-        if (!property.CanRead || !property.CanWrite || property.SetMethod?.IsPublic != true || property.GetIndexParameters().Length > 0)
-            throw new ArgumentException($"Setting '{property.Name}': it needs a public get and set.");
+        bool button = property.PropertyType == typeof(Action);
+        bool settable = button || property.CanWrite && property.SetMethod?.IsPublic == true;
+        if (!property.CanRead || !settable || property.GetIndexParameters().Length > 0)
+            throw new ArgumentException($"Setting '{property.Name}': it needs a public get and set (a button a public get).");
         return new ModSetting(this, target, property, property.GetCustomAttribute<SettingAttribute>()!);
     }
 
@@ -389,4 +485,112 @@ public sealed class ModSettingsGroup
                 refused.Add(key);
         return refused;
     }
+
+    /// <summary>
+    /// A label, hint or choice of the group as the page shows it: in the mod's catalogues, else as written.
+    /// </summary>
+    internal string Shown(string text) => Texts?.Text(text) ?? text;
+
+    #endregion
+
+    #region Presets
+
+    /// <summary>
+    /// The longest preset name a group keeps.
+    /// </summary>
+    public const int MaxPresetName = 64;
+
+    /// <summary>
+    /// The most presets a group keeps.
+    /// </summary>
+    public const int MaxPresets = 64;
+
+    /// <summary>
+    /// The named presets (docs/modding.md "Settings"): each the values of the settings as saved, in the order first saved.
+    /// </summary>
+    readonly List<(string Name, Dictionary<string, string> Values)> _presets = [];
+
+    /// <summary>
+    /// The presets' names, in the order first saved.
+    /// </summary>
+    public IReadOnlyList<string> Presets => [.. _presets.Select(p => p.Name)];
+
+    /// <summary>
+    /// After a preset was saved or deleted (on the interface's thread); the game keeps the presets in <c>meitou.user.json</c>.
+    /// </summary>
+    public event Action<ModSettingsGroup>? PresetsChanged;
+
+    /// <summary>
+    /// Saves the settings' values now (not the buttons') as the preset <paramref name="name"/> (1 to <see cref="MaxPresetName"/> characters on one
+    /// line), replacing one of that name; false, with nothing saved, for a bad name or when <see cref="MaxPresets"/> other presets exist.
+    /// </summary>
+    public bool SavePreset(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (!ValidPresetName(name)) return false;
+
+        int at = _presets.FindIndex(p => p.Name == name);
+        if (at < 0 && _presets.Count >= MaxPresets) return false;
+
+        var values = Settings.Where(s => s.Kind != ModSettingKind.Action).ToDictionary(s => s.Key, s => s.Text);
+        if (at < 0) _presets.Add((name, values));
+        else _presets[at] = (name, values);
+        PresetsChanged?.Invoke(this);
+        return true;
+    }
+
+    /// <summary>
+    /// Sets the settings the preset <paramref name="name"/> holds to its values, each as <see cref="ModSetting.Set"/> (telling
+    /// <see cref="Changed"/>); a value that is no longer one of its setting's is skipped. False when there is no such preset.
+    /// </summary>
+    public bool ApplyPreset(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        int at = _presets.FindIndex(p => p.Name == name);
+        if (at < 0) return false;
+
+        foreach (var (key, text) in _presets[at].Values)
+            Settings.FirstOrDefault(s => s.Key == key)?.Restore(text);
+        return true;
+    }
+
+    /// <summary>
+    /// Deletes the preset <paramref name="name"/>; false when there is none.
+    /// </summary>
+    public bool DeletePreset(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (_presets.RemoveAll(p => p.Name == name) == 0) return false;
+
+        PresetsChanged?.Invoke(this);
+        return true;
+    }
+
+    /// <summary>
+    /// The presets as kept in the config: name to setting key to text.
+    /// </summary>
+    internal Dictionary<string, Dictionary<string, string>> PresetValues() =>
+        _presets.ToDictionary(p => p.Name, p => new Dictionary<string, string>(p.Values));
+
+    /// <summary>
+    /// Takes the presets kept in the config (<paramref name="saved"/>, null: none), dropping a bad name, a null entry and those past
+    /// <see cref="MaxPresets"/>.
+    /// </summary>
+    internal void UsePresets(IReadOnlyDictionary<string, Dictionary<string, string>>? saved)
+    {
+        _presets.Clear();
+        foreach (var (name, values) in saved ?? new Dictionary<string, Dictionary<string, string>>())
+        {
+            if (values is null || !ValidPresetName(name) || _presets.Count >= MaxPresets) continue;
+            _presets.Add((name, new Dictionary<string, string>(values)));
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="name"/> can name a preset: 1 to <see cref="MaxPresetName"/> characters, not blank, no control character.
+    /// </summary>
+    static bool ValidPresetName(string name) =>
+        !string.IsNullOrWhiteSpace(name) && name.Length <= MaxPresetName && !name.Any(char.IsControl);
+
+    #endregion
 }

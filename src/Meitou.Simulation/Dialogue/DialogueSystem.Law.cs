@@ -31,8 +31,12 @@ public sealed partial class DialogueSystem
         state.Faction = b.Context.Faction; state.MembershipRevision = b.Context.MembershipRevision;
         var offers = Arrests.BailOffers(world, b.Npc, state.Faction);
         var c = Context(world, new Conversation { Npc = b.Npc, Player = b.Player, Event = DialogueEvents.PlayerTalkToMe, Speaker = b.Npc, Text = Loc.Tr("Pay Bounty"), Revision = 1 }, state);
-        foreach (var (_, name, price) in offers) c.Choices.Add((null, $"{name} (c.{price.ToString("N0", CultureInfo.InvariantCulture)})"));
-        c.Choices.Add((null, LeaveChoice));
+        foreach (var (prisoner, name, price) in offers)
+        {
+            string cost = $" (c.{price.ToString("N0", CultureInfo.InvariantCulture)})";
+            c.Choices.Add((null, name + cost, ShownText.Any ? world.ShownName(prisoner) + cost : null));
+        }
+        c.Choices.Add((null, LeaveChoice, null));
         if (offers.Count == 0) Post(world, c, Loc.Tr("Nobody here to bail out."));
         state.BailList = [.. offers.Select(o => o.Prisoner)];
         state.Open = c;

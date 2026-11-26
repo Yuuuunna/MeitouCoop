@@ -186,6 +186,10 @@ World-state replacement towns and faction ownership affect both population and b
   `19.29:14` keeps its 46 entries; a reload stands `20.29:1019` with its 11 layout objects, and a second save writes the same zone files. A
   second override of the registered town (the takeover's other variant) gives the same-named homes (`20.28:97` Faction HQ, `19.29:22` Bar,
   `19.29:8` Weapon Shop) new machines for their objects, one each as before.
+- Name: the original keeps the town's own name. KenshiExtensionPlugin (RE_Kenshi plugin, workshop 3638161797; GPL source
+  `Lucius64/KenshiExtensionPlugin` `bugfix/MiscFix.cpp`, its "Fix town override" setting, on by default) adds the TOWN bool `town name override`
+  (its `fcs.def`): a replacement with it set renames the town to the replacement's name, at the override and when the town state loads
+  (**Verified** against that source). Meitou (`TownSite.Replace`) applies the field whenever the data sets it; the `unexplored name` stays the town's own.
 - `updatedTownOverrides`: while a town is in it, the check answers "repopulate" at once (no new choice), so each load trims the zone again. The pass that places
   residents after zones load (`FUN_140a0e760`, ZoneManager state 2) places them for the collected towns not of the player's faction and erases them (`FUN_140a22ef0`).
   Nothing else touches it, and it is not saved.
@@ -779,7 +783,7 @@ turret finder uses it so far (the others read the squad's home, which a player s
   (`NavMesh::getGateCode` `FUN_1403a30f0`, [gate codes](pathfinding.md#gate-codes)) is above 0: inside town walls. So no spot is deeper than 5 in
   the water (surface 100). **Data** (vanilla `areasmap.tga`, 256 × 256): 33 % black; black cells are the base `NONE` group, which has no nests or
   homeless spawns; 917 black pixels (2 %) lie inside other groups' cells, at region edges. Meitou (`PopulationWild.cs` `SpotRefused`): the same three
-  tests for a homeless spot; a nest's candidate spots take the height and pixel tests at layout and the gate code (where the navmesh is loaded)
+  tests for a homeless spot; a nest's candidate spots are pushed as the original's (1.4 x the nearest town's radius, 3 x every town with a faction's: `PushFromTowns`), refused inside their nearest town (`InsideNearestTown`), take the height and pixel tests at layout and the gate code (where the navmesh is loaded)
   when it picks its centre; a nest roll whose cell a town stands in (`TownZones`) or has its own town (a placed one or a nest rolled before, `CellTakesNest`), or has no passing spot, passes to the next
   roll key (up to 10 a nest). A group still short of its count then rolls in any of its cells, the fallback, its spots tested all the same (engine choice).
   **Observed** (`probe nests`, #1041's save under Rebirth): 331 nests with the fallback, 326 without, none rolled in a town's zone; that save's `River Nest` stands inside Blister Hill's walls (zone 23,22 of the town's list, gate code 1, 915 from a centre of radius 350), which
@@ -833,7 +837,7 @@ turret finder uses it so far (the others read the squad's home, which a player s
   lists a sector's towns but nest markers, points of interest and Null, Ruins included). The sector in view is never drawn either: the draw loop redraws a sector equal to
   `DAT_142135230`, which `FUN_1408f6940` (every frame, from the zone update `FUN_140a12c70`) sets to the sector at the GameWorld +0x580 object's position (`FUN_140785f90` → `FUN_1407f2960`: its scene node;
   **Verified**). +0x580 is `DAT_142134690`, the camera focus object of [corpses](character-stats.md#corpses) (same address, **Verified**; its constructor `FUN_1407f6b30` is `PlayerInterface`).
-  Meitou: weight 0 for the zone of the focus the zone loader uses (`FocusCommand`, else the first player character); a sector's load-time fill is not subject to it (engine choice). The load-time fill (a sector's ceil(P × amount) at once, engine choice) makes no more than the island's room: the sum of P × amount over the loaded sectors less their squads, those asked for and not spawned yet and the save's homeless squads standing in them (`PopulationSystem.IslandRoom`), so a save whose homeless squads fill the island adds none (**Observed**, a save at Sho-Battai: the original made 1 squad beside its 12 saved desert squads). So a loaded sector is refilled as its squads die or walk out (**Verified** by code). The squad is given a home town: the
+  Meitou: weight 0 for the zone of the focus the zone loader uses (`FocusCommand`, else the first player character); a sector's load-time fill is not subject to it (engine choice), but a sector a town stands in makes none at load either (`BuildSector`, as the area tick never draws it; #1311). A squad counts in the zone it stood in last tick, one made this tick where it was made (`StandingZone`). The load-time fill (a sector's ceil(P × amount) at once, engine choice) makes no more than the island's room: the sum of P × amount over the loaded sectors less their squads, those asked for and not spawned yet and the save's homeless squads standing in them (`PopulationSystem.IslandRoom`), so a save whose homeless squads fill the island adds none (**Observed**, a save at Sho-Battai: the original made 1 squad beside its 12 saved desert squads). So a loaded sector is refilled as its squads die or walk out (**Verified** by code). The squad is given a home town: the
   sector's own town when its faction is the squad's, else the faction's nearest town, or its nearest nest when that is 9216 nearer, none
   beyond 50000 (`createRandomUnloadedSquad` → `Ownerships::setHomeTown`, KenshiLib 1ce4a16 names; **Verified** by code). It tethers the
   patrol (below). Saved homeless platoons have no `basetown`/`hometown` ([save.md](../formats/save.md)). Meitou decides it at the squad's first patrol, from where it stands (engine choice, so saved squads get one).
@@ -846,12 +850,16 @@ turret finder uses it so far (the others read the squad's home, which a player s
   or a level-data nest town, standing in the sector and nearer than any other town) makes none of the group's squads; the nest's pool
   stays its own site's (engine choice: the sector route to it is not modelled).
 - **Homeless spot and template weights** (`FUN_1408f50d0`, `FUN_1408f4d70`, `FUN_1408f7e80`, `FUN_1406b9d10`, **Verified** by decompile). The spot (also the patrol's point, same function): up to 4 x 10 tries of a random point of the
-  sector, pushed out of towns (2 x radius own, 1 x another faction's) and, if within 1382.4 of the camera focus, away from it; accepted only when `FUN_1408f4d70` passes:
+  sector, pushed out of towns (the nearest's radius x argument 5, another faction's x argument 6; no push when argument 5 is at most 0.01, `DAT_14167c310`; the radius is `getRadius`, vfunc 0x2a0, [towns](buildings-production.md#placement), not `size radius`) and, if within 1382.4 of the camera focus, away from it; accepted only when `FUN_1408f4d70` passes:
   the terrain height there (`FUN_1409b32f0`) is **not below 95** (-99, "no terrain", passes), so nothing spawns more than 5 units under the water level (100), and the
   `areasmap.tga` pixel there (1152 units a pixel, `trunc((coord + 147456) / 1152)`, the map object being built from -147456 to 147456 by `FUN_1408fb580`) is not black (black is the NONE group); then, for a loaded sector, the point is
   set to the terrain height, snapped to the navmesh from there (`FUN_1403a3ac0`, box half-extent 600, a door-and-water hit filter; the query being
   nearest-point is **Observed**, from the call shape) and refused inside a non-Ruins town or where the face data's high nibble is above 0. The navmesh covers the water, so walkability alone is not this test.
-  So a spot starts on the surface nearest the terrain, not the highest. Meitou (`PopulationWild.SpotGround`, sector and nest spots): `SpawnFloor` 95,
+  So a spot starts on the surface nearest the terrain, not the highest. The camera push and the inside-town refusal (the nearest town by `FUN_140927f10`,
+  nest markers skipped) are made only when argument 3 is set. Call sites (**Verified**, constants read from the exe): the homeless maker `FUN_1408f8060`
+  passes 1, the squad's faction, 2 (`DAT_141682ad0`) and 1; the patrol point `FUN_1408fc730` 0, no faction, 1 and 1, so every town with a faction pushes
+  it 1 x radius. Meitou: `PopulationWild.PlaceInSector`, `PushOut`, `InsideNearestTown` (#1311: pushed by `size radius`, 700 for a UC town of radius
+  2500, Outlaw Farmers and Skimmers spawned in its streets). Meitou (`PopulationWild.SpotGround`, sector and nest spots): `SpawnFloor` 95,
   `BiomeMap.IsPainted`, and a walkable surface within the stand range of the terrain (`GroundLevel`), the gate code read there; a spot with only raised
   floors over it (a ruin's storeys, a rock's top) is refused and drawn again rather than moved (engine choice), and each member is made on the ground
   surface at its own offset (`BuiltSquad.Grounded`). **Observed** headless (#731 save, `Nest of Beak Things` beside the Crater's Ancient Citadel): a
@@ -889,9 +897,13 @@ turret finder uses it so far (the others read the squad's home, which a player s
   (`FUN_1409b2ab0`, a ray from 1000 above), else the position. So the Hub, whose gate set holds only its two `Defensive Gate IV`, gets a point beyond one of
   them while it has a door, else its town position, and Skinhouse HQ, which has no gateway building (its first wall with an interior, a `Defensive Wall IV` 3700 from its centre, is none), takes the gateless branch
   (**Verified**, the data).
+  A gate's `amInsideTownWalls` is its own code, the gate-code pass's second code, its outer side's (**Verified**: `FUN_1402f03e0` gives the building the second code,
+  [gate codes](pathfinding.md#gate-codes) "Applying"; `FUN_140929560` tests that, not the code under the gate's origin). **Observed** (Meitou's pass, a Meitou save of
+  #1399 with the Hub's two gates stood up by The Hub Re-Established's residents, `gatecode0` 1 on both): they label [1, 0] with both origins in region 1, so the
+  point is beyond the first, not the town position inside the walls (where 273 would lift the intruders 274 drops).
   Meitou: `TownExit` (Town +0x38 and +0x290 alike: the patrols, the intruder errand 274, the travel rows 53 / 130, the war point and the homeward walks; placed towns by
-  their level buildings in list order, a player town by its complete sites; engine readings: list order for the set's, and the town position for the door point of a
-  town without gates).
+  their level buildings in list order, a player town by its complete sites; a gate's own code from the last labelling that listed it, unknown counting as outside; engine
+  readings: list order for the set's, and the town position for the door point of a town without gates).
   The move: `CharMovement::setPatrolInput` (`FUN_14065eaa0`, vtable +0xa0) in mode 3 (a `PatrolInfo` with a biome group) draws the point
   above and sends the character to it exactly; it redraws (up to 10 times) only a point whose ground is present and below 95 when the
   byte at +0x79 of the object at Character +0x2e0 is set (a race flag, water below 95: **Observed**), else accepts it (**Verified**). The
@@ -913,7 +925,10 @@ turret finder uses it so far (the others read the squad's home, which a player s
   `IsPublic`, `OwnerOf`) and, for an animal, the animal terms (`AdmitsAnimal`: both `Locks.AnimalEntry.MayEnter` and `AnimalEntry.Allows`); the walk
   goes to the drawn point. **Observed** (headless, #803 save, Sho-Battai): before, a Merchant Nomad on
   goal 36 walked into Lord Nagata's private Bughouse, the noble's guards shooed it and the noble house fought it as a trespasser; after, no
-  patroller enters it.
+  patroller enters it. The player's term is the building's faction (vfunc `0x58`) having `+0x250` set, an alternative to `isPublic`, so
+  a building of the player's faction with an open door takes anyone's patrol draws whatever its Open to public toggle; only a closed door keeps
+  patrols out (**Verified**, `FUN_14065eaa0`). **Observed** (#1400 save, the Hub's bought Old Storm House `20.32:34-Newwworld-INGAME`, Private,
+  its door opened by the purchase; headless, 18,000 ticks): a Vagrants Bar Thug Drunk on goal 36 walked in.
   A loaded patrol draws again when the task's update finds the move ended (`FUN_1405c6b30` mode 1 returns unless the mover reports
   idle, reached or failed), so the squad walks up to 200 outside the gate, stops, and turns to the next sector or town. Off screen a new
   point is picked within 500 of the last (`FUN_1407ee790`).
@@ -1142,7 +1157,7 @@ every message {1} is the campaign's name and {2} the target town's (the cancel m
 | `Global population multiplier` | 1 | P in 6.2 |
 | `npc range` | settings.cfg value | relevance range, see [game-loop.md](game-loop.md) |
 | `raidFrequencyMult` / `raidSizeMult` (`settings.cfg`; options "Town raid events: frequency" 0.25-3, "size" 0.25-4) | 1 | campaign roll chance; required men = int(`num forces` × size) ([campaigns](#campaigns)) |
-| CONSTANTS `max squads` / `max squad size` / `max faction size` | 10 / 20 / 30 | stored by the constants loader (`FUN_14086b2b0`; the squad screen reads them as `DAT_142133f4c` / `DAT_142133f48`); enforced by the squads screen (ADD SQUAD, portrait drops, [ui-screens.md](ui-screens.md#squads-tab)) and recruiting ([dialogue.md](dialogue.md)) (**Observed**) |
+| CONSTANTS `max squads` / `max squad size` / `max faction size` | 10 / 20 / 30 | stored by the constants loader (`FUN_14086b2b0`; the squad screen reads them as `DAT_142133f4c` / `DAT_142133f48`); enforced by the squads screen (ADD SQUAD, portrait drops, [ui-screens.md](ui-screens.md#squads-tab)) and recruiting ([dialogue.md](dialogue.md)) (**Observed**). Meitou: Advanced settings sliders (`Max squads`, `Max squad size`, `Max faction size`, 1-256, `BodyOptions`) override them live when set |
 | area tick | 2 s scaled | 6.2 |
 | min distance of a homeless spawn from the player | 1382.4 | 6.2 |
 

@@ -173,6 +173,8 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         float nearRadius = World.NearRadius;
         bool benchFacing = World.BenchFacingFix;
         bool prisonPose = World.PrisonPoseFix;
+        bool seatBed = World.SeatBedFix;
+        bool pickUpTheft = World.PickUpTheftFix;
         bool cagedAnimal = World.CagedAnimalFix;
         bool fixGround = World.GroundRepair;
         bool bagSearch = World.BagSearchFix;
@@ -184,6 +186,8 @@ public sealed partial class WorldSession : IDisposable, IClientSession
             candidate.NearRadius = nearRadius;
             candidate.BenchFacingFix = benchFacing;
             candidate.PrisonPoseFix = prisonPose;
+            candidate.SeatBedFix = seatBed;
+            candidate.PickUpTheftFix = pickUpTheft;
             candidate.CagedAnimalFix = cagedAnimal;
             candidate.GroundRepair = fixGround;
             candidate.BagSearchFix = bagSearch;

@@ -29,6 +29,14 @@ internal sealed class GameCollectionState
     /// Distinct logical staged visuals, independent of whether one or both of their parts has arrived.
     /// </summary>
     internal int VisualPendingCount;
+    /// <summary>
+    /// Item tag metadata is bounded separately from its 65,536 logical definition identities.
+    /// </summary>
+    internal int ItemTagBuckets, ItemTagMembers;
+    /// <summary>
+    /// Retained tag definitions and bucket envelopes share the existing 32 MiB collection limit.
+    /// </summary>
+    internal long ItemTagBytes;
     internal readonly Dictionary<string, (ulong Revision, object? Value, byte[] Digest, int Bytes)> Items = new(StringComparer.Ordinal);
 }
 
@@ -45,13 +53,13 @@ internal static class GameCollectionSchema
 {
     static readonly UTF8Encoding StrictUtf8 = new(false, true);
     internal static readonly IGameCollection[] All = [new Collection<GroundItemSnapshot>(1011, v => v.Snapshot.GroundItems, v => v.Id.ToString(CultureInfo.InvariantCulture), (v, x, _, _) => v with { Snapshot = v.Snapshot with { GroundItems = x } }), new Collection<ContainerSpot>(1013, v => v.Snapshot.Containers, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Containers = x } }), new Collection<BedSpot>(1014, v => v.Snapshot.Beds, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Beds = x } }), new Collection<SeatSpot>(1016, v => v.Snapshot.Seats, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Seats = x } }), new Collection<CageSpot>(1017, v => v.Snapshot.Cages, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Cages = x } }), new Collection<WeatherRegionSnapshot>(9, v => v.Weather?.Regions ?? [], v => v.RegionId, (v, x, p, e) => v with { Weather = p ? new(v.Weather?.Time ?? default, x) { Enabled = e } : null }, v => v.Weather is not null, v => v.Weather?.Enabled ?? false),
-        new ModVisualCollection(), ];
+        new ModVisualCollection(), new ItemTagCollection(), ];
     internal static readonly IReadOnlySet<ushort> Ids = All.Select(s => s.Id).ToHashSet();
 
     /// <summary>
     /// Shared visuals have two independently revisioned records per logical identity; other collections retain one record per identity.
     /// </summary>
-    internal static int MaximumKeys(ushort field) => field == 1068 ? ModVisualCollection.MaximumKeys : 65536;
+    internal static int MaximumKeys(ushort field) => field == 1068 ? ModVisualCollection.MaximumKeys : field == 1069 ? ItemTagCollection.BucketCount : 65536;
 
     sealed class Collection<T>(ushort id, Func<PlayerWorldView, IReadOnlyList<T>> get, Func<T, string> key,
         Func<PlayerWorldView, IReadOnlyList<T>, bool, bool, PlayerWorldView> set, Func<PlayerWorldView, bool>? present = null,
@@ -141,9 +149,9 @@ internal static class GameCollectionSchema
     }
 
     /// <summary>
-    /// A binary visual has no nested compression; only the complete lifecycle publication may use its bounded compression envelope.
+    /// Binary visual and tag records have no nested JSON compression; their complete publication may use its bounded compression envelope.
     /// </summary>
-    internal static int ExpandedItemSize(ushort field, ReadOnlySpan<byte> bytes) => field == 1068 ? bytes.Length
+    internal static int ExpandedItemSize(ushort field, ReadOnlySpan<byte> bytes) => field is 1068 or 1069 ? bytes.Length
         : Math.Max(bytes.Length, JsonComponentCompression.DecodedLength(bytes));
 
     internal static byte[] EncodeManifest(CollectionManifest manifest, int maximumKeys = 65536)
@@ -335,7 +343,7 @@ public sealed partial class GameStatePublisher
             }
             // Transient visuals withdraw through their complete manifest. Separate removals would break the complete old manifest while
             // a large critical burst is still delivering its new entries, and would retain redundant per-event deletion tombstones.
-            if (previousCollection is not null && schema.Id != 1068)
+            if (previousCollection is not null && schema.Id is not (1068 or 1069))
                 foreach (var key in previousCollection.Items.Keys.Where(k => !current.ContainsKey(k)))
                 {
                     total += Encoding.UTF8.GetByteCount(key) + 21L;
@@ -411,6 +419,7 @@ public sealed partial class GameStateReplica
                 throw new InvalidDataException("Invalid collection manifest.");
             foreach (var key in manifest.Keys)
                 GameCollectionSchema.ValidateKey(key);
+            if (field == 1069) ItemTagCollection.ValidateManifest(manifest);
             state.Manifest = manifest;
             state.Revision = revision;
             state.ManifestDigest = digest;
@@ -430,6 +439,7 @@ public sealed partial class GameStateReplica
             var entry = GameCollectionSchema.ReadEntry(value);
             // A newer manifest already withdrew this transient ID. Its global revision fences late bulk without keeping one tombstone per effect.
             if (field == 1068 && state.Revision >= revision && !state.VisualKeys.Contains(entry.Key)) return;
+            if (field == 1069 && !ItemTagCollection.Accepts(state, entry.Key, revision)) return;
             state.Items.TryGetValue(entry.Key, out var old);
             if (old.Revision > revision)
                 return;
@@ -442,20 +452,28 @@ public sealed partial class GameStateReplica
             }
 
             bool pendingVisual = field == 1068 && !state.VisualKeys.Contains(entry.Key);
-            if (field != 1068 && LiveCollectionItems() >= 65536 && !state.Items.ContainsKey(entry.Key))
+            bool tagBucket = field == 1069 && ItemTagCollection.IsBucket(entry.Key);
+            if (field != 1068 && !tagBucket && LiveCollectionItems() >= 65536 && !state.Items.ContainsKey(entry.Key))
                 throw new InvalidDataException("Keyed entry fence bound exceeded.");
             if (kind == 8 && entry.Value.Length != 0 || kind == 7 && entry.Value.Length == 0)
                 throw new InvalidDataException("Invalid keyed entry operation.");
             int bytes = checked(value.Length + 19);
             if (pendingVisual) ReserveVisualPending(state, entry.Key, bytes);
-            state.Items[entry.Key] = (revision, kind == 7 ? schema.Decode(codec, entry.Key, entry.Value) : null, digest, bytes);
+            if (field == 1069)
+            {
+                if (kind != 7) throw new InvalidDataException("Item tags withdraw through bucket membership.");
+                ItemTagCollection.Apply(state, entry.Key, schema.Decode(codec, entry.Key, entry.Value), revision, digest, bytes);
+            }
+            else
+                state.Items[entry.Key] = (revision, kind == 7 ? schema.Decode(codec, entry.Key, entry.Value) : null, digest, bytes);
         }
     }
 
     /// <summary>
     /// Pending visual values do not consume the active-collection identity allowance; they have their own bounded staging ledger.
     /// </summary>
-    int LiveCollectionItems() => _collections.Sum(pair => pair.Key == 1068 ? pair.Value.VisualKeys.Count / 2 : pair.Value.Items.Count);
+    int LiveCollectionItems() => _collections.Sum(pair => pair.Key == 1068 ? pair.Value.VisualKeys.Count / 2
+        : pair.Key == 1069 ? pair.Value.Items.Count - pair.Value.ItemTagBuckets : pair.Value.Items.Count);
 
     /// <summary>
     /// A complete new manifest may activate staged entries, retire old live values or leave newer out-of-scope entries pending.

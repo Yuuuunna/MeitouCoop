@@ -5,8 +5,9 @@ instead of a private copy. Code: `CodeModManifest`, `CodeModVersion`, `CodeModCh
 `ModLoadContext`, `ModHost`, `ModContext.Dependency<T>` (`Meitou.Modding`), the launcher's mod list. Tests: `ModDependencyTests`.
 General loader contract: [modding](modding.md).
 
-`EffectAnchor` and `GlowTarget` retain the `Meitou.Modding` namespace but are compiled into `Meitou.Simulation` so authority visual requests
-share one wire type. The matching Coop reference package includes both assemblies. Job offers and authority visual requests add no manifest
+`EffectAnchor`, `GlowTarget`, `GlowMode`, `TrailStyle` and `AudioModulation` retain the `Meitou.Modding` namespace but are compiled into
+`Meitou.Simulation` so authority presentation requests share one wire type. The matching Coop reference package includes both assemblies.
+Job offers and authority presentation requests add no manifest
 keys; their registration, dependency failure cleanup and remote presentation contracts are in [modding](modding.md).
 
 **Observed** (source): `ModContext.AddEquipmentSlot` registrations commit in dependency order through the shared
@@ -23,7 +24,9 @@ runs from the authority's public gameplay rules. See [item use and XP adoption](
 
 **Observed** (Coop source): the chooser contract is API 3. Key binding and key-action types keep their `Meitou.Game.Host.Input` namespace but
 are compiled once into `Meitou.Modding`, so the headless host and game initialize the same mod entry. `MyGuiEvent`, item-tooltip contracts and
-character/job-panel contracts use that same shared assembly; their screen renderer remains game-owned. The UI callbacks submit supported typed
+character/job-panel contracts use that same shared assembly. `ModFrame`, `ModInterface`, `ModLayouts`, `UiTextBuffer`, `UiMapView`,
+`BuildingPanelRows` and screen-control contracts are shared without a renderer dependency; their rendering and UI callbacks remain client-owned.
+The UI callbacks submit supported typed
 commands through the recipient's session. World-state sidecars restore with the mod context scoped to the candidate world; strict failures
 abort replacement without changing the active world.
 
@@ -114,7 +117,7 @@ dependent.
 
 `ModLoadContext.Load(name)` checks, in order:
 
-1. Game assemblies (trusted platform list).
+1. Game assemblies (trusted platform list), by simple name whatever the requested version.
 2. The dependencies' exports: each loaded dependency's manifest `assemblies` and, transitively, what its dependencies export, returned as
    the already-loaded `Assembly`.
 3. The mod's own folder.

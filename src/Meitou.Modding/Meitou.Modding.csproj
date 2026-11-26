@@ -4,7 +4,9 @@
     <ProjectReference Include="../Meitou.Simulation/Meitou.Simulation.csproj" />
     <PackageReference Include="Lib.Harmony" Version="3.0.0-rc.7" />
     <InternalsVisibleTo Include="Meitou.Tests" />
+    <InternalsVisibleTo Include="Meitou.Runtime" />
     <InternalsVisibleTo Include="MeitouClient" />
+    <Compile Include="../Meitou.Game/Ui/UiHost.Pointer.cs;../Meitou.Game/Ui/UiLineStyle.cs;../Meitou.Game/Ui/UiTextBuffer.cs;../Meitou.Game/Ui/UiMapView.cs;../Meitou.Game/Ui/BuildingPanelRows.cs;../Meitou.Game/Ui/ScreenControls.cs;../Meitou.Game/Ui/ScreenOverrides.cs;../Meitou.Game/Ui/DialogueReplies.cs;../Meitou.Game/Ui/MenuTargets.cs;../Meitou.Game/Ui/MapInputs.cs;../Meitou.Game/Ui/KeyInputs.cs;../Meitou.Game/Ui/ModLayouts.cs" Link="Ui/%(Filename)%(Extension)" />
     <Compile Include="../Meitou.Game/Mods/*.cs" Exclude="../Meitou.Game/Mods/GameMods.cs;../Meitou.Game/Mods/PlayerUiExtension.cs" Link="Mods/%(Filename)%(Extension)" />
     <Compile Include="../Meitou.Game/Ui/UiHost.cs;../Meitou.Game/Ui/UiNode.cs;../Meitou.Game/Ui/MarkerImagePaths.cs;../Meitou.Game/Ui/ContextVerbNames.cs;../Meitou.Game/Ui/CharacterPanelHooks.cs;../Meitou.Game/Ui/ItemTooltipLines.cs;../Meitou.Game/Ui/MyGuiEvent.cs" Link="Ui/%(Filename)%(Extension)" />
     <Compile Include="../Meitou.Game/Host/Input/Keys.cs;../Meitou.Game/Host/Input/InputState.cs;../Meitou.Game/Host/Input/InputBindings.cs;../Meitou.Game/Host/Input/ModKeyActions.cs" Link="Input/%(Filename)%(Extension)" />

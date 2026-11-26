@@ -31,6 +31,29 @@ public sealed partial class WwisePlayer
     ulong _postingObject;
 
     /// <summary>
+    /// The playback an action's sounds belong to while <see cref="Run"/> plays it (<see cref="NewPlaying"/>; 0 none).
+    /// </summary>
+    uint _postingPlay;
+
+    /// <summary>
+    /// The last playback id handed out (<see cref="NewPlaying"/>).
+    /// </summary>
+    int _lastPlaying;
+
+    /// <summary>
+    /// Completion callbacks owned by the mixer thread, registered after a playback's post is queued.
+    /// </summary>
+    readonly Dictionary<uint, Action> _playingEnds = [];
+    /// <summary>
+    /// Reused membership of live roots and pending or delayed actions.
+    /// </summary>
+    readonly HashSet<uint> _livePlaying = [];
+    /// <summary>
+    /// Finished identities removed after the callback table is walked.
+    /// </summary>
+    readonly List<uint> _endedPlaying = [];
+
+    /// <summary>
     /// One game object: its place (behind a lock, written from the host's threads) and its own game parameters and switches (the audio thread's).
     /// </summary>
     sealed class GameObjectState
@@ -148,6 +171,72 @@ public sealed partial class WwisePlayer
     {
         ObjectState(gameObject);
         _commands.Enqueue(() => PostNow(eventId, gameObject, expires: _time + 10));
+    }
+
+    /// <summary>
+    /// Posts an event as <see cref="Post(uint, ulong)"/>, its sounds tagged with <paramref name="playing"/> (<see cref="NewPlaying"/>) so that
+    /// <see cref="StopPlaying"/> ends them alone.
+    /// </summary>
+    public void Post(string eventName, ulong gameObject, uint playing)
+    {
+        uint eventId = WwiseHash.Id(eventName);
+        ObjectState(gameObject);
+        _commands.Enqueue(() => PostNow(eventId, gameObject, expires: _time + 10, playing));
+    }
+
+    /// <summary>
+    /// A new playback id (never 0), as Wwise's playing ids: tags one post's sounds for <see cref="StopPlaying"/>. Any thread.
+    /// </summary>
+    public uint NewPlaying()
+    {
+        uint id = (uint)Interlocked.Increment(ref _lastPlaying);
+        return id == 0 ? (uint)Interlocked.Increment(ref _lastPlaying) : id;
+    }
+
+    /// <summary>
+    /// Invokes a callback once all roots, bank waits and delayed actions of this playback have ended; registered after its post.
+    /// </summary>
+    internal void WhenPlayingEnds(uint playing, Action ended)
+    {
+        ArgumentNullException.ThrowIfNull(ended);
+        if (playing != 0) _commands.Enqueue(() => _playingEnds[playing] = ended);
+    }
+
+    /// <summary>
+    /// Finishes tracked playbacks once per mixer block without a scan of all roots for each callback.
+    /// </summary>
+    void ReportPlayingEnds()
+    {
+        if (_playingEnds.Count == 0) return;
+        _livePlaying.Clear();
+        foreach (var root in _roots)
+            if (!root.Done && root.Playing != 0) _livePlaying.Add(root.Playing);
+        foreach (var pending in _pending)
+            if (pending.Expires > _time && pending.Playing != 0) _livePlaying.Add(pending.Playing);
+        foreach (var delayed in _delayed)
+            if (delayed.Playing != 0) _livePlaying.Add(delayed.Playing);
+        _endedPlaying.Clear();
+        foreach (uint playing in _playingEnds.Keys)
+            if (!_livePlaying.Contains(playing)) _endedPlaying.Add(playing);
+        foreach (uint playing in _endedPlaying)
+            if (_playingEnds.Remove(playing, out var ended)) ended();
+    }
+
+    /// <summary>
+    /// Stops the sounds of the playback <paramref name="playing"/>, fading out over <paramref name="seconds"/> (at once at 0), and drops its
+    /// actions still waiting for a delay or a bank. Any thread; run at the next block.
+    /// </summary>
+    public void StopPlaying(uint playing, float seconds)
+    {
+        if (playing == 0) return;
+
+        _commands.Enqueue(() =>
+        {
+            foreach (var r in _roots)
+                if (r.Playing == playing) r.Stop(seconds);
+            _pending.RemoveAll(p => p.Playing == playing);
+            _delayed.RemoveAll(d => d.Playing == playing);
+        });
     }
 
     /// <summary>

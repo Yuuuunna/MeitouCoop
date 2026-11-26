@@ -169,7 +169,9 @@ public static class SavedKit
         // Meitou saves from before armour took its level from its quality have level 0 and a grade quality below 100: that quality. The original
         // saves some armour at level 0 and quality 100 (Observed, docs/game/ui-screens.md "Item tooltip"), which stays level 0.
         item.Level = s.Level == 0 && item.Type == FcsRecordType.Armour && s.Quality is > 0 and < 100 ? (int)s.Quality : s.Level;
-        item.MaterialId = s.MaterialId;
+        // "" keeps the record's material the factory gave an ITEM: Meitou saves from before ITEMs took it wrote "". Engine choice: the original
+        // keeps a loaded "" (docs/formats/save.md "Item material"), so such items would never stack with the ones it makes.
+        if (s.MaterialId.Length > 0) item.MaterialId = s.MaterialId;
         item.CompanyId = s.CompanyId;
         item.Crafter = s.Crafter;
         item.Uniform = s.Uniform;
@@ -421,7 +423,13 @@ public static class SavedKit
             GameRecord? Find(string id) => id.Length > 0 ? db.Find(id) : null;
 
             if (record.Type == FcsRecordType.Armour && (Worn.Contains(s.Section) || ModSlots.Of(s.Section) is not null))
-                loadout.Clothing.Add(new LoadoutItem(record) { Quality = (int)s.Quality, Material = Find(s.MaterialId), Colour = Find(s.ColourId) });
+            {
+                loadout.Clothing.Add(new LoadoutItem(record)
+                {
+                    Quality = (int)s.Quality, Material = Find(s.MaterialId), Colour = Find(s.ColourId),
+                    Section = ModSlots.Of(s.Section) is not null ? s.Section : null,
+                });
+            }
             else if (s.Section == "backpack_attach")
                 loadout.Backpack = new LoadoutItem(record) { Quality = (int)s.Quality, Colour = Find(s.ColourId) };
             else if ((s.Section == "belt" || ModSlots.Of(s.Section) is not null) && record.Type == FcsRecordType.Item)

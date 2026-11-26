@@ -52,6 +52,7 @@ public sealed partial class CombatSystem
         else if (e.Kind == ReloadEffect) ApplyReload(world, e);
         else if (e.Kind == ZoneBuildingsEffect) ApplyZoneBuildings(world, e);
         else if (e.Kind == MassCombatEffect) ApplyMassCombat(world, e);
+        else if (e.Kind == DodgeXpEffect) ApplyDodgeXp(world, e);
         else if (e.Kind == BlowEffect) ApplyBlow(world, e);
     }
 
@@ -61,6 +62,24 @@ public sealed partial class CombatSystem
     void ApplyMassCombat(World world, in Effect e)
     {
         if (world.Characters.Cold(e.Target) is { Stats: { } asked }) _xp.MassCombat(asked);
+    }
+
+    /// <summary>
+    /// The dodge experience of a defence start or a failed break-out (<see cref="DodgeXpEffect"/>).
+    /// </summary>
+    void ApplyDodgeXp(World world, in Effect e)
+    {
+        if (world.Characters.Cold(e.Target) is { Stats: not null, Race: not null, Fighter: not null, Medical: not null } dc)
+            DodgeXp(dc, e.Position.X, dodged: e.Position.Y > 0);
+    }
+
+    /// <summary>
+    /// Dodge experience (<c>FUN_1408c6360</c>, <b>Verified</b>, docs/game/character-stats.md "Combat XP"): against <paramref name="attackerRating"/>
+    /// with the defender's effective dodge (<c>FUN_140885190</c> with its guard flag) and its encumbrance factor.
+    /// </summary>
+    void DodgeXp(CharacterCold dc, float attackerRating, bool dodged)
+    {
+        _xp.Dodge(dc.Stats!, dc.Race!, DodgeRating(dc, guard: true), attackerRating, dc.Fighter!.EncumbranceFactor, dodged);
     }
 
     /// <summary>
@@ -123,10 +142,6 @@ public sealed partial class CombatSystem
                 aSlot.Evaded++;
                 dSlot.Dodges++;
                 GainCombatXp(ac, dc, XpEvent.GlancingHit, null);
-                var dodgeStats = dc.Stats;
-                _xp.PerEvent(dodgeStats, dc.Race, StatsEnumerated.Dodge,
-                    0.25f * _xp.SkillDifferenceFactor(dodgeStats[StatsEnumerated.Dodge], Eff(ac, StatsEnumerated.MeleeAttack)),
-                    ExperienceSource.Combat);
                 Punch(world, a, ac, dc, tech, blow, 0);
                 Record(now, a, d, blow, outcome, -1, default, false, false);
                 ReportDefence(world, a, d, seq, blow, CombatDefenceKind.Dodged, ac, dc, tech);
@@ -219,10 +234,12 @@ public sealed partial class CombatSystem
         bool observe = world.WantsCombatHits;
         bool wasAlive = observe && !medical.Dead, wasIncapacitated = observe && medical.Incapacitated;
         bool intended = observe && d == aSlot.TargetSlot && prev[d].Generation == aSlot.TargetGeneration;
-        var (part, damage, absorbed) = world.Player.OnePunch && ac.IsPlayer
+        Bodies.HealthObservers.Before(world, d);
+        var (part, damage, absorbed, struck) = world.Player.OnePunch && ac.IsPlayer
             ? HitResolver.LandLethal(medical, ctx, DebugCheats.OnePunchDamage, tech.LowStrike, direction == 6, events)
             : HitResolver.LandDetailed(medical, ctx, packet, world.ArmourFilters.Pieces(world, CombatHitSource.Melee, table.IdOf(d), target), cover,
                 toughness, tech.LowStrike, direction == 6, _combat, events);
+        Bodies.HealthObservers.After(world, d, Bodies.HealthChangeKind.Hit);
         FloatHit(world, d, dc, ac.IsPlayer, part, damage, absorbed, world.PresentationOwner(table.IdOf(a)));
         aSlot.Landed++;
         dSlot.Taken++;
@@ -238,9 +255,13 @@ public sealed partial class CombatSystem
         var (knockout, death) = HitEvents(world, d, dc, medical, dc.Race!, events);
         if (ShackledKnockOut(world, a, seq, blow, d, dc, medical, ctx)) knockout = true;
 
-        BlowReaction(world, ref dSlot, d, dc, medical, damage, toughness, now, CombatRolls.BlowCounter(a, seq, blow, 0));
+        BlowReaction(world, ref dSlot, d, dc, medical, damage, toughness, now, table.IdOf(a), seq, blow);
         GainCombatXp(ac, dc, XpEvent.HitDealt, XpEvent.HitTaken, packet.Cut + packet.Blunt + packet.Pierce + packet.Stun);
-        Punch(world, a, ac, dc, tech, blow, 2);
+
+        // An unarmed one (stat-set kind 5) hit trains dodge in place of melee defence (FUN_1408c6980 event 4 -> FUN_1408c6360), against the
+        // attacker's rating.
+        if (target.Unarmed) DodgeXp(dc, aSlot.AttackSkill, dodged: false);
+        Punch(world, a, ac, dc, tech, blow, PunchMaterial(struck));
         Sound(world, SoundKind.Hit, d, a, prev[d].Position, heavy: dSlot.HitHeavy, unarmed: fighter.Unarmed, robot: ac.Race!.IsRobot);
         Splash(world, d, dc, -new Vector2(toAttacker.X, toAttacker.Y), damage.Cut + damage.Blunt + damage.Pierce, fighter.Unarmed ? -1 : a);
         if (knockout || death) Knockdown(world, d, dc, -toAttacker, damage.Cut + damage.Blunt + damage.Pierce, part);
@@ -332,10 +353,11 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
-    /// The defender's reaction to a hit: down (its swing and reaction cut off), else a stagger, heavy past the stumble threshold.
+    /// The defender's reaction to a hit: down (its swing and reaction cut off), else a stagger, heavy past the stumble threshold, as the reaction
+    /// filters leave it (<see cref="ReactionOf"/>).
     /// </summary>
     void BlowReaction(World world, ref CombatSlot dSlot, int d, CharacterCold dc, MedicalState medical, in HitDamage damage, float toughness, int now,
-        ulong counter)
+        CharacterId attacker, int seq, int blow)
     {
         if (medical.Incapacitated)
         {
@@ -344,13 +366,24 @@ public sealed partial class CombatSystem
             dSlot.CancelTick = now;
             dSlot.NextBlow = 0;
             dSlot.ReactTech = -1;
+            return;
         }
-        else
-        {
-            bool heavy = damage.Cut + damage.Blunt + damage.Pierce + damage.ExtraStun > DamageFormulas.StumbleThreshold(toughness, _combat);
-            Stagger(world, ref dSlot, d, dc, heavy, now, counter);
-        }
+
+        float stagger = damage.Cut + damage.Blunt + damage.Pierce + damage.ExtraStun;
+        float threshold = DamageFormulas.StumbleThreshold(toughness, _combat);
+        var kind = stagger > threshold ? BlowReactionKind.Heavy : BlowReactionKind.Light;
+        var victim = world.Characters.IdOf(d);
+        var ask = new BlowReactionAsk(world.Tick, CombatHitSource.Melee, attacker, victim, seq, blow, damage, stagger, threshold, kind);
+        kind = ReactionOf(world, ask);
+        if (kind != BlowReactionKind.None)
+            Stagger(world, ref dSlot, d, dc, kind == BlowReactionKind.Heavy, now, CombatRolls.BlowCounter(attacker.Slot, seq, blow, 0));
     }
+
+    /// <summary>
+    /// A hit's reaction after the reaction filters (<see cref="IBlowReactionFilter"/>); the game's without one.
+    /// </summary>
+    static BlowReactionKind ReactionOf(World world, in BlowReactionAsk ask) =>
+        world.BlowReactionFilters.Active ? world.BlowReactionFilters.Pass(world, ask) : ask.Kind;
 
     /// <summary>
     /// What a hit means beyond the fighters: the police-hit rule first (the game's hit outcome runs before the damage), then the victim's alarm and
@@ -379,11 +412,12 @@ public sealed partial class CombatSystem
 
     /// <summary>
     /// The martial artist's own limb takes its blow (<c>MedicalSystem::punchSomething</c> <c>FUN_140666780</c>, <b>Verified</b>, docs/game/combat.md
-    /// "Punch self-damage"), at the end of every take-hit: <paramref name="material"/> is the hit material, 5 blocked, 0 dodged, 2 hit, and 1 (metal)
-    /// against a robot race. Only a person fighting with fists whose race is not a robot, on the limb of the blow's impact point (<c>limb N</c>; 4,
-    /// the weapon, takes none) unless a prosthetic is fitted there. Packet: cut 2 and blunt 2 on metal, cut 5 and blunt 1 blocked, else blunt 1;
-    /// times (1 - 0.5 x (fist rating + toughness x scale) / 100), unclamped, x the Global damage multiplier x the gear's <c>fist injury mult</c>. The
-    /// punch then pays the puncher's toughness XP (<see cref="XpService.ToughnessFromDamage"/>).
+    /// "Punch self-damage"), at the end of every take-hit: <paramref name="material"/> is the hit material, 5 blocked, 0 dodged, a hit's from what it
+    /// struck (<see cref="PunchMaterial"/>), and 1 (metal) against a robot race. Only a person fighting with fists whose race is not a robot, on the
+    /// limb of the blow's impact point (<c>limb N</c>; 4, the weapon, takes none) unless a prosthetic is fitted there. Packet: cut 2 and blunt 2 on
+    /// metal, cut 5 and blunt 1 blocked, cut 1 and blunt 1 on chain, else blunt 1; times (1 - 0.5 x (fist rating + toughness x scale) / 100),
+    /// unclamped, x the Global damage multiplier x the gear's <c>fist injury mult</c>. The punch then pays the puncher's toughness XP
+    /// (<see cref="XpService.ToughnessFromDamage"/>).
     /// </summary>
     void Punch(World world, int a, CharacterCold ac, CharacterCold dc, CombatTechnique tech, int blow, int material)
     {
@@ -397,8 +431,22 @@ public sealed partial class CombatSystem
         var (cut, blunt) = material switch { 1 => (2f, 2f), 5 => (5f, 1f), 6 => (1f, 1f), _ => (0f, 1f) };
         var stats = ac.Stats!;
         float k = (1 - 0.5f * (UnarmedRating(world, a, ac, f) + stats.ScaledToughness) * 0.01f) * _options.GlobalDamageMultiplier * f.FistInjury;
-        if (ac.Medical!.PunchDamage(limb, cut * k, blunt * k, _constants)) _xp.ToughnessFromDamage(stats, ac.Race, material);
+        Bodies.HealthObservers.Before(world, a);
+        bool hurt = ac.Medical!.PunchDamage(limb, cut * k, blunt * k, _constants);
+        Bodies.HealthObservers.After(world, a, Bodies.HealthChangeKind.Hit);
+        if (hurt) _xp.ToughnessFromDamage(stats, ac.Race, material);
     }
+
+    /// <summary>
+    /// A landed blow's hit material (the take-hit <c>FUN_1404394f0</c> maps the medical hit's out value through the table {2, 2, 6, 1}, <b>Verified</b>
+    /// disassembly): flesh (2) for bare skin, cloth or leather, chain (6) for chain, metal (1) for metal plate or a fitted prosthetic.
+    /// </summary>
+    static int PunchMaterial(ArmourType? struck) => struck switch
+    {
+        ArmourType.Chain => 6,
+        ArmourType.MetalPlate => 1,
+        _ => 2,
+    };
 
     /// <summary>
     /// A blow's packet times its impact point's <c>power N</c> (stored x0.01): cut, blunt, pierce and extra stun (<b>Verified</b>,

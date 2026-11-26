@@ -95,20 +95,21 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// A code mod's offered job (docs/modding.md "Mod jobs"): when the site is a finished building of the player's faction and of one of the offer's
-    /// records, each living player character named that the offer is for takes the job there (<see cref="PermaJobs.GiveOffered"/>).
+    /// A code mod's offered job (docs/modding.md "Mod jobs"): when the site is a finished building of an owner the offer is for
+    /// (<see cref="ModJobOffer.OwnedBy"/>) and of one of the offer's records, each living player character named that the offer is for takes the job there (<see cref="PermaJobs.GiveOffered"/>).
     /// </summary>
     void GiveOffered(World world, AddJob add, ModJobOffer offer)
     {
         if (world.Buildings.Find(add.Site) is not { Complete: true } site) return;
-        if (!offer.On(site.Record) || !MayStartWork(world, add, site)
-            || !world.MayManage(add, site.Owner, FactionPermission.ManageAssets)) return;
+        if (!offer.On(site.Record) || add.SiteRevision != 0 && world.BuildingRevision(site) != add.SiteRevision) return;
+        if (add.Issuer is not null && (add.SiteRevision == 0 || !WorkSiteOpen(world, site))) return;
 
         var table = world.Characters;
         foreach (var id in world.CommandCharacters(add, add.Characters))
         {
             if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { } cold) continue;
-            if (cold is { IsPlayer: true, DiedTick: < 0 } && MayWork(world, cold, site) && offer.Takes(CharacterFacts.Animal(cold)))
+            if (cold is { IsPlayer: true, DiedTick: < 0 } && world.MayUseAssets(cold, cold.Faction)
+                && offer.OwnedBy(site.Owner, cold.Faction) && offer.Takes(CharacterFacts.Animal(cold)))
                 PermaJobs.GiveOffered(cold, offer.Type, site.Id);
         }
     }
@@ -445,15 +446,17 @@ public sealed partial class ProductionSystem
             if (on == TaskType.DitchAllResources && cold.HaulTo is { } keep && !PlayerOrders.Holds(world, slot) && cold.Inventory is { } held
                 && Site(world, keep) is { Complete: true } keptSite && MayWork(world, cold, keptSite)
                 && Ensure(world, keptSite) is { } keptStore && keptStore.Data.IsStorage && keptStore.Storage is not null
-                && Ditchable(held).Any(item => Stores(keptStore, item)) && world.StorageAllows(cold, keep, StorageUse.Put, DitchRecord(world, held)))
+                && Ditchable(world, cold, held).Any(item => Stores(keptStore, item))
+                && world.StorageRank(cold, keep, StorageUse.Put, DitchRecord(world, cold, held)) != StoragePriority.Forbidden)
                 return (TaskType.DitchAllResources, keep);
 
-            bool ditching = !PlayerOrders.Holds(world, slot) && cold.Inventory is { } carried && Ditchable(carried).Any();
-            if (ditching && NearestSite(world, at, float.MaxValue, IsStore, Ditches, cold.Faction) is { } store)
+            bool ditching = !PlayerOrders.Holds(world, slot) && cold.Inventory is { } carried && Ditchable(world, cold, carried).Any();
+            if (ditching && BestStore(world, at, IsStore, Ditches, cold.Faction) is { } store)
                 return (TaskType.DitchAllResources, store);
 
-            bool Ditches(BuildSite s, Machine m) => InFinderRange(s.Position, at) && TakesDitched(m, cold.Inventory!)
-                && world.StorageAllows(cold, s.Id, StorageUse.Put, DitchRecord(world, cold.Inventory!));
+            StoragePriority Ditches(BuildSite s, Machine m) => InFinderRange(s.Position, at) && TakesDitched(world, cold, m)
+                ? world.StorageRank(cold, s.Id, StorageUse.Put, DitchRecord(world, cold, cold.Inventory!))
+                : StoragePriority.Forbidden;
         }
 
         // Sleep and Sit not while holding position (FUN_1402b2b90), carrying someone (+0x348) or selected by the player (FUN_1407f4d20, the
@@ -493,9 +496,44 @@ public sealed partial class ProductionSystem
     void Train(ref CharacterHot n, CharacterCold cold, BuildSite site, Machine m, float dt)
     {
         if (n.Velocity.X == 0 && n.Velocity.Z == 0) n.Yaw = MathF.Atan2(site.Position.X - n.Position.X, site.Position.Z - n.Position.Z);
+        HoldForTraining(cold, m.Data.Stat);
         m.Operators++;
         cold.Operating = true;
         TrainingXp(cold, m.Data, dt);
+    }
+
+    /// <summary>
+    /// The weapon a dummy's user holds (<c>Task_UseTrainingDummy</c>'s start <c>FUN_1403513a0</c>, <b>Verified</b> by decompile): at a Melee Attack
+    /// dummy the first item of <c>back</c>, else of <c>hip</c>, that the arms can wield (a crossbow included), with nothing wieldable the hand as it
+    /// was; at any other dummy the weapon put away. Set every update at the dummy, as the operator's tool is.
+    /// </summary>
+    static void HoldForTraining(CharacterCold cold, int stat)
+    {
+        if (stat != (int)Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeAttack)
+        {
+            cold.DrawnWeapon = WeaponKinds.None;
+            return;
+        }
+
+        if (cold.Fighter is not { } f) return;
+
+        var held = TrainingWeapon(f, cold.Medical is not { BothArmsWork: false });
+        if (held != WeaponKinds.None) cold.DrawnWeapon = held;
+    }
+
+    /// <summary>
+    /// The hold of the weapon <see cref="HoldForTraining"/> draws (AI slot 0x68 <c>FUN_1409991d0</c>: a crossbow, category 6, needs both arms):
+    /// the back crossbow, the back melee weapon, the hip crossbow, the hip melee weapon. Meitou's hand weapon is <see cref="Fighter.Weapon"/>, so a
+    /// back one-arm weapon with the left arm out gives the hip one (engine choice).
+    /// </summary>
+    static WeaponKinds TrainingWeapon(Fighter f, bool bothArms)
+    {
+        var bow = HandHold.OfCategory((int)Meitou.Data.Gameplay.Combat.WeaponCategory.Bow).Weapon;
+        if (bothArms && f.Crossbow is { AtBack: true }) return bow;
+        if (f.WeaponIsBack) return CombatSystem.MeleeDrawn(f);
+        if (bothArms && f.Crossbow is { AtBack: false }) return bow;
+
+        return CombatSystem.MeleeDrawn(f);
     }
 
     /// <summary>
@@ -520,10 +558,15 @@ public sealed partial class ProductionSystem
 
     /// <summary>
     /// Whether machine <paramref name="m"/> takes the character as an operator (<c>FUN_1400f7c90</c>, <b>Verified</b>): it operates it already, or
-    /// fewer than its <c>max operators</c> do.
+    /// fewer than its <c>max operators</c> do. Never an automatic machine: its raw <c>max operators</c> is 0, so <c>tryOperate</c> takes nobody on
+    /// and its hauler is no operator (Meitou's <see cref="MachineData.MaxOperators"/> is at least 1).
     /// </summary>
-    internal static bool TakesOperator(World world, CharacterCold cold, Machine m) =>
-        cold.OperateSite == m.Site || OperatorsOf(world, m.Site) < m.Data.MaxOperators;
+    internal static bool TakesOperator(World world, CharacterCold cold, Machine m)
+    {
+        if (m.Data.IsAutomatic) return false;
+
+        return cold.OperateSite == m.Site || OperatorsOf(world, m.Site) < m.Data.MaxOperators;
+    }
 
     /// <summary>
     /// Nobody else lies or sits on it.
@@ -615,6 +658,37 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
+    /// <summary>
+    /// <see cref="NearestSite"/> for a storage search: the player's complete building whose machine passes <paramref name="kind"/> and whose
+    /// <paramref name="rank"/> (a test of the site and machine that answers <see cref="StoragePriority.Forbidden"/> for one that fails, else its
+    /// storage priority, <see cref="World.StorageRank(CharacterCold, string, StorageUse, string?)"/>) is highest; among equals the nearest
+    /// (ties: the lower site id). With no priority system every rank is Normal or Forbidden, so it is the nearest that passes.
+    /// </summary>
+    string? BestStore(World world, Vector3 at, Func<Machine, bool> kind, Func<BuildSite, Machine, StoragePriority> rank, int faction)
+    {
+        string? best = null;
+        float bestGap = float.MaxValue;
+        var bestRank = StoragePriority.Forbidden;
+        var all = world.Machines.All;
+        for (int k = 0; k < all.Count; k++)
+        {
+            var m = all[k];
+            if (!kind(m) || Site(world, m.Site) is not { Complete: true } site || site.Owner != faction || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site)) continue;
+
+            float gap = Gap(site.Position, at);
+            bool nearer = gap < bestGap || gap == bestGap && string.CompareOrdinal(m.Site, best) < 0;
+            if (!nearer && !world.StorageMayOutrank(bestRank)) continue;
+
+            var r = rank(site, m);
+            if (r == StoragePriority.Forbidden || r < bestRank || r == bestRank && !nearer) continue;
+
+            (best, bestGap, bestRank) = (m.Site, gap, r);
+        }
+
+        return best;
+    }
+
+    /// <summary>
     /// Starts an implicit job: a bed's sleep, a ditch's haul, else operating the site.
     /// </summary>
     void StartImplicit(World world, int slot, TaskType type, string siteId)
@@ -640,12 +714,12 @@ public sealed partial class ProductionSystem
 
     /// <summary>
     /// A sitter or sleeper at its chair or bed: on the seat's origin facing its way, as the original's <c>Task_OperateMachine</c>
-    /// (docs/game/ai-tasks.md "Town goals").
+    /// (docs/game/ai-tasks.md "Town goals"); a seat playing a bed's clip lies it at its nearest use node with <see cref="World.SeatBedFix"/>.
     /// </summary>
     void Settle(World world, ref CharacterHot n, CharacterCold cold, BuildSite site, Machine m)
     {
-        n.Position = site.Position;
-        n.Yaw = SeatFacing(world, site, m);
+        (n.Position, n.Yaw) = world.SeatBedFix && _seatBeds.LieSpot(site, m.Data.Animation, n.Position) is { } lie ? lie
+                : (site.Position, SeatFacing(world, site, m));
         n.Velocity = default;
         m.Operators++;
         cold.Operating = true;
@@ -684,7 +758,7 @@ public sealed partial class ProductionSystem
         }
 
         if (job.Site is { } id && Site(world, id) is { } site && Vector3.DistanceSquared(at, site.Position) >= JobRangeSq) return false;
-        return !Blocked(world, cold, job);
+        return !Blocked(world, slot, cold, job, at);
     }
 
     /// <summary>
@@ -711,10 +785,12 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// Whether a job cannot run (the original skips such a job: an unmet start condition the planner cannot meet, or the target finder found nothing;
     /// docs/game/ai-tasks.md "Perma-jobs"). Operating: the building is gone or not an operable machine, its operator places are taken by others, or
-    /// it has no work (<see cref="HasWork"/>). Hauling to: the storage is gone, and the character carries nothing it takes and no machine within
-    /// <see cref="InFinderRange"/> has an output it takes. Automatic machines (152, and 124 on one): <see cref="AutoWork"/>.
+    /// it has no work (<see cref="HasWork"/>). Hauling to: the storage is gone, and the character at <paramref name="at"/> carries nothing it takes,
+    /// fetches no loose item for it (<see cref="FetchesLoose"/>), no loose item it wants lies near (<see cref="LooseFor"/>) and no machine within
+    /// <see cref="InFinderRange"/> has an output it takes. At an automatic machine 152 by <see cref="AutoHaulScore"/>, 124 by
+    /// <see cref="AutoWork"/>.
     /// </summary>
-    bool Blocked(World world, CharacterCold cold, PermaJob job)
+    bool Blocked(World world, int slot, CharacterCold cold, PermaJob job, Vector3 at)
     {
         if (job.Site is not { } id || Site(world, id)is not { Complete: true } site || !MayWork(world, cold, site) || Ensure(world, site)is not { } m)
             return true;
@@ -734,19 +810,29 @@ public sealed partial class ProductionSystem
                     return true;
                 return !HasWorkingArm(cold);
             case TaskType.OperateAutomaticMachinery:
-                return !m.Data.IsAutomatic || !m.Data.IsProducer || !m.HasEmptyInputs || !AutoWork(world, site, m, cold, fetch: true);
+                // The job pass skips 152 at desire x finder 0 or less (its list A is empty, and it has an effect): the trip under way goes on.
+                if (!m.Data.IsHauledAutomatic) return true;
+                if (cold.HaulSite is not null && cold.OperateSite == id) return false;
+                return AutoHaulScore(world, slot, cold, id) <= 0;
             case TaskType.OperateStorage:
-                if (m.Data.IsAutomatic && m.Data.IsProducer)
-                    return !AutoWork(world, site, m, cold, fetch: false);
-                if (!m.Data.IsStorage || m.Storage is null)
-                    return true;
-                if (cold.Inventory is { } inv && inv.All().Any(i => Takes(world, m, i)))
-                    return false;
-                return HaulSource(world, site, m)is null;
+                // On an automatic machine (152's companion, the original's Task_FillMachine into it, which 94 feeds): its inputs.
+                if (m.Data.IsHauledAutomatic) return !AutoWork(world, site, m, cold);
+                if (!m.Data.IsStorage || m.Storage is null) return true;
+                if (cold.Inventory is { } inv && inv.All().Any(i => Takes(world, m, i))) return false;
+                if (FetchesLoose(world, cold, id)) return false;
+                return LooseFor(world, cold, at, m) is null && HaulSource(world, site, m) is null;
             default:
                 return true;
         }
     }
+
+    /// <summary>
+    /// The character is on its way to the loose item it took for this storage (<see cref="CharacterCold.HaulItem"/>) and the item still lies there:
+    /// its trip goes on whatever else lies within <see cref="LooseSource.Radius"/> of where it now stands (engine: a detour taking it out of that
+    /// reach of every wanted item blocked the job and ended the trip halfway).
+    /// </summary>
+    static bool FetchesLoose(World world, CharacterCold cold, string storage) =>
+        cold.HaulTo == storage && cold.HaulItem is { } item && world.GroundItems.Find(item) is not null;
 
     /// <summary>
     /// State 38 <c>hasOneWorkingArm</c>, which rows 87, 97, 146 and 234 need and no row provides, so the job cannot run without it.
@@ -766,7 +852,7 @@ public sealed partial class ProductionSystem
         if (m.Data.IsResearch) return ResearchFor(world, m).Queue.Count > 0;
         if (m.Farm is { } f)
         {
-            if (f.Death >= m.Data.Farm!.DeathThreshold) return true;
+            if (f.Death >= m.Data.Farm!.DeathThreshold) return f.Harvested < f.Plants.Length;
             if (f.Growth >= 1) return f.Harvested < f.Plants.Length && Room(world, site, m, cold);
 
             // A growing crop is no work while it holds water: the original's operate row needs a free operator place, false while the farm's
@@ -799,39 +885,71 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// Haul work at an automatic machine (engine reading of 152, whose goal is "no empty inputs", and of 124 on it): the character is on a trip for
-    /// it, or carries an item an input has room for; with <paramref name="fetch"/> also an empty input a storage holds the item of, a full output a
-    /// storage takes, or the machine's output carried that a storage takes.
+    /// Hauling to (124) at an automatic machine: the character is on a trip for it, carries an item an input has room for, or an empty input has a
+    /// source (<see cref="NearestSource"/>, the trip <see cref="StartHaul"/> makes).
     /// </summary>
-    bool AutoWork(World world, BuildSite site, Machine m, CharacterCold cold, bool fetch)
+    bool AutoWork(World world, BuildSite site, Machine m, CharacterCold cold)
     {
         if (cold.Inventory is not { } inv) return false;
-        if (fetch && cold.HaulSite is not null && cold.OperateSite == site.Id) return true;
+        if (cold.HaulSite is not null && cold.OperateSite == site.Id) return true;
         foreach (var input in m.Inputs)
         {
             if (input.Rate <= 0) continue;
             if (input.Count < input.Recipe.Capacity && Carried(inv, input.Item).Any()) return true;
-            if (fetch && input.Count == 0 && NearestSource(world, site, input.Item, cold, operating: cold) is not null) return true;
+            if (input.Count == 0 && NearestSource(world, site, input.Item, cold, operating: cold) is not null) return true;
         }
 
-        if (!fetch || m.Output is not { } output || _items.Create(output.Recipe.Item, 1) is not { } one) return false;
-        if (!output.Full && !Carried(inv, one.Record).Any()) return false;
-        return NearestStorage(world, site, cold, one.Record, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null;
+        return false;
     }
 
     /// <summary>
-    /// The output has room, or with AutoHaul a storage <paramref name="cold"/> uses takes it.
+    /// The output has room, or with AutoHaul a storage or machine <paramref name="cold"/> uses takes it (<see cref="StorageFor"/>).
     /// </summary>
     bool Room(World world, BuildSite site, Machine m, CharacterCold cold) =>
-        m.Output is { } o && (!o.Full || Settings.AutoHaul && _items.Create(o.Recipe.Item, 1) is { } one
-            && NearestStorage(world, site, cold, one.Record, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null);
+        m.Output is { } o && (!o.Full || Settings.AutoHaul && _items.Create(o.Recipe.Item, 1) is { } one && StorageFor(world, site, one, cold) is not null);
 
     /// <summary>
-    /// A carried item a "Hauling to" job takes to its storage: a loose stack of something a player machine makes or crafts (not the character's own
-    /// kit), that the storage takes and has room for.
+    /// A carried item a "Hauling to" job takes to its storage: a loose stack (not the character's own kit), that the storage takes and has room for,
+    /// of a record its <c>limit inventory</c> lists (what <see cref="LooseFor"/> picks up), of the type of a storage that takes any of it
+    /// (<see cref="MachineData.HaulsAnyOfType"/>), or that a player machine makes or crafts.
     /// </summary>
     static bool Takes(World world, Machine store, Items.ItemInstance item) =>
-        Stores(store, item) && world.Machines.All.Any(s => !s.Data.IsStorage && world.Buildings.Find(s.Site) is not { LevelMachine: true } && Makes(s, item.Record));
+        Stores(store, item) && (store.Data.StorageLimit.Contains(item.Record) || store.Data.HaulsAnyOfType
+            || world.Machines.All.Any(s => !s.Data.IsStorage && world.Buildings.Find(s.Site) is not { LevelMachine: true } && Makes(s, item.Record)));
+
+    /// <summary>
+    /// The loose item a "Hauling to" trip picks up for <paramref name="store"/> (<b>Verified</b>, decompile: job 124 needs state 67 at its storage,
+    /// which row 94 Try filling machine achieves; 94's finder <c>FUN_14059d9b0</c> asks the storage for the records it wants, <c>StorageBuilding</c>
+    /// slot <c>0x560</c> <c>FUN_140299c30</c>: its item list while it has room, and passes them to <c>FUN_14059d000</c>, whose first pass is the
+    /// loose one; docs/game/buildings-production.md "Hauling"): for each record of the storage's <c>limit inventory</c> it has room for, the
+    /// nearest loose item of it (<see cref="LooseSource.Nearest"/> from <paramref name="at"/>), while a unit fits the hauler's main grid (row 92
+    /// Collecting resource needs state 82, room for it). Engine choices: an item another faction owns is never picked up, so a hauler steals
+    /// nothing (the ownership test alone lets one in a player town take such an item, which marks it stolen); a storage for one kind of gear
+    /// (<see cref="MachineData.HaulsAnyOfType"/>) takes the nearest loose item of its type; any other storage with no <c>limit inventory</c>
+    /// wants nothing from the ground.
+    /// </summary>
+    GroundItem? LooseFor(World world, CharacterCold cold, Vector3 at, Machine store)
+    {
+        if (store.Storage is not { } grid || cold.Inventory is not { } inv) return null;
+        if (store.Data.HaulsAnyOfType)
+            return LooseSource.Nearest(world, _towns, cold, at, g => StoresLoose(store, g.Item) && Fits(inv, g.Item), ownOnly: true);
+
+        foreach (string record in store.Data.StorageLimit)
+        {
+            if (_items.Create(record, 1) is not { } one || !store.Data.Accepts(record, one.Type) || !Fits(grid, one) || !Fits(inv, one)) continue;
+            if (LooseSource.Nearest(world, _towns, cold, at, record, ownOnly: true) is { } loose) return loose;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A loose item on the ground the storage takes and has room for. Its section is not asked: a loose item keeps the one it was saved or dropped
+    /// with (<b>Observed</b>, the owner's save: an item spawned on the ground has an empty section; one taken off the body keeps its equipment
+    /// section), and picking it up puts it in <c>main</c>.
+    /// </summary>
+    static bool StoresLoose(Machine store, Items.ItemInstance item) =>
+        !item.LockedOn && item.Contents is null && store.Data.Accepts(item.Record, item.Type) && Fits(store.Storage!, item);
 
     /// <summary>
     /// A loose stack (not the character's own kit) the storage takes and has room for.
@@ -843,8 +961,10 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// The record the storage filters are asked about for a ditch trip: the one every ditchable item shares, else null; none without a filter.
     /// </summary>
-    static string? DitchRecord(World world, Items.Inventory inv) =>
-        world.StorageFilters.Active ? Meitou.Simulation.Items.StorageFilters.OneRecord(Ditchable(inv)) : null;
+    static string? DitchRecord(World world, CharacterCold cold, Items.Inventory inv) =>
+        world.StorageFilters.Active || world.StoragePriorities.Active
+            ? Meitou.Simulation.Items.StorageFilters.OneRecord(Ditchable(world, cold, inv))
+            : null;
 
     /// <summary>
     /// A storage machine with its grid (what <see cref="TakesDitched"/> asks first).
@@ -857,16 +977,27 @@ public sealed partial class ProductionSystem
     static bool IsMaker(Machine m) => !m.Data.IsStorage;
 
     /// <summary>
-    /// A storage machine that takes something 242 Ditch all resources carries off from <paramref name="inv"/>.
+    /// A storage machine that takes something 242 Ditch all resources carries off from <paramref name="cold"/>'s inventory.
     /// </summary>
-    static bool TakesDitched(Machine m, Items.Inventory inv) =>
-        m.Data.IsStorage && m.Storage is not null && Ditchable(inv).Any(item => Stores(m, item));
+    static bool TakesDitched(World world, CharacterCold cold, Machine m) =>
+        m.Data.IsStorage && m.Storage is not null && Ditchable(world, cold, cold.Inventory!).Any(item => Stores(m, item));
 
     /// <summary>
     /// What 242 Ditch all resources carries off (finder <c>FUN_1405a59a0</c>, its item collection <c>FUN_140749490</c>, <b>Verified</b>): ITEMs with
-    /// <c>item function</c> 0 or 15, and food (function 3) but the first, in inventory order.
+    /// <c>item function</c> 0 or 15, and food (function 3) but the first, in inventory order; an item a code mod's ditch filter keeps with
+    /// <paramref name="cold"/> (<see cref="Items.IDitchItemFilter"/>) is left out.
     /// </summary>
-    internal static IEnumerable<Items.ItemInstance> Ditchable(Items.Inventory inv)
+    internal static IEnumerable<Items.ItemInstance> Ditchable(World world, CharacterCold cold, Items.Inventory inv)
+    {
+        var all = Ditchable(inv);
+        var filters = world.DitchItemFilters;
+        return filters.Active ? all.Where(item => !filters.Keeps(world, cold.Id, Meitou.Simulation.Items.DitchKind.Resources, item)) : all;
+    }
+
+    /// <summary>
+    /// <see cref="Ditchable(World, CharacterCold, Items.Inventory)"/> before the code mods' filters.
+    /// </summary>
+    static IEnumerable<Items.ItemInstance> Ditchable(Items.Inventory inv)
     {
         bool fed = false;
         foreach (var item in inv.All())
@@ -885,8 +1016,9 @@ public sealed partial class ProductionSystem
     /// What a hauler puts into the storage: for a ditch run what <see cref="Ditchable"/> lists and the storage takes, else what <see cref="Takes"/>
     /// allows.
     /// </summary>
-    static IEnumerable<Items.ItemInstance> Delivered(World world, Items.Inventory inv, Machine store, bool ditch) =>
-        ditch ? Ditchable(inv).Where(i => Stores(store, i)) : inv.All().Where(i => Takes(world, store, i));
+    static IEnumerable<Items.ItemInstance> Delivered(World world, CharacterCold cold, Items.Inventory inv, Machine store, bool ditch) =>
+        ditch ? Ditchable(world, cold, inv).Where(i => Stores(store, i)) : inv.All().Where(i => Takes(world, store, i));
+
     /// <summary>
     /// The player's complete machine (not a storage) nearest a storage within <see cref="InFinderRange"/> whose output (a bench's:
     /// its finished items) holds items the storage takes (ties: the lower site id).
@@ -966,8 +1098,8 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// A <see cref = "CharacterTask.Haul"/> trip to a storage: what the character already carries for it goes there first; else it fetches a machine's
-    /// output.
+    /// A <see cref="CharacterTask.Haul"/> trip to a storage: what the character already carries for it goes there first; else a "Hauling to" job
+    /// picks up a loose item (<see cref="LooseFor"/>, the finder's first pass); else it fetches a machine's output.
     /// </summary>
     void StartHaulTrip(World world, int slot, BuildSite storage, Machine store, bool ditch = false)
     {
@@ -983,9 +1115,18 @@ public sealed partial class ProductionSystem
         n.Task = (byte)CharacterTask.Haul;
         n.Mode = SpeedMode.Free;
         n.TaskTime = 0;
-        bool carries = cold.Inventory is { } inv && Delivered(world, inv, store, ditch).Any();
-        cold.HaulSite = carries ? storage.Id : HaulSource(world, storage, store);
+        bool carries = cold.Inventory is { } inv && Delivered(world, cold, inv, store, ditch).Any();
         cold.HaulTo = storage.Id;
+        cold.HaulItem = null;
+        if (!carries && !ditch && LooseFor(world, cold, n.Position, store) is { } loose)
+        {
+            cold.HaulItem = loose.Id;
+            cold.HaulSite = storage.Id;
+            _sweep = true;
+            return;
+        }
+
+        cold.HaulSite = carries ? storage.Id : HaulSource(world, storage, store);
         _sweep = true;
     }
 
@@ -1002,14 +1143,25 @@ public sealed partial class ProductionSystem
         var table = world.Characters;
         var cold = table.Cold(slot)!;
         ref var n = ref table.Next[slot];
+        if (Lingers(cold))
+        {
+            Linger(world, slot, ref n);
+            return;
+        }
+
         if (cold.HaulTo is not { } storeId || cold.HaulSite is not { } at || Site(world, storeId)is not { Complete: true } storeSite || !MayWork(world, cold, storeSite) || world.Machines.Find(storeId)is not { Storage: not null } store || Site(world, at)is not { Complete: true } atSite || !MayWork(world, cold, atSite) || world.Machines.Find(at)is not { } there || !Able(cold) || cold.Inventory is not { } inv)
         {
             End(world, slot);
             return;
         }
 
-        if (!AtSite(world, n, atSite, there))
+        if (cold.HaulItem is { } loose)
+        {
+            PickUpLoose(world, slot, cold, inv, store, loose);
             return;
+        }
+
+        if (!AtSite(world, n, atSite, there)) return;
         if (at != storeId)
         {
             if (there.Output is { Count: > 0 } output && _items.Create(output.Recipe.Item, output.Count)is { } made && store.Data.Accepts(made.Record, made.Type))
@@ -1022,12 +1174,14 @@ public sealed partial class ProductionSystem
             if (there.Craft is { } craft && TakeDone(craft, inv, i => store.Data.Accepts(i.Record, i.Type)))
                 world.Machines.Touch();
 
-            if (Delivered(world, inv, store, Ditching(cold)).Any()) cold.HaulSite = storeId;
+            // The walk stops here, as at a loose item (PickUpLoose), so the leg to the storage starts after the beat.
+            StopWalk(ref n, cold);
+            if (Delivered(world, cold, inv, store, Ditching(cold)).Any()) cold.HaulSite = storeId;
             else End(world, slot);
             return;
         }
 
-        foreach (var item in Delivered(world, inv, store, Ditching(cold)).ToList())
+        foreach (var item in Delivered(world, cold, inv, store, Ditching(cold)).ToList())
         {
             inv.Remove(item);
             if (store.Storage!.Add(item))
@@ -1037,7 +1191,88 @@ public sealed partial class ProductionSystem
             break;
         }
 
+        // The hauler stands the beat at the storage (Linger) before the trip ends.
         world.Machines.Touch();
-        End(world, slot);
+        StopWalk(ref n, cold);
+        cold.HaulSite = null;
+    }
+
+    /// <summary>
+    /// A hauler standing at its storage after the drop-off (<see cref="HaulStep"/>): the trip has a storage but no leg or loose item left.
+    /// </summary>
+    static bool Lingers(CharacterCold cold) => cold.HaulTo is not null && cold.HaulSite is null && cold.HaulItem is null;
+
+    /// <summary>
+    /// The beat after a drop-off (<see cref="StepPauseSeconds"/>, set by <see cref="StopWalk"/>): the trip ends once it has passed, so the next job's
+    /// walk starts after it.
+    /// </summary>
+    static void Linger(World world, int slot, ref CharacterHot n)
+    {
+        n.TaskTime -= world.TickSeconds;
+        if (n.TaskTime <= 0) End(world, slot);
+    }
+
+    /// <summary>
+    /// A hauler at the loose item it fetches (<c>Task_Pickup</c>, docs/game/buildings-production.md "Hauling"): the stack goes into the inventory
+    /// (what does not fit stays on the ground), then it makes for the storage with what the storage takes; with nothing it can take the trip ends.
+    /// The walk to the item stops at the pick-up, so the leg to the storage starts after <see cref="StepPauseSeconds"/>: a walk left to end by
+    /// itself set the idle wait of a finished path, and the hauler stood up to 10 s with its load. Not there yet: nothing happens (the walk is <see cref="ApproachLoose"/>'s).
+    /// </summary>
+    void PickUpLoose(World world, int slot, CharacterCold cold, Items.Inventory inv, Machine store, int item)
+    {
+        ref var n = ref world.Characters.Next[slot];
+        if (world.GroundItems.Find(item) is not { } loose || loose.OwnedBy >= 0 && loose.OwnedBy != cold.Faction
+            || Site(world, store.Site) is not { Complete: true } target || !MayWork(world, cold, target))
+        {
+            End(world, slot);
+            return;
+        }
+
+        if (!PickUps.InReach(n.Position, loose.Position)) return;
+
+        int before = loose.Item.Quantity;
+        bool whole = inv.Add(loose.Item);
+        if (whole) world.GroundItems.Take(item);
+        if (whole || loose.Item.Quantity < before) world.EmitSound(SoundKind.PickedUp, slot, n.Position);
+
+        cold.HaulItem = null;
+        StopWalk(ref n, cold);
+        if (Delivered(world, cold, inv, store, ditch: false).Any()) cold.HaulSite = store.Site;
+        else End(world, slot);
+    }
+
+    /// <summary>
+    /// The walk of a hauler to the loose item it fetches: it stands once in reach (<see cref="PickUps.InReach"/>); a path that ended short leaves the
+    /// item out for <see cref="ConstructionSystem.UnreachableSeconds"/> (<see cref="LooseSource.Key"/>) and ends the trip, so the next pick is
+    /// another source.
+    /// </summary>
+    void ApproachLoose(World world, int slot, ref CharacterHot n, CharacterCold cold, int item, float dt)
+    {
+        const ushort path = (ushort)MoveFlags.AnyPath;
+        if (world.GroundItems.Find(item) is not { } loose || !Able(cold))
+        {
+            End(world, slot);
+            return;
+        }
+
+        if (PickUps.InReach(n.Position, loose.Position))
+        {
+            StopWalk(ref n, cold);
+            return;
+        }
+
+        if ((n.Flags & path) != 0) return;
+        if (n.TaskTime > 0)
+        {
+            cold.NoteUnreachable(LooseSource.Key(item), world.Tick + (long)MathF.Ceiling(ConstructionSystem.UnreachableSeconds / world.TickSeconds));
+            End(world, slot);
+            return;
+        }
+
+        n.Goal = new Vector2(loose.Position.X, loose.Position.Z);
+        (cold.GoalHeight, cold.GoalHeightAt) = (loose.Position.Y, n.Goal);
+        n.Mode = SpeedMode.Free;
+        n.Flags |= (ushort)MoveFlags.NeedPath;
+        n.TaskTime = PursuitSystem.RepathSeconds;
     }
 }

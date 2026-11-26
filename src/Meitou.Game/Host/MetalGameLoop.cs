@@ -504,6 +504,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         LoadZonesAroundStart();
         host.ApplyCamera(host.Session.Camera.Current);
         host.SendFocus();
+        host.SendView();
         host.LoadingStep("characters");
         CreateCharacters();
 
@@ -796,6 +797,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             },
             systems: systems, walkability: walkability);
         host.LocalSession.World.BenchFacingFix = host.Config.FixBenchFacing;
+        host.LocalSession.World.SeatBedFix = host.Config.FixSeatBeds;
+        host.LocalSession.World.PickUpTheftFix = host.Config.FixPickUpTheft;
         host.LocalSession.World.PrisonPoseFix = host.Config.FixPrisonPose;
         host.LocalSession.World.CagedAnimalFix = host.Config.FixCagedAnimals;
         host.LocalSession.World.GroundRepair = host.Config.FixGround;
@@ -825,7 +828,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             try
             {
                 host.PlayerSquad = host.Population.StartPlayer(host.LocalSession.World, start);
-                host.LocalSession.World.TellReady(fromSave: false);
+                host.LocalSession.World.TellReady(new Simulation.WorldStart(Simulation.WorldStartKind.NewGame));
                 var lead = host.LocalSession.World.Characters.Previous[host.PlayerSquad.Leader.Slot].Position;
                 _startTarget = lead;
                 Console.WriteLine($"metal     player squad: {host.PlayerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
@@ -913,6 +916,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             host.WorldOptions.Distance ?? Meitou.Data.World.KenshiCamera.InitialDistance);
         host.SendFocus();
         host.ApplyCamera(host.Session.Camera.Current);
+        host.SendView();
         // --new-game is a shortcut past the creation editor; the same follow the editor's close gives a menu New Game.
         if (_hud is not null && start is not null && host.StartSave is null && host.WorldOptions.Screenshot is null
                 && host.PlayerSquad is { Leader.IsNone: false } squad)
@@ -1040,6 +1044,21 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         && !host.GameOptions.NoPopulation && !_tour.Active && !_tourHolds;
 
     /// <summary>
+    /// A key that goes down with modifiers held as a code mod's chord (<see cref="InputBindings.TakeChord"/>, docs/modding.md "Key actions"): it
+    /// reaches that key action only, before photo mode, the interface and the game's bindings. Not while a text field has the keys, over the
+    /// title, in photo mode, or for the view's own keys (F7, F8, F11, F12, Print Screen).
+    /// </summary>
+    bool ChordKey(SilkKey key, bool ctrl)
+    {
+        if (_hud is null || _hud.UiEditing || _hud.TitleOpen || _photo?.Active == true) return false;
+        if (key is SilkKey.F7 or SilkKey.F8 or SilkKey.F11 or SilkKey.F12 or SilkKey.PrintScreen || KeyMap.Map(key) is not { } mapped) return false;
+        if (!host.Session.Bindings.TakeChord(mapped, InputBindings.Modifiers(ctrl, _shiftDown, Alt()))) return false;
+
+        host.Session.Input.SetKey(mapped, true);
+        return true;
+    }
+
+    /// <summary>
     /// A key while photo mode is on or starts it (see <see cref="PhotoMode.KeyDown"/>); not while a text field has the keyboard, not in the terrain
     /// sandbox (P is its patrol key) or with a window open over the game (true: taken).
     /// </summary>
@@ -1126,6 +1145,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         {
             SpeedUnit = host.Config.SpeedUnit,
             Floaters = host.Config.Floaters,
+            GreyUnavailableVerbs = host.Config.GreyUnavailableVerbs,
+            FixLockpickLabel = host.Config.FixLockpickLabel,
             FeedbackButtonInPlay = host.Config.FeedbackButton,
             XpLabel = Settings.SkillXp.Label(host.Config, host.Session.IsRemote ? host.Session.AuthorityRules : null),
         };
@@ -1199,6 +1220,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         hud.StealthView.DrawnHead = id => _characters?.BonePosition(host.DrawKey(id), "Bip01 Head");
         hud.Picking.ShownInteriorHit = (origin, direction, distance) => _objects?.ShownInteriorHit(origin, direction, distance);
         hud.Furniture.AboveViewedFloor = host.Interiors.AboveViewedFloor;
+        hud.Furniture.FloorAboveViewed = host.Interiors.FloorAboveViewed;
         hud.Furniture.FloorHidden = host.Interiors.FloorHidden;
         hud.GroundItemPicks.GroundItemShape = host.GroundItemSync.GroundShape;
         hud.GroundItemPicks.GroundItemHidden = host.GroundItemSync.HiddenGround.Contains;
@@ -1219,6 +1241,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         _worldGpu.Markers = _moveMarker;
         _worldGpu.NavmeshOverlay = _navOverlay;
         _worldGpu.InspectorOverlay = new NavmeshOverlayRenderer(_ctx);   // the pick & collision inspector's hulls (F10 > Tools)
+        _worldGpu.TownRangeOverlay = new NavmeshOverlayRenderer(_ctx);   // the outposts' build limit rings in build mode
         _worldGpu.HoverOutline = _hoverOutline;
         Console.WriteLine($"metal     HUD ready ({hud.UiMode})");
     }
@@ -1341,6 +1364,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
                 foreach (var players in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Player.PlayerSystem>()) players.AnimalsPickUp = on;
             },
             BenchFacingChanged = on => host.LocalSession.World.BenchFacingFix = on,
+            SeatBedsChanged = on => host.LocalSession.World.SeatBedFix = on,
+            PickUpTheftChanged = on => host.LocalSession.World.PickUpTheftFix = on,
             PrisonPoseChanged = on => host.LocalSession.World.PrisonPoseFix = on,
             CagedAnimalsChanged = on => host.LocalSession.World.CagedAnimalFix = on,
             AnimalMovesChanged = on =>
@@ -1853,7 +1878,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         {
             if (host.Covered) return;
             if (host.DevConsoleHost.ConsoleOpen) host.DevConsoleHost.DevConsole.Type(value);
-            else if (_settings?.Visible == true) _settings.TextInput(value);
+            else if (_settings?.Modal == true) _settings.TextInput(value);
             else if (host.Sandbox.SandboxPicker is { Open: true }) host.Sandbox.SandboxPicker.TextInput(value);
             else if (host.DebugMenu.DebugMenuOpen && host.DebugMenu.DebugMenuTakesText) host.DebugMenu.DebugMenuText(value);
             else if (_photo?.TextInput(value) == true) { }   // a preset's name being typed
@@ -1912,7 +1937,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             _gpuCaptureRequested = true;
             return;
         }
-        if (ConsoleKey(keyboard, key, ctrl) || MenuKey(key, ctrl) || PhotoKey(key)) return;
+        if (ConsoleKey(keyboard, key, ctrl) || MenuKey(key, ctrl) || ChordKey(key, ctrl) || PhotoKey(key)) return;
         // With the interface hidden (F7) Esc brings it back with the game menu open, as the Vulkan host does.
         if (key == SilkKey.Escape && _hud is { UiVisible: false })
         {
@@ -1965,12 +1990,12 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
     bool MenuKey(SilkKey key, bool ctrl)
     {
         // The full settings dialog (Metal's F10 used to be a preset overlay; the preset now lives in Display).
-        if (_settings?.Visible == true)
+        if (_settings?.Modal == true)
         {
             if (ModalKeyOf(key) is { } settingsKey)
             {
                 if (settingsKey is EngineKey.F8 or EngineKey.PrintScreen) host.ScreenshotRequested = true;
-                else _settings.KeyDown(settingsKey, _shiftDown, ctrl);
+                else _settings.KeyDown(settingsKey, _shiftDown, ctrl, Alt());
             }
             return true;
         }
@@ -1999,13 +2024,13 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         if (_photo is { Active: true }) return false;
         if (key == SilkKey.F10 && _settings is not null)
         {
-            _settings.Visible = !_settings.Visible;
+            _settings.Toggle();
             return true;
         }
         if (_settings is not null && KeyMap.Map(key) is { } settingsToggle &&
             host.Session.Bindings.Get(InputAction.ToggleSettings).Contains(Binding.Of(settingsToggle)))
         {
-            _settings.Visible = !_settings.Visible;
+            _settings.Toggle();
             return true;
         }
         return false;
@@ -2120,11 +2145,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             if (host.Covered) return;
             if (KeyMap.Map(button) is not { } mapped) return;
             var at = Pixels(mouse.Position);
-            if (_settings?.Visible == true)
-            {
-                _settings.MouseDown(at, mapped);
-                return;
-            }
+            if (_settings?.MouseDown(at, mapped) == true) return;
+            if (_settings?.Contains(at) == true) return;
             if (_photo is { Active: true } photo)
             {
                 PhotoPointerDown(photo, mapped, at);
@@ -2151,11 +2173,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             if (host.Covered) return;
             bool menuClick = _debugMenuClick;
             _debugMenuClick = false;
-            if (_settings?.Visible == true)
-            {
-                _settings.MouseUp();
-                return;
-            }
+            bool settingsDrag = _settings?.MouseUp() == true;
+            if (_settings?.Modal == true || settingsDrag) return;
             if (KeyMap.Map(button) is not { } mapped) return;
             if (_photo is { Active: true } photo)
             {
@@ -2169,11 +2188,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         mouse.Scroll += (_, wheel) =>
         {
             if (host.Covered) return;
-            if (_settings?.Visible == true)
-            {
-                _settings.Scroll(wheel.Y);
-                return;
-            }
+            if (_settings?.Scroll(wheel.Y) == true) return;
             if (_photo is { Active: true } photo)
             {
                 // Over the panel the wheel steps the setting under it; over the picture it zooms, or sets the fly speed with Ctrl.
@@ -2204,9 +2219,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             _lastMouse = p;
             return;
         }
-        if (_settings?.Visible == true)
+        if (_settings?.MouseMove(Pixels(p)) == true)
         {
-            _settings.MouseMove(Pixels(p));
             _lastMouse = p;
             return;
         }
@@ -2813,7 +2827,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         bool ctrlHeld = Ctrl();
         bool altHeld = host.HighlightHeld();
         bool highlighting = altHeld && !host.Covered && !host.TitleScreen.TitleVisible && _hud is { UiVisible: true } &&
-            _settings?.Visible != true && !host.Session.Camera.IsFree;
+            _settings?.Modal != true && !host.Session.Camera.IsFree;
         if (_hud is not null)
         {
             _hud.CtrlHeld = ctrlHeld;
@@ -2832,7 +2846,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
     {
         // Edge scrolling only while the world owns the pointer (the interface is visible and not dragging a panel).
         host.Session.Camera.Settings.EdgeScroll = host.Config.EdgeScroll != false;
-        host.Session.Camera.Strategy.EdgePointer = host.Covered || _hud is not null && host.TitleScreen.TitleVisible || _settings?.Visible == true ||
+        host.Session.Camera.Strategy.EdgePointer = host.Covered || _hud is not null && host.TitleScreen.TitleVisible || _settings?.Modal == true ||
             _hud is { UiVisible: false } or { UiCapturesPointer: true } ? null : WindowPointer.InWindow(_window);
         host.UpdateCameraLeash(_tourHolds || _tour.Active);
 
@@ -2914,6 +2928,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             // Over a hair only.
             if (shortfall > 1e-3f) host.Camera.Target += new Vector3(0, shortfall, 0);
         }
+
+        host.SendView();
     }
 
     /// <summary>
@@ -2933,6 +2949,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         host.UpdateNav();
         host.DebugOverlays.UpdateNavOverlay();
         if (_hud is not null) host.DebugOverlays.UpdateInspectorOverlay();
+        if (_hud is not null) host.TownRangeRing.Update();
         // Diagnostic isolation for the far-travel freeze: skip the runtime building/ground-item/lamps diff.
         if (Environment.GetEnvironmentVariable("MEITOU_METAL_NO_BUILDINGS") != "1") host.BuildingSync.UpdateBuildings();
         // The interior view (docs/formats/zones.md): the player's building opens, its upper floors and their characters are hidden.
@@ -3019,13 +3036,21 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         {
             _characters.PortraitRequests.Clear();
             if (_hud is not null)
-                foreach (var (member, cell) in _hud.PortraitBar.SquadBarMembers().Select((member, cell) => (member, cell)))
+            {
+                foreach (var (member, cell) in _hud.PortraitBar.SquadBarMembers().Take(PortraitBar.DialogueNpcCell)
+                    .Select((member, cell) => (member, cell)))
+                {
                     _characters.PortraitRequests.Add(new PortraitRequest(host.PortraitKey(member.Id), cell, member.PortraitSerial));
+                }
+
+                foreach (var (id, cell) in _hud.RecordPortraits.Live)
+                    _characters.PortraitRequests.Add(new PortraitRequest(host.PortraitKey(id), cell, _hud.PortraitBar.PortraitSerial(id)));
+            }
         }
         // Saved pictures have neither the ground items' labels nor the hover and building outlines.
         if (_shotFrame && _hud is not null) _hud.GroundItemPicks.HighlightFocus = null;
         var hoverKeys = new List<(long Key, Vector4 Colour)>();
-        bool outlines = !host.Session.Camera.IsFree && _hud is { UiVisible: true } && !host.Covered && _settings?.Visible != true
+        bool outlines = !host.Session.Camera.IsFree && _hud is { UiVisible: true } && !host.Covered && _settings?.Modal != true
             && !_shotFrame;
         bool outlining = host.Config.HoverOutline && outlines;
         if (outlining)
@@ -3144,6 +3169,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         host.BloodDecals.UpdateBlood();
         host.UpdateTrails();   // no trail renderer here: only the footfalls for the blood prints
         host.Modding.UpdateModHits();
+        host.Modding.UpdateModFrames();
+        host.Modding.UpdateModProjectiles();
         host.Modding.UpdateModFaults();
         if (_characters is not null)
         {
@@ -3327,7 +3354,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         bool wrote = false;
         if (!_still && !_shotFrame && !feedbackShot && pointerMouse is not null && _hud is not null)
         {
-            bool pointerWorld = !host.Covered && !host.GameOptions.NoPopulation && _settings?.Visible != true && !host.TitleScreen.TitleVisible;
+            bool pointerWorld = !host.Covered && !host.GameOptions.NoPopulation && _settings?.Modal != true && !host.TitleScreen.TitleVisible;
             // Photo mode flies the free camera too, but its panel is worked with the pointer: hidden only while the view is turned or the panel is.
             bool freeLook = pointerWorld && host.Session.Camera.IsFree
                 && (_photo is not { Active: true } || !_photo.PanelShown || host.OrbitHeld());
@@ -3391,7 +3418,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             // Compacting the LOH is a stop-the-world move of every large object: on a 4+ GB heap it stalled
             // this loop for 1.6 s. Do it where a loading screen or a menu covers the pause, or when the heap
             // has grown past 4 GB; otherwise a background collection is enough and does not move live arrays.
-            bool safePoint = host.TitleScreen.TitleVisible || _settings?.Visible == true || host.ActiveSceneLoad is not null
+            bool safePoint = host.TitleScreen.TitleVisible || _settings?.Modal == true || host.ActiveSceneLoad is not null
                 || host.Loading?.Exiting == true;
             bool compact = safePoint || managedHighWater;
             if (compact)

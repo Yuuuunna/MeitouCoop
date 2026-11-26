@@ -302,11 +302,11 @@ public sealed record InventoryItemView(int Index, string Record, string Name, st
     /// </summary>
     public string Crafter { get; init; } = "";
     /// <summary>
-    /// The item's code-mod tag (<see cref="Items.ItemInstance.ModTag"/>; "" none), carried into the window's click tokens.
+    /// The item's code-mod tag (<see cref="Items.ItemInstance.ModTag"/>; "" none), hydrated from shared definitions for remote shown text.
     /// </summary>
     public string ModTag { get; init; } = "";
     /// <summary>
-    /// Remote item windows receive only this bounded identity; item-use handlers run on the authority with the full tag.
+    /// Changing item payloads and remote click tokens carry this bounded identity; the recipient's shared table supplies display text.
     /// </summary>
     public string ModTagDigest { get; init; } = "";
     /// <summary>
@@ -537,8 +537,8 @@ public sealed record CharacterSnapshot
     /// </summary>
     public IReadOnlyList<Crime.BountyLine> Bounties { get; internal set; } = [];
     /// <summary>
-    /// Slave (state 1) or escaped slave (state 2) and its owner's name, for the status lines of the bounty panel's tooltip (docs/game/ui-screens.md
-    /// section 4); null otherwise.
+    /// Slave (state 1), escaped slave (state 2) or ex-slave (state 3) with its owner's name and lie-low facts, for the status lines of the bounty
+    /// panel's tooltip (docs/game/ui-screens.md section 4) and the data panel; null otherwise.
     /// </summary>
     public SlaveView? Slave { get; internal set; }
     /// <summary>
@@ -685,6 +685,11 @@ public sealed record CharacterSnapshot
     /// </summary>
     public bool WorkingShackles { get; internal set; }
     /// <summary>
+    /// Building, repairing or dismantling at its site this tick (its job used Engineering): not on the walk there or a fetch, as the original's row 2
+    /// needs <c>isAtLocation</c>. The <c>Character_Build_Loop</c> plays only then.
+    /// </summary>
+    public bool Engineering { get; internal set; }
+    /// <summary>
     /// Lying in a bed (<see cref="Locks.HeldState.Bed"/>).
     /// </summary>
     public bool InBed { get; internal set; }
@@ -704,6 +709,11 @@ public sealed record CharacterSnapshot
     /// In a fight (<see cref="CharacterCold.InCombat"/>).
     /// </summary>
     public bool InCombat { get; internal set; }
+    /// <summary>
+    /// A melee swing of its own is in progress (the combat system's attack technique playing, as the animation shows it), for a mod's weapon
+    /// effects (docs/modding.md "Trails"). Display only.
+    /// </summary>
+    public bool Attacking { get; internal set; }
     /// <summary>
     /// In combat mode (<c>Character::isInCombatMode(1, 1)</c>, <see cref="Combat.CombatSystem.IsInCombatMode"/>): the portrait's <c>Combat</c>
     /// overlay.
@@ -737,6 +747,14 @@ public sealed record CharacterSnapshot
     /// A selected character carrying unworn shackles (<see cref="Locks.LockSystem.CarriedShackles"/>).
     /// </summary>
     public bool CarriesShackles { get; internal set; }
+    /// <summary>
+    /// A selected character for whom First Aid or Repairs would find a kit now (<see cref="FirstAid.FirstAidSystem.MedkitAtHand"/>).
+    /// </summary>
+    public bool HasMedkit { get; internal set; }
+    /// <summary>
+    /// A selected character holding its own splint kit (<see cref="FirstAid.FirstAidSystem.SplintKitAtHand"/>).
+    /// </summary>
+    public bool HasSplintKit { get; internal set; }
     /// <summary>
     /// The number that turns its portrait camera (<see cref="CharacterCold.PortraitSerial"/>).
     /// </summary>
@@ -906,9 +924,11 @@ public readonly record struct PrisonView(bool Locked, float Sentence, double Hou
 
 /// <summary>
 /// The slave state of a character (1 slave, 2 escaped slave, 3 ex-slave; <c>SlaveStateEnum</c>), the name of the faction that owns it ("someone" is
-/// the caller's word for none) and its "looks like a slave" level in 0..1 (<see cref="Kidnap.CaptiveSystem.LooksLikeSlaveLevel"/>).
+/// the caller's word for none), its "looks like a slave" level in 0..1 (<see cref="Kidnap.CaptiveSystem.LooksLikeSlaveLevel"/>), the whole game
+/// hours an escaped slave or ex-slave has left to lie low (<see cref="Locks.FixtureRegistry.SlaveHoursLeft"/>) and whether it has been seen (the
+/// recently-wanted marker runs, <see cref="CharacterCold.RecentlyWanted"/>).
 /// </summary>
-public readonly record struct SlaveView(int State, string Owner, float Looks = 0);
+public readonly record struct SlaveView(int State, string Owner, float Looks = 0, int HoursLeft = 0, bool Seen = false);
 
 /// <summary>
 /// A disguise for the data panel and the health word (docs/game/ui-screens.md "Which lines"): the clothing level, the uniform faction's name, the
@@ -1018,6 +1038,11 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     public ModVisualSnapshot ModVisuals { get; init; } = new([], []);
 
     /// <summary>
+    /// Shared exact UTF-16 tag definitions referenced by this recipient's authorized item views.
+    /// </summary>
+    public IReadOnlyList<Items.ItemTagView> ItemTags { get; init; } = [];
+
+    /// <summary>
     /// The player's characters alive, as the faction size cap counts them (<see cref="SquadManagement.FactionHeads"/>): the squads screen's
     /// count and its dismiss rule read it.
     /// </summary>
@@ -1026,6 +1051,18 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// The player's characters alive that the faction size cap counts (<see cref="SquadManagement.CappedHeads"/>): the squads screen's faction size.
     /// </summary>
     public int CappedHeads { get; init; }
+    /// <summary>
+    /// Effective authority faction size, including the server's optional override.
+    /// </summary>
+    public int MaxFactionSize { get; init; } = 30;
+    /// <summary>
+    /// Effective authority squad size, including the server's optional override.
+    /// </summary>
+    public int MaxSquadSize { get; init; } = 20;
+    /// <summary>
+    /// Effective authority limit for led squads.
+    /// </summary>
+    public int MaxSquads { get; init; } = 10;
     /// <summary>
     /// The active squad's id (<see cref="PlayerState.Squad"/>; -1 none): the squad bar shows it.
     /// </summary>
@@ -1288,7 +1325,13 @@ public interface IProjectileSource
 /// <summary>
 /// One of the player's squads as the squad tabs and the squads screen show it.
 /// </summary>
-public sealed record SquadView(int Id, string Name, IReadOnlyList<CharacterId> Members);
+public sealed record SquadView(int Id, string Name, IReadOnlyList<CharacterId> Members)
+{
+    /// <summary>
+    /// The SQUAD_TEMPLATE the squad was made from ("" none), for showing its name through the mods' text sources.
+    /// </summary>
+    public string TemplateId { get; init; } = "";
+}
 
 /// <summary>
 /// Which status line a character's bounty panel shows (<c>FUN_1405d4260</c>, <b>Observed</b>).

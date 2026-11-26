@@ -220,6 +220,26 @@ public static class ClientCommandBinding
             };
         }
 
+        PlayerFactionView? ManagedFaction(int factionId) => view.Factions.FirstOrDefault(f => f.Faction == factionId
+            && f.MembershipRevision != 0 && (f.Permissions & FactionPermission.ManageAssets) != 0);
+        // Existing mod APIs may omit new view versions. Bind only missing versions from authorized, visible state;
+        // an explicitly supplied old version remains old and is rejected by the authority.
+        command = command switch
+        {
+            ResearchQueueCommand { QueueRevision: 0 } research when ManagedFaction(research.Faction) is { } researchOwner =>
+                research with { QueueRevision = researchOwner.Research.QueueRevision },
+            RenameSite rename when (rename.SiteRevision == 0 || rename.RootRevision == 0)
+                && view.Snapshot.Buildings.FirstOrDefault(b => b.Id == rename.Site) is { LevelPlacement: null } named
+                && ManagedFaction(named.Owner) is not null && ManagedFaction(named.AuthorityFaction) is not null =>
+                rename with { SiteRevision = rename.SiteRevision == 0 ? named.SiteRevision : rename.SiteRevision,
+                    RootRevision = rename.RootRevision == 0 ? named.RootRevision : rename.RootRevision },
+            SetStoragePriority { ControlRevision: 0 } storage
+                when view.Snapshot.Machines.FirstOrDefault(m => m.Site == storage.Site) is { IsStorage: true } machine
+                && ManagedFaction(machine.AuthorityFaction) is not null =>
+                storage with { ControlRevision = machine.ControlRevision },
+            _ => command,
+        };
+
         if (command is HeldCommand held)
         {
             CharacterId actor = held is LiftItem lift ? lift.Actor : held.HolderActor.IsNone ? view.Snapshot.Held?.Actor ?? CharacterId.None : held.HolderActor;

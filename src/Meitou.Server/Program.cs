@@ -119,8 +119,8 @@ static class Program
                     throw new IOException("Old-world cleanup failed after restore.", restored.CleanupFailure);
                 Console.WriteLine("Restored checkpoint " + saved.Id);
             }
-            else if (host.Mods is { } mods) mods.TellReady(host.World, fromSave: false);
-            else host.World.TellReady(fromSave: false);
+            else if (host.Mods is { } mods) mods.TellReady(host.World, new WorldStart(WorldStartKind.NewGame));
+            else host.World.TellReady(new WorldStart(WorldStartKind.NewGame));
 
             rules = ServerCompatibility.WithCodeSettings(config.Rules(GameplayRules.Capture(host.World)), install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings, host.Population.Db.CodeEdits);
             host.World.ObserveLatency(Meitou.Diagnostics.LatencyTrace.Sink);
@@ -138,7 +138,7 @@ static class Program
             const string policy = "server-default";
             var services = await loop.InvokeAsync(() =>
             {
-                var creationEndpoint = new ServerCreationEndpoint(loop, checkpoints, host.Population, [new(policy, Math.Min(config.CharacterLimit, host.Population.Bodies.Constants.MaxSquadSize), starts.OrderBy(s => s.Id == start.Id ? 0 : 1).Select(s => new ApprovedCreationStart(s, host.Population.PlayerFaction)).ToArray())], preparation.PrepareAsync, policy);
+                var creationEndpoint = new ServerCreationEndpoint(loop, checkpoints, host.Population, [new(policy, Math.Min(config.CharacterLimit, Math.Min(host.Population.Bodies.MaxSquadSize, host.Population.Bodies.MaxFactionSize)), starts.OrderBy(s => s.Id == start.Id ? 0 : 1).Select(s => new ApprovedCreationStart(s, host.Population.PlayerFaction)).ToArray())], preparation.PrepareAsync, policy);
                 return (Creation: creationEndpoint, Invitations: new ServerInvitationEndpoint(loop, checkpoints, creationEndpoint), Sessions: new ServerAccountSessions(accounts, host.Runtime, checkpoints));
             }).ConfigureAwait(false);
             var creation = services.Creation;

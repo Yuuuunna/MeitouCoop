@@ -38,6 +38,7 @@ internal sealed class MachineVersions
         public CraftJob[] Queue = [];
         public ulong ControlRevision;
         public bool Repeat, PowerOn, GetsBattery, Burning;
+        public StoragePriority PutPriority, TakePriority;
     }
     readonly ConditionalWeakTable<Machine, Stamp> _stamps = new();
     ulong _revision;
@@ -48,9 +49,9 @@ internal sealed class MachineVersions
         CraftJob[] queue = machine.Craft?.Queue.ToArray() ?? [];
         bool repeat = machine.Craft?.Repeat ?? false;
         if (stamp.ControlRevision == 0 || stamp.Queue.Length != queue.Length || stamp.Queue.Where((job, i) => !ReferenceEquals(job, queue[i])).Any()
-            || stamp.Repeat != repeat || stamp.PowerOn != machine.PowerOn || stamp.GetsBattery != machine.GetsBattery || stamp.Burning != machine.Burning)
+            || stamp.Repeat != repeat || stamp.PowerOn != machine.PowerOn || stamp.GetsBattery != machine.GetsBattery || stamp.Burning != machine.Burning || stamp.PutPriority != machine.PutPriority || stamp.TakePriority != machine.TakePriority)
         {
-            stamp.Queue = queue; stamp.Repeat = repeat; stamp.PowerOn = machine.PowerOn; stamp.GetsBattery = machine.GetsBattery; stamp.Burning = machine.Burning;
+            stamp.Queue = queue; stamp.Repeat = repeat; stamp.PowerOn = machine.PowerOn; stamp.GetsBattery = machine.GetsBattery; stamp.Burning = machine.Burning; stamp.PutPriority = machine.PutPriority; stamp.TakePriority = machine.TakePriority;
             stamp.ControlRevision = _revision = checked(_revision + 1);
         }
         return stamp.ControlRevision;

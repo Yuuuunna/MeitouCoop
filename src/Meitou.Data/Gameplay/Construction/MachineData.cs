@@ -1,4 +1,5 @@
 using Meitou.Data.Fcs;
+using Meitou.Localisation;
 
 namespace Meitou.Data.Gameplay.Construction;
 
@@ -118,6 +119,12 @@ public sealed record MachineData
     public string Label { get; init; } = "";
 
     /// <summary>
+    /// <see cref="Label"/> as the mods' text sources show it (<see cref="ShownText.Record"/>, the functionality record's
+    /// <c>string</c> field). Display only.
+    /// </summary>
+    public string ShownLabel() => Functionality is { } f ? ShownText.Record(f, Label, "string") : Label;
+
+    /// <summary>
     /// The recipe's input sections (<c>consumes</c>, plus a bench's added sections), in order.
     /// </summary>
     public IReadOnlyList<RecipeInput> Inputs { get; init; } = [];
@@ -172,6 +179,13 @@ public sealed record MachineData
     /// <b>Verified</b>): the record type is <see cref="ItemTypeLimit"/>, and the item is listed when there is a <see cref="StorageLimit"/>.
     /// </summary>
     public bool Accepts(string item, FcsRecordType type) => type == ItemTypeLimit && (StorageLimit.Count == 0 || StorageLimit.Contains(item));
+
+    /// <summary>
+    /// Whether a "Hauling to" job fills the storage with any item of its <see cref="ItemTypeLimit"/>: a storage for one kind of gear (ARMOUR,
+    /// WEAPON, CROSSBOW) with no <see cref="StorageLimit"/>, such as the Armour Storage. Engine choice (Meitou): a hauler brings it the loose and
+    /// carried gear of that type, where a storage with no list otherwise wants nothing from the ground.
+    /// </summary>
+    public bool HaulsAnyOfType => StorageLimit.Count == 0 && ItemTypeLimit != FcsRecordType.Item;
 
     /// <summary>
     /// Whether the player may put an item of this record and type into the storage by hand (docs/game/buildings-production.md "Storage"): a listed
@@ -290,9 +304,22 @@ public sealed record MachineData
     public bool IsCrafting => Craft is not null;
 
     /// <summary>
-    /// A building characters can operate.
+    /// An automatic fuelled generator (function 5 with <c>consumes</c>, raw <c>max operators</c> 0): its menu order is 152 Auto-Haul, whose job's
+    /// hauler fills its fuel (the GeneratorBuilding class's slot 131, docs/game/ui-input.md "Building picking and selection"). <b>Verified</b> (probe of the merged
+    /// base data): Small Generator and Generator II have BUILDING <c>max operators</c> -1 and functionality 0, Fuel 10 at rate 100.
     /// </summary>
-    public bool Operable => IsResearch || Farm is not null || IsProducer || IsCrafting;
+    public bool IsFuelGenerator => Function == GeneratorFunction && Inputs.Count > 0 && IsAutomatic;
+
+    /// <summary>
+    /// A building characters can operate (or, automatic, haul for).
+    /// </summary>
+    public bool Operable => IsResearch || Farm is not null || IsProducer || IsCrafting || IsFuelGenerator;
+
+    /// <summary>
+    /// An automatic machine whose hauler fills its inputs and carries its output away (the 152 job and its 124 companion): a producer or a fuelled
+    /// generator.
+    /// </summary>
+    public bool IsHauledAutomatic => IsAutomatic && (IsProducer || IsFuelGenerator);
 
     /// <summary>
     /// Whether the exe's class updates its sound emitter every frame (<c>ProductionBuilding::vfunc_28</c>: mines, wells, refineries, generators,
@@ -800,9 +827,10 @@ public sealed class ResourceField
     }
 
     /// <summary>
-    /// The name of the BIOME_GROUP at a position (null without an areas map): what the prospecting window shows as the zone.
+    /// The name of the BIOME_GROUP at a position (null without an areas map) as the mods' text sources show it: what the prospecting window shows
+    /// as the zone. Display only.
     /// </summary>
-    public string? ZoneName(float x, float z) => Group(x, z)?.Name;
+    public string? ZoneName(float x, float z) => Group(x, z)?.ShownName();
 
     /// <summary>
     /// The crop coverages (<c>green</c>, <c>arid</c>, <c>swamp</c>) of the ground at a position (<b>Observed</b>, the prospecting window's

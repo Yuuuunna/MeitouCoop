@@ -122,6 +122,9 @@ Sources: the configured Kenshi install's `data/gui/`, the existing
     text uses the `Kenshi_StandardFont_Medium` resource's file, so a locale's font.
   Pre-built glyphs: the `Codes` ranges up to 1024 code points (Faithful), else ASCII and
   Latin-1; the rest on demand. Lines wrap at spaces and between CJK characters.
+  Fallback fonts (`UiFontFallbacks`, added by mods, [modding](../modding.md)): a character the font cannot draw comes from the
+  face itself when only its `Codes` leave it out (Faithful), else from the first added file that has it, before the substitute, at the font's
+  size and hinting mode. None by default. Meitou's, not in the original.
 - Main in-game UI applies a user-requested minimum of 16 em pixels at 1080 lines,
   scaled with viewport height, including resource fonts and explicit pixel sizes.
   Larger headings retain their sizes. Short captions centre the line box and clip
@@ -318,8 +321,11 @@ change that gave every Widget a `Client` (its `Widget::initialiseOverride` is em
   (`UiRect.AlignTo`, centring then). A position the code binds is where the widget was made (its children are made in it), unless `UiBindings.MadeSizes` gives the size
   it was made at: then its children align from that, as a window resized by its grips (`MyGuiScreenHost.PlaceRoots`) does.
   Template parts and skin pieces use `MyGuiScale` at the template scale (`UiBindings.TemplateScale`; the painter's UI scale), the parts' fractions converted at the scaled
-  template size (`TemplateRealPosition`).
-- **Window** (Verified, `Window.cpp`; layouts): `Snap` (set by every Kenshi window template) snaps an edge to the viewport's within 10 px (`|left| <= 10`, `|right - width| < 10`, likewise top / bottom) while dragging,
+  template size (`TemplateRealPosition`). Every faithful screen binds at the UI scale (`ScreenRouter.BindFaithfulScreen`), so a `Kenshi_ListBox`'s
+  18 px lines are 36 px at 2160 lines, as its text is.
+- **Window** (Verified, `Window.cpp`; layouts): a window moves only from a part with a move scale: its `Caption` (given `Scale` `1 1 0 0`), an
+  `Action` or resize part, or `Client` with `MainMove`; a press elsewhere on it does not move it. Kenshi's window templates give only the caption
+  (`Kenshi_WindowCX`: `3 3 315 36` in its 38 px header), so a window drags by its caption as laid out, at the template scale. `Snap` (set by every Kenshi window template) snaps an edge to the viewport's within 10 px (`|left| <= 10`, `|right - width| < 10`, likewise top / bottom) while dragging,
   without clamping; Meitou lets a dragged window leave the screen but keeps its top edge and 48 px of it in view (`KeepVisible`), and places others fully on screen. `Movable` false (`Kenshi_MessageBox`, `Kenshi_AdvancedOptionsWindow`) stops the drag; `MinSize` / `MaxSize` (`Kenshi_OpenSaveFileDialog` 200 200) bound the
   size a resize gives. **Observed**: no Kenshi window template has a child with the user strings `Action` or `Scale` (MyGUI's resize / move markers), so the original has no user resizing; the generic grips (`Scale`
   = left, top, width, height multipliers of the pointer's travel, or `Action` Move / Left / Right / Top / Bottom) are supported for mods. On a viewport change a moved window keeps its distance to the edges its alignment

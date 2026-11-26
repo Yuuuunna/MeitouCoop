@@ -36,7 +36,7 @@ public sealed record InventoryItemToken(int Index, string Record, string Section
     /// </summary>
     public static InventoryItemToken Of(InventoryItemView item) =>
         new(item.Index, item.Record, item.Section, item.X, item.Y, item.Quantity, item.Quality)
-        { ModTag = item.ModTag, ModTagDigest = item.ModTagDigest };
+        { ModTag = item.ModTagDigest.Length == 0 ? item.ModTag : "", ModTagDigest = item.ModTagDigest };
 }
 /// <summary>
 /// The inventory window's ARRANGE (<c>FUN_14070f740</c>): <see cref="InventoryCommands.Arrange(Inventory, bool)"/> on the grid of the window
@@ -217,8 +217,8 @@ public static class InventoryCommands
             : SlotSection(item.AttachSlot) is { } worn && worn != "backpack_attach" ? [worn] : [];
         foreach (string section in sections)
         {
-            if (SectionClosed(wearer, section)) continue;
-            if (section is not ("back" or "hip"))
+            if (SectionClosed(wearer, section) || SectionFull(root, section)) continue;
+            if (!LiesInCells(section))
             {
                 if (root.Items.Any(i => i.Section == section)) continue;
                 return (section, 0, 0);
@@ -339,7 +339,7 @@ public static class InventoryCommands
 
         // A bag cannot contain itself or another container; moving it preserves all its contents.
         if (section == "backpack_content" && item.Contents is not null) return false;
-        var size = section is "back" or "hip" ? SectionSize(section) : IsEquipmentSection(section) || IsLimbSection(section)
+        var size = LiesInCells(section) ? SectionSize(section) : IsEquipmentSection(section) || IsLimbSection(section)
                 ? (item.Width, item.Height) : (target?.Width ?? 0, target?.Height ?? 0);
         if (owner is null || target is null || !owner.Items.Contains(item) || x < 0 || y < 0 || item.Width <= 0 || item.Height <= 0 ||
             x > size.Item1 - item.Width || y > size.Item2 - item.Height || item.Quantity > target.LimitOf(item)) return false;
@@ -347,8 +347,9 @@ public static class InventoryCommands
         if (SectionClosed(wearer, section) || section == "main" && MainClosed(wearer)) return false;
         if (IsEquipmentSection(section))
         {
-            if (SectionSlot(section) != item.AttachSlot || item.Quantity != 1) return false;
-            if (section is not ("back" or "hip") && (x != 0 || y != 0 || target.Items.Any(i => i != item && i.Section == section)))
+            if (SectionSlot(section) != item.AttachSlot || item.Quantity != 1 || SectionFull(target, section, item))
+                return false;
+            if (!LiesInCells(section) && (x != 0 || y != 0 || target.Items.Any(i => i != item && i.Section == section)))
                 return false;
         }
 
@@ -433,6 +434,37 @@ public static class InventoryCommands
     /// </summary>
     public static bool Arrange(Inventory root, bool bag) =>
         Arrange(bag ? [(root.Backpack?.Contents, "backpack_content")] : [(root, "main")]);
+
+    /// <summary>
+    /// An arrange the game runs, as a code mod sees it (docs/modding.md "Inventory arrange"): <paramref name="root"/>'s main grid and worn bag
+    /// (<paramref name="bag"/> null), only the bag (true) or only the main grid (false), for the window of <paramref name="owner"/> because of
+    /// <paramref name="reason"/>. The world's <see cref="IInventoryArrangeFilter"/>s are asked first; without one that arranges it is the game's
+    /// (<see cref="Arrange(Inventory)"/>, <see cref="Arrange(Inventory, bool)"/>, which never ask the filters). True when arranged.
+    /// </summary>
+    public static bool Arrange(World world, Inventory root, ItemOwner owner, InventoryArrangeReason reason, bool? bag = null)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(root);
+
+        (Inventory? Grid, string Section)[] sections = bag switch
+        {
+            null => [(root, "main"), (root.Backpack?.Contents, "backpack_content")],
+            true => [(root.Backpack?.Contents, "backpack_content")],
+            false => [(root, "main")],
+        };
+
+        return world.ArrangeFilters.Active && world.ArrangeFilters.Arrange(world, Ask(world, root, owner, reason, sections)) || Arrange(sections);
+    }
+
+    /// <summary>
+    /// The filters' ask for an arrange of <paramref name="sections"/> (the missing grids left out).
+    /// </summary>
+    static InventoryArrangeAsk Ask(World world, Inventory root, ItemOwner owner, InventoryArrangeReason reason,
+        (Inventory? Grid, string Section)[] sections)
+    {
+        var grids = sections.Where(s => s.Grid is not null).Select(s => new ArrangeGrid(s.Grid!, s.Section)).ToArray();
+        return new InventoryArrangeAsk(world.Tick, root, owner, reason, grids, Merged: false);
+    }
 
     /// <summary>
     /// Arranges <paramref name="sections"/> (a grid and the section of it arranged; a missing grid is skipped) as <see cref="Arrange(Inventory)"/>.
@@ -610,9 +642,23 @@ public static class InventoryCommands
     };
 
     /// <summary>
-    /// A section holding one item whatever its footprint (clothing, the bag slot, the prosthetic slots); the others are grids.
+    /// A section holding one item whatever its footprint (clothing, the bag slot, the prosthetic slots, a mod slot of one item); the others are
+    /// grids.
     /// </summary>
-    public static bool IsSingleSlot(string section) => IsLimbSection(section) || IsEquipmentSection(section) && section is not ("back" or "hip");
+    public static bool IsSingleSlot(string section) => IsLimbSection(section) || IsEquipmentSection(section) && !LiesInCells(section);
+
+    /// <summary>
+    /// An equipment section whose items lie in its cells at their footprints: <c>back</c>, <c>hip</c> and a mod slot of several items
+    /// (<see cref="ModSlot.MaxItems"/>).
+    /// </summary>
+    public static bool LiesInCells(string section) => section is "back" or "hip" || ModSlots.IsMultiItem(section);
+
+    /// <summary>
+    /// Whether a mod slot of several items (<see cref="ModSlot.MaxItems"/>) in <paramref name="root"/> holds as many as it may, not counting
+    /// <paramref name="except"/> (an item moving within it); false for every other section.
+    /// </summary>
+    public static bool SectionFull(Inventory root, string section, ItemInstance? except = null) =>
+        ModSlots.Of(section) is { MaxItems: > 1 } slot && root.Items.Count(i => i != except && i.Section == section) >= slot.MaxItems;
 
     /// <summary>
     /// The right click's move into another character (<c>FUN_140713d20</c>, its target <c>FUN_14070dcd0</c>): one unit at a time, at most <paramref

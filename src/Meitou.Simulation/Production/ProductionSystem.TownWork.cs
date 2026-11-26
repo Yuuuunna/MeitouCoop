@@ -396,9 +396,9 @@ public sealed partial class ProductionSystem
 
     /// <summary>
     /// A take out of another faction's town machine (<see cref="Take"/>): the stolen mark the taken items get
-    /// (<see cref="Crime.CrimeSystem.OwnerMark"/>; none for any other take), then, when the taker has <paramref name="room"/> for them with it, the
-    /// Theft and the steal roll (<see cref="Crime.CrimeSystem.Steal"/>), else the Theft alone (no roll, no thievery XP, #796). True: caught or no
-    /// room, nothing moves.
+    /// (<see cref="Crime.CrimeSystem.GoodsMark"/>; none for any other take or with nobody living there), then, when the taker has
+    /// <paramref name="room"/> for them with it, the Theft and the steal roll (<see cref="Crime.CrimeSystem.Steal"/>), else the Theft alone (no roll,
+    /// no thievery XP, #796). True: caught or no room, nothing moves.
     /// </summary>
     static bool CaughtTaking(World world, Crime.StealSource? goods, CharacterId taker, CharacterCold cold, Func<StolenMark, bool> room,
         out StolenMark mark, PlayerId? actor = null)
@@ -408,7 +408,7 @@ public sealed partial class ProductionSystem
             && world.Players.Find(player)?.HasPermission(owned.Owner, FactionPermission.ManageAssets) == true) return false;
         if (goods is not { Owner: >= 0 } g || g.Owner == cold.Faction || !Crime.CrimeSystem.IsStealing(world, g)) return false;
 
-        mark = Crime.CrimeSystem.OwnerMark(world, g.Building, g.Owner);
+        mark = Crime.CrimeSystem.GoodsMark(world, g);
         bool fits = room(mark);
         if (world.SystemOf<Crime.CrimeSystem>() is not { } crimes || !world.Characters.TryResolveNext(taker, out int thief)) return !fits;
 
@@ -531,6 +531,7 @@ public sealed partial class ProductionSystem
             || m.Data.IsAutomatic || m.Operators >= m.Data.MaxOperators || m.Broken
             || Site(world, m.Site) is not { Complete: true, Destroyed: false } site || !world.Fixtures.CurrentTownMachine(site)
             || site.Owner != cold.Faction && !(cold.SlaveState == 1 && cold.SlaveOwner == site.Owner)) return;
+        if (FarmNeedsNoWork(m)) return;
 
         // A player research bench refuses operation without current research; NPC benches still train their operator.
         if (m.Data.IsResearch && world.IsPlayerFaction(site.Owner) && ResearchFor(world, m).Queue.Count == 0) return;
@@ -544,7 +545,7 @@ public sealed partial class ProductionSystem
 
         m.Operators++;
         cold.Operating = WorkStep(world, slot, cold, m, dt, ref _townResearch);
-        OperatingXp(world, cold, m.Data.Stat, dt);
+        if (m.Farm is null || cold.Operating) OperatingXp(world, cold, m.Data.Stat, dt);
     }
 
     /// <summary>

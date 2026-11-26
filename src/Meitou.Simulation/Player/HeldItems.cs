@@ -260,7 +260,7 @@ sealed class HeldItems(PopulationData? data)
             world.Machines.Touch();
             return;
         }
-        if (world.SystemOf<Production.ProductionSystem>()?.Reach(world, lift.Actor, site, out _) is not { } m) return;
+        if (world.SystemOf<Production.ProductionSystem>()?.Reach(world, lift.Actor, site, fromSite: true, out _) is not { } m) return;
         LiftFromMachine(world, lift, m);
     }
 
@@ -372,7 +372,8 @@ sealed class HeldItems(PopulationData? data)
             return;
         }
 
-        if (Under(target, item, place, out int x, out int y) is not { Count: < 2 } under)
+        if (Under(target, item, place, out int x, out int y) is not { Count: < 2 } under
+            || under.Count == 0 && InventoryCommands.SectionFull(target.Grid, target.Section))
         {
             ReturnHeldItem(world);
             return;
@@ -389,7 +390,9 @@ sealed class HeldItems(PopulationData? data)
             return;
         }
 
-        int limit = target.Columns == 0 ? 1 : target.Grid.LimitOf(item);
+        // A slot (one item, or a mod slot of several) takes one unit.
+        bool slot = target.Columns == 0 || ModSlots.IsMultiItem(target.Section);
+        int limit = slot ? 1 : target.Grid.LimitOf(item);
         // Leaving its window for another owner's: no longer a death item, maybe stolen. Put back on a refusal; the units that stay on the mouse keep
         // the old marks.
         bool changes = into != held.From, death = item.Death;
@@ -399,7 +402,7 @@ sealed class HeldItems(PopulationData? data)
         var p = new Placing(world, held, into, target, x, y, limit, buy, sell, trade, changes, death, mark);
         if (under is [var other])
         {
-            bool kind = target.Columns > 0 && InventoryCommands.Stackable(item, other);
+            bool kind = !slot && InventoryCommands.Stackable(item, other);
             if (kind && !buy && !sell && item.Buyback is null && other.Buyback is null) Combine(in p, other);
             else if (kind && limit > 1) Merge(in p, other);
             else
@@ -410,8 +413,9 @@ sealed class HeldItems(PopulationData? data)
     }
 
     /// <summary>
-    /// The target of a placement the trade allows; null (the item goes back) when it refuses. The stock trades with its customer only: stock goes
-    /// into the customer's windows, the customer's own items onto the stock; a player's other character window takes the trade over in reach.
+    /// The target of a placement the trade and the item move's reach allow; null (the item goes back) when one refuses. The stock trades with its
+    /// customer only: stock goes into the customer's windows, the customer's own items onto the stock; a player's other character window takes the
+    /// trade over in reach. Between two player characters' windows the two must be in reach (<see cref="CharactersNear"/>).
     /// </summary>
     Target? Reached(World world, HeldItem held, PlaceHeld place, bool buy, bool sell, Trading.TradeSystem? trade)
     {
@@ -421,7 +425,25 @@ sealed class HeldItems(PopulationData? data)
         if ((buy || sell) && !PassTrade(world, trade!, buy ? into : held.From, ref customer, place)) return null;
         if (buy && into != ItemOwner.Of(customer) || sell && held.From != ItemOwner.Of(customer) || Resolve(world, held, place) is not { } target)
             return null;
+        if (!CharactersNear(world, held.From, into)) return null;
+
         return target;
+    }
+
+    /// <summary>
+    /// Whether a placement from one player character's window into another's is within the item move's reach (<c>FUN_140715560</c>,
+    /// <see cref="ItemMoveReach.CharactersNear"/>, "Out of trading range."); true for any other placement, which keeps its own rules (the loot,
+    /// containers, machines and the stock).
+    /// </summary>
+    bool CharactersNear(World world, ItemOwner from, ItemOwner into)
+    {
+        if (from.Holder != ItemHolder.Character || into.Holder != ItemHolder.Character || from.Character == into.Character) return true;
+
+        var table = world.Characters;
+        if (!table.TryResolveNext(from.Character, out int s) || !table.TryResolveNext(into.Character, out int t)) return true;
+        if (table.Cold(s) is not { IsPlayer: true } || table.Cold(t) is not { IsPlayer: true }) return true;
+
+        return ItemMoveReach.CharactersNear(data, world, s, t, _heldPlayerId);
     }
 
     /// <summary>
@@ -460,7 +482,7 @@ sealed class HeldItems(PopulationData? data)
                     return open ? new(grid, grid, "main", grid.Width, grid.Height, null, container, null) : null;
                 }
 
-                return world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, into.Site, out _) is { Storage: { } storage,
+                return world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, into.Site, fromSite: false, out _) is { Storage: { } storage,
                         Closed: false } m
                     ? new(storage, storage, "main", storage.Width, storage.Height, null, null, m) : null;
         }
@@ -739,7 +761,7 @@ sealed class HeldItems(PopulationData? data)
         int k = InputIndex(place.Section);
         if (held.From.Holder == ItemHolder.Stock
                 || world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, place.Into.Site,
-                        out _) is not { } m || k < 0 || k >= m.Inputs.Length)
+                        fromSite: false, out _) is not { } m || k < 0 || k >= m.Inputs.Length)
         {
             ReturnHeldItem(world);
             return;
@@ -972,10 +994,16 @@ sealed class HeldItems(PopulationData? data)
         bool shut = InventoryCommands.MainClosed(owner);
         bool canAdd = !shut || item.Contents is not { Items.Count: > 0 };
         if (canAdd && root.Add(item, shut)) return;
-        if (canAdd && (shut ? InventoryCommands.Arrange(root, bag: true) : InventoryCommands.Arrange(root)) && root.Add(item, shut)) return;
+        if (canAdd && MakeRoom(world, root, held.From, shut) && root.Add(item, shut)) return;
         if (DropSpot(world, held) is var (at, from)) Ground(world, item, at, from);
         else Ground(world, item, held.Origin, 0);
     }
+
+    /// <summary>
+    /// Arranges the held item's inventory for room (only its worn bag when the main grid is <paramref name="shut"/>).
+    /// </summary>
+    static bool MakeRoom(World world, Inventory root, ItemOwner from, bool shut) =>
+        InventoryCommands.Arrange(world, root, from, InventoryArrangeReason.MakeRoom, shut ? true : null);
 
     /// <summary>
     /// The held item into its old place: a free slot (a prosthetic on its stump), or its old cell when it is free and its stack fits there.
@@ -1075,7 +1103,7 @@ sealed class HeldItems(PopulationData? data)
                 : HeldPlayer(world).ContainerAccess is { } access && access.Id == held.ContainerSessionId && access.Valid(world) && access.InRange(world);
         return world.Machines.Find(held.From.Site) is { Closed: false } machine && world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, held.From.Site) is { } site
             && world.SystemOf<Production.ProductionSystem>()?.MayAccessMachine(world, _heldPlayerId, site.Id) == true
-            && world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, machine.Site, out _) is not null;
+            && world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, machine.Site, fromSite: true, out _) is not null;
     }
 
     void HeldInputCore(World world, HeldCommand command)

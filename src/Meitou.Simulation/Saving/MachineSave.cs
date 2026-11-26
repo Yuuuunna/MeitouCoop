@@ -41,6 +41,13 @@ public static partial class MachineSave
     public const string OriginalSectionsKey = "meitou original sections";
 
     /// <summary>
+    /// A storage's put and take priorities (<see cref="Machine.PutPriority"/>, <see cref="Machine.TakePriority"/>), ints of its GAMESTATE_BUILDING,
+    /// written only when not Normal (a missing key reads as Normal, so the original's saves and Meitou's without a setting stay as they were).
+    /// Meitou's keys, not the original's.
+    /// </summary>
+    public const string PutPriorityKey = "meitou put priority", TakePriorityKey = "meitou take priority";
+
+    /// <summary>
     /// The key prefix of a remembered ingredient's string id (followed by its number).
     /// </summary>
     const string PartialSid = "craft partial item sid ";
@@ -268,7 +275,27 @@ public static partial class MachineSave
         state.Bools["broken"] = m.Broken;
         if (m.Data.IsBattery) state.Floats["batterycharge"] = m.Charge;
 
+        WritePriority(state, PutPriorityKey, m.PutPriority);
+        WritePriority(state, TakePriorityKey, m.TakePriority);
         WriteProduction(state, m, gameHours);
+    }
+
+    /// <summary>
+    /// Writes a storage priority key, or removes it for Normal (<see cref="PutPriorityKey"/>).
+    /// </summary>
+    static void WritePriority(FcsRecord state, string key, StoragePriority level)
+    {
+        if (level == StoragePriority.Normal) state.Ints.Remove(key);
+        else state.Ints[key] = (int)level;
+    }
+
+    /// <summary>
+    /// Reads a storage priority key: Normal when missing or not a level.
+    /// </summary>
+    static StoragePriority ReadPriority(FcsRecord state, string key)
+    {
+        int value = state.Ints.GetValueOrDefault(key);
+        return value is >= sbyte.MinValue and <= sbyte.MaxValue && Enum.IsDefined((StoragePriority)value) ? (StoragePriority)value : StoragePriority.Normal;
     }
 
     /// <summary>
@@ -392,6 +419,8 @@ public static partial class MachineSave
             if ((!allOwners && site.Owner != world.Player.Faction) || production.Data(site.Record) is null) continue;
             if (production.Ensure(world, site) is { } machine) world.SavedMachines!.Apply(world, production, site, machine);
         }
+
+        world.Machines.RecountPriorities();
         world.Machines.Touch();
     }
 
@@ -497,6 +526,12 @@ public static partial class MachineSave
         m.GetsBattery = state.Bools.GetValueOrDefault("gets battery", true);
         m.Broken = state.Bools.GetValueOrDefault("broken");
         if (m.Data.IsBattery) m.Charge = Math.Max(0, state.Floats.GetValueOrDefault("batterycharge"));
+
+        if (m.Data.IsStorage)
+        {
+            m.PutPriority = ReadPriority(state, PutPriorityKey);
+            m.TakePriority = ReadPriority(state, TakePriorityKey);
+        }
 
         ReadProduction(state, m);
     }

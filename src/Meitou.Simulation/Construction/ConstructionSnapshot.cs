@@ -43,6 +43,11 @@ public sealed record BuildingSnapshot(string Id, string Record, Vector3 Position
     public string Name { get; init; } = "";
 
     /// <summary>
+    /// The name the player gave it (<see cref="BuildSite.CustomName"/>); null for none.
+    /// </summary>
+    public string? CustomName { get; init; }
+
+    /// <summary>
     /// Whether it is destroyed.
     /// </summary>
     public bool Destroyed { get; init; }
@@ -79,11 +84,16 @@ public sealed record BuildingSnapshot(string Id, string Record, Vector3 Position
     public bool Public { get; init; } = true;
 
     /// <summary>
-    /// The name of the player town it belongs to (see <see cref="Public"/>).
+    /// The name of the town it belongs to: the player's outpost, or a world town's for a building of a town (see <see cref="Public"/>).
     /// </summary>
     public string? TownName { get; init; }
     public ulong SiteRevision { get; init; }
     public ulong RootRevision { get; init; }
     /// <summary>The current root owner's faction for revision-bound remote commands.</summary>
     public int AuthorityFaction { get; init; } = -1;
+
+    /// <summary>
+    /// The TOWN record of the world town <see cref="TownName"/> names, for showing it through the mods' text sources; null for the player's outpost.
+    /// </summary>
+    public string? TownRecord { get; init; }
 }

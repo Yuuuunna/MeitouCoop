@@ -50,7 +50,7 @@ sealed class ShopView
     /// Builds the trader window from canonical goods. An external refresh preserves active receipts only for matching surviving units;
     /// a restock or a freshly opened projection starts without old window receipts.
     /// </summary>
-    public void Build(Shop shop, IReadOnlyList<StockBox> boxes, bool preserveReceipts = false)
+    public void Build(World world, Shop shop, IReadOnlyList<StockBox> boxes, bool preserveReceipts = false)
     {
         var receipts = preserveReceipts
             ? shop.Window.Items.Where(i => i.Buyback is not null).Select(i => (Sample: i, Receipt: i.Buyback!)).ToList()
@@ -64,7 +64,7 @@ sealed class ShopView
                 if (item.ItemFunction != PlayerSystem.MoneyFunction) PutCopy(shop, item, receipts);
         }
 
-        InventoryCommands.Arrange(shop.Window);
+        InventoryCommands.Arrange(world, shop.Window, ItemOwner.Stock, InventoryArrangeReason.StockShown);
         _mirrored = Frozen(Tally(shop.Window.Items));
         _containersHash = HashOf(boxes);
         Live = true;

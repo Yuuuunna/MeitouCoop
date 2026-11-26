@@ -33,28 +33,18 @@ public sealed partial class World
     /// Applies the interface's commands between ticks while paused, without advancing time or running simulation phases:
     /// selection, order toggles, job lists, crafting and research queues, squads, inventory, open-shop transactions, building settings,
     /// the Stop order and every order (<see cref="OrderCommand"/>: each goes into its characters' queues through the one order path,
-    /// <see cref="PlayerOrders.Give"/>, and sets their tasks; nobody moves or fights until the next tick).
+    /// <see cref="PlayerOrders.Give"/>, and sets their tasks; nobody moves or fights until the next tick), and the commands marked
+    /// <see cref="IPausedCommand"/> while a system takes them (<see cref="IPausedCommandHandler"/>).
     /// </summary>
     public void ApplyPausedInterfaceCommands()
     {
         RequireNoDurableMutation();
-        if (Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("interface commands require a tick boundary");
+        if (Characters.Phase != TablePhase.Outside)
+            throw new InvalidOperationException("interface commands require a tick boundary");
+
         int authorityCount = Authority.ProcessPending();
-        var due = Commands.TakeDue(Tick, c => c is OrderCommand or ManoeuvreCommand or SelectCommand or OrdersCommand or RunSpeedCommand or StandUpCommand or SquadCommand or SquadAiCommand or SquadFormationCommand or RenameFactionCommand or SeenDiscoveriesCommand
-            or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob or Production.AddOrderJob or Production.RemoveJob or Production.MoveJob or FirstAid.MedicJobCommand { Job: true } or Carrying.RescueJobCommand { Job: true }
-            or Production.QueueCraft or Production.CancelCraft or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace or Production.QueueResearch or Production.CancelResearch
-            or Items.OpenContainerOrder or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic or InspectCommand or PointedCommand or InspectBuildingCommand or ShowInventoryCommand or ShowMachinesCommand or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem or Items.ArrangeInventory or Items.TransferInventoryItem
-            or Carrying.TakeLootItem or Carrying.PutLootItem or Production.PutInMachine or Production.TakeFromMachine
-            or Trading.BuyItem or Trading.SellItem or Trading.ArrangeStock or Trading.CloseTrade or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
-            or Construction.BuildOrder or Construction.DismantleOrder or Construction.RenameTown or Construction.SetTownPublic or Construction.PlaceBuildings or Construction.CancelSite or Construction.ConfirmDismantle or Construction.PauseSite or Editing.EditCharacter or Editing.FinishCreation or Editing.InPlayEditorOpened
-            or MoveOrder or FollowOrder or StopCommand or FirstAid.TreatOrder or FirstAid.SplintOrder or FirstAid.RestOrder or Combat.AttackOrder or Combat.ShootAtOrder
-            or Locks.PickLockOrder or Locks.GetOutOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
-            or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.ForceLockOrder or Locks.UseBedOrder or Locks.PutInBedOrder
-            or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder or Carrying.StealthKoOrder
-            or Items.RotateItem or Production.ArrangeMachine or Ai.SetSquadAutonomy or Ai.SetSquadHome
-            or DebugGiveItem or DebugPlaceItem or DebugAnimalAge
-            or Items.PickUpItemOrder or Trading.OpenPlayerTrade or Trading.PlayerTradeCommand or Carrying.CloseLoot
-            or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder);
+        bool modCommands = SystemOf<IPausedCommandHandler>() is not null;
+        var due = Commands.TakeDue(Tick, c => (modCommands && c.Issuer is null && c is IPausedCommand) || IsInterfaceCommand(c));
         due = Simulation.Player.OrderGiver.SkipGettingUp(this, due);
         if (due.Count == 0 && authorityCount == 0)
         {
@@ -71,21 +61,7 @@ public sealed partial class World
         Characters.Phase = TablePhase.Inputs;
         try
         {
-            PlayerTrades.Inputs(this, due);
-            for (int k = 0; k < _systems.Count; k++)
-            {
-                var system = _systems[k];
-                bool takesCommands = system is IOrderOwner or PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem
-                    or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem or Ai.AiSystem
-                    or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem;
-                if (due.Count == 0 || !takesCommands) continue;
-
-                if (ModFaults.IsMod(k))
-                    ModFaults.Run(k, "inputs", system, this, due, static (handler, world, commands) => handler.Inputs(world, commands));
-                else
-                    system.Inputs(this, due);
-            }
-
+            if (due.Count > 0) RunPausedInputs(due);
             ModFaults.Settle();
             PlayerOrders.ValidateAuthority(this);
             Decisions.Run(this, paused: true);
@@ -103,6 +79,52 @@ public sealed partial class World
         foreach (var trade in _systems.OfType<Trading.TradeSystem>()) trade.RefreshView(this);
         foreach (var talk in _systems.OfType<Dialogue.DialogueSystem>()) talk.RefreshView(this);
         PublishPaused();
+    }
+
+    /// <summary>
+    /// The game's own interface commands the paused step applies (<see cref="ApplyPausedInterfaceCommands"/>).
+    /// </summary>
+    static bool IsInterfaceCommand(SimCommand c) =>
+        c is OrderCommand or StopCommand or SelectCommand or OrdersCommand or RunSpeedCommand
+            or StandUpCommand or ManoeuvreCommand or SquadCommand or SquadAiCommand
+            or SquadFormationCommand or RenameFactionCommand or SeenDiscoveriesCommand
+            or Production.AddJob or Production.AddOrderJob or Production.RemoveJob or Production.MoveJob
+            or Production.QueueCraft or Production.CancelCraft or Production.RepeatCrafts or Production.QueueResearch or Production.CancelResearch
+            or Production.MoveResearch or Production.SetStoragePriority or Production.SetMachinePower or Production.IncinerateFurnace
+            or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic
+            or InspectCommand or PointedCommand or InspectBuildingCommand or ShowInventoryCommand or ShowMachinesCommand
+            or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem
+            or Items.ArrangeInventory or Items.RotateItem or Items.TransferInventoryItem
+            or Carrying.TakeLootItem or Carrying.PutLootItem or Production.PutInMachine or Production.TakeFromMachine or Production.ArrangeMachine
+            or Trading.BuyItem or Trading.SellItem or Trading.ArrangeStock or Trading.CloseTrade or Dialogue.DialogueChoice
+            or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
+            or Construction.PlaceBuildings or Construction.CancelSite or Construction.ConfirmDismantle or Construction.PauseSite
+            or Construction.RenameSite or Construction.RenameTown or Construction.SetTownPublic
+            or Editing.EditCharacter or Editing.FinishCreation or Editing.InPlayEditorOpened
+            or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder or DebugGiveItem or DebugPlaceItem or DebugAnimalAge
+            or Ai.SetSquadAutonomy or Ai.SetSquadHome or Trading.OpenPlayerTrade or Trading.PlayerTradeCommand or Carrying.CloseLoot;
+
+    /// <summary>
+    /// The paused step's inputs: the systems that take its commands, in system order (a mod's through its fault isolation).
+    /// </summary>
+    void RunPausedInputs(IReadOnlyList<SimCommand> due)
+    {
+        PlayerTrades.Inputs(this, due);
+        // The systems that take these commands: every order's owner, and the others' handlers.
+        for (int k = 0; k < _systems.Count; k++)
+        {
+            var system = _systems[k];
+            bool takesCommands = system is IOrderOwner or PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem
+                or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem or Ai.AiSystem
+                or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem
+                or IPausedCommandHandler;
+            if (!takesCommands) continue;
+
+            if (ModFaults.IsMod(k))
+                ModFaults.Run(k, "inputs", system, this, due, static (s, w, d) => s.Inputs(w, d));
+            else
+                system.Inputs(this, due);
+        }
     }
 
     /// <summary>
@@ -242,8 +264,8 @@ public sealed partial class World
     /// <summary>
     /// Offline controllers keep their preferences; unassigned roles use ordinary defaults.
     /// </summary>
-    internal SquadAi SquadOptions(CharacterCold character) => !Players.RequiresExplicitControl ? Player.SquadAi
-        : PlayerOf(character)?.SquadAi ?? SquadAi.Defaults;
+    internal SquadAi SquadOptions(CharacterCold character) => Squads.Find(character.SquadId)?.OwnOptions
+        ?? (!Players.RequiresExplicitControl ? Player.SquadAi : PlayerOf(character)?.SquadAi ?? SquadAi.Defaults);
 
 
     /// <summary>

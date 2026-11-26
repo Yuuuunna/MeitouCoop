@@ -288,6 +288,11 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     /// </summary>
     internal StackSplitDialog StackSplitDialog => field ??= new(this);
 
+    /// <summary>
+    /// Meitou's rename dialog for a building the player built.
+    /// </summary>
+    internal Building.RenameBuildingDialog RenameBuildingDialog => field ??= new(this);
+
     #endregion
 
     #region View
@@ -411,6 +416,18 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     /// damage number with the option too.
     /// </summary>
     public FloaterMode Floaters { get; set; } = FloaterMode.Simple;
+
+    /// <summary>
+    /// The "Unavailable menu rows" option (<see cref="UserConfig.GreyUnavailableVerbs"/>): a context-menu row the selection cannot carry out now is
+    /// greyed and takes only a Shift click (<see cref="Ui.ContextMenuWindow.Available"/>); off, every row is drawn and given as in the original.
+    /// </summary>
+    public bool GreyUnavailableVerbs { get; set; } = true;
+
+    /// <summary>
+    /// The lockpick pointer's chance label shows 0 below the minimum pick chance, as the Pick Lock row does (<see cref="UserConfig.FixLockpickLabel"/>);
+    /// off, it shows the bare chance as in the original.
+    /// </summary>
+    public bool FixLockpickLabel { get; set; } = true;
 
     /// <summary>
     /// The button during play (<see cref="UserConfig.FeedbackButton"/>); off, it still shows on the title and with the game menu open.
@@ -971,6 +988,12 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     }
 
     /// <summary>
+    /// A right press on a storage's Put or Take priority button in the building panel: the level goes down (Meitou's).
+    /// </summary>
+    bool PriorityRightDown(Vector2 p) =>
+        UiVisible && MyGuiPresentation.HitTest(ArrangeUi(), p.X, p.Y) is { } c && BuildingSelection.PriorityRightClick(c.Action);
+
+    /// <summary>
     /// Returns true when the click belonged to the HUD or the interface (the camera input should not see it).
     /// </summary>
     public bool MouseDown(MouseButton button, Vector2 p, bool shift, bool ctrl = false, bool alt = false)
@@ -982,6 +1005,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         TooltipRuntime.HideTooltip();   // a press captures the mouse, which hides a tooltip (MyGUI)
         if (button == MouseButton.Left && FeedbackPanel.FeedbackButtonDown(p)) return true;
         if (CharacterEditor.EditorPointerDown(button, p)) return true;
+        if (button != MouseButton.Left && ModButtonDown(button, p)) return true;
         if (Session.Bindings.Get(InputAction.RotateItem).Contains(Binding.Of(button)) && InventoryWindows.RotateAt(p)) return true;
         if (button == MouseButton.Right && InventoryWindows.CancelInventoryDrag()) return true;
         if (button == MouseButton.Right && ItemsWindow.CancelDrag()) return true;
@@ -997,7 +1021,8 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         // A right press on a squad bar portrait held 0.25 s opens the member's context menu; a quicker release over it selects the member and
         // focuses the camera on it, as the double click (FUN_140413d80, FUN_140415630, docs/game/ui-input.md "Squad bar portraits").
         if (button == MouseButton.Right && PortraitBar.SquadBarMemberAt(p) is { } member) return PortraitRightDown(p, member, shift);
-        if (button == MouseButton.Middle && UiVisible && WorldMap.MapPointerDown(p)) return true;
+        if (button == MouseButton.Right && PriorityRightDown(p)) return true;
+        if (button == MouseButton.Middle && UiVisible && WorldMap.MapPointerDown(p, MouseButton.Middle)) return true;
         if (button == MouseButton.Right && !OverHud(p)) return WorldRightDown(p, shift, ctrl, alt);
         return OverHud(p);
     }
@@ -1038,7 +1063,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     bool PortraitRightDown(Vector2 p, CharacterId member, bool shift)
     {
         if (Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == member) is { } shown
-            && ContextMenuWindow.ContextPressOn(p, at => ContextMenuWindow.Menu(shown.Name, at, ContextMenuWindow.Verbs(shown)),
+            && ContextMenuWindow.ContextPressOn(p, at => ContextMenuWindow.CharacterMenu(shown, at),
                 () => FocusMember(member, shift), ContextMenuWindow.PortraitHoldSeconds)) return true;
         _memberPress = member;
         return true;
@@ -1093,10 +1118,27 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         if (kind is WorldPicking.Picked.Site or WorldPicking.Picked.None && Build.SitePress(p)) return;
         if (Ray(p) is { } ray && Picking.MoveHit(ray.Origin, ray.Direction) is { } hit)
         {
-            Move(hit, shift);
-            MoveMarker.PlaceMarker(hit);
-            (Steering, _steerTarget, _steerTick) = (!shift, hit, Session.CommandTick);
+            void MoveThere()
+            {
+                Move(hit, shift);
+                MoveMarker.PlaceMarker(hit);
+                (Steering, _steerTarget, _steerTick) = (!shift, hit, Session.CommandTick);
+            }
+
+            if (!GroundMenuPress(p, hit, MoveThere)) MoveThere();
         }
+    }
+
+    /// <summary>
+    /// A right press on the ground the code mods give rows for (<see cref="ModTargetVerbs"/>, <see cref="UiMenuTargetKind.WorldPoint"/>): held, a
+    /// menu of their rows opens; released quickly, <paramref name="move"/> runs as without them. False (nothing started) without such rows.
+    /// </summary>
+    bool GroundMenuPress(Vector2 p, Vector3 hit, Action move)
+    {
+        if (!_uiHost.HasTargetMenuVerbs) return false;
+
+        var target = new UiMenuTarget(UiMenuTargetKind.WorldPoint, "", hit);
+        return ContextMenuWindow.ContextPressOn(p, at => ContextMenuWindow.Menu("", at, [.. ModTargetVerbs(target)]), move);
     }
 
     /// <summary>
@@ -1242,8 +1284,10 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     public void MouseMove(Vector2 p)
     {
         Mouse = p;
+        Production.ResearchPointerMove(p);
         if (CharacterEditor.EditorPointerMove(p)) return;
         if (ScrollBars.ScrollThumbMove(p)) return;
+        if (UiVisible && _uiHost.PointerMove(p)) return;
         if (WorldMap.MapPointerMove(p)) return;
         if (UiVisible && FaithfulScreens.PointerMove(p)) return;
         if (_dragFrom is { } from && !Dragging && Vector2.Distance(from, p) >= DragThreshold) Dragging = true;
@@ -1258,7 +1302,9 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         Mouse = p;
         UiInput++;
         CharacterEditor.EditorPointerUp(button);
-        if (ContextMenuWindow.ContextMenuRelease(button, p)) return;
+        bool contextRelease = ContextMenuWindow.ContextMenuRelease(button, p);
+        if (button == MouseButton.Left) Production.ResearchPointerUp(p, contextRelease);
+        if (contextRelease) return;
         if (button == MouseButton.Left && GroundItemPicks.LabelPress is { } labelled)
         {
             GroundItemPicks.LabelPress = null;
@@ -1271,6 +1317,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
             ItemsWindow.PointerUp(p, shift);
             InventoryWindows.InventoryPointerUp(p);
             OrdersPanel.JobDragEnd(p);
+            _uiHost.PointerUp(p);
             SquadWindows.SquadPointerUp(p, shift);
             CharactersWindow.PointerUp();
             FaithfulScreens.PointerUp();
@@ -1592,12 +1639,12 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     public Func<TooltipRuntime.ItemTip, (int Value, int Sell, int? Average)?>? PricesOf { get; set; }
 
     /// <summary>
-    /// The player faction's name (what the dialogue token PLAYERFACTION expands to); the host sets it.
+    /// The player faction's name as shown (<see cref="ShownFactionName(int)"/>); the host sets it. Display only.
     /// </summary>
     public Func<string>? PlayerFactionName { get; set; }
 
     /// <summary>
-    /// The name of a record by string id (a body part of an armour's coverage); the host sets it.
+    /// The name of a record by string id (a body part of an armour's coverage) as the mods' text sources show it; the host sets it. Display only.
     /// </summary>
     public Func<string, string?>? RecordName { get; set; }
     /// <summary>
