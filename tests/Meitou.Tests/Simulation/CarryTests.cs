@@ -168,7 +168,7 @@ public class CarryTests
     }
 
     [Fact]
-    public void A_squad_mate_lifted_awake_stays_carried_and_one_lifted_down_is_set_down_when_it_wakes()
+    public void A_squad_mate_lifted_awake_and_one_that_wakes_on_the_shoulder_stay_carried_until_put_down()
     {
         using var rig = new Rig();
         var a = rig.Add(1000, 2000);
@@ -183,10 +183,12 @@ public class CarryTests
         Assert.True(rig.Cold(awake).CarriedAwake);
         Assert.True(rig.Body(down).Incapacitated && !rig.Cold(down).CarriedAwake);
 
-        for (int t = 0; t < 1500 && !rig.Cold(down).CarriedBy.IsNone; t++) rig.World.RunTick();
+        for (int t = 0; t < 1500 && rig.Body(down).Incapacitated; t++) rig.World.RunTick();
+        rig.World.RunTick();
 
         Assert.False(rig.Body(down).Incapacitated);
-        Assert.True(rig.Cold(down).CarriedBy.IsNone, "set down once it came round");
+        Assert.Equal(b, rig.Cold(down).CarriedBy);
+        Assert.True(rig.Cold(down).CarriedAwake, "rides on awake once it came round");
         Assert.Equal(a, rig.Cold(awake).CarriedBy);
 
         rig.Say(new PutDownOrder([a]) { Tick = rig.World.Tick });
@@ -277,6 +279,79 @@ public class CarryTests
 
         Assert.Equal((5, false), (held.Sum(i => i.Quantity), held.Any(i => i.Death)));
         Assert.Empty(rig.Cold(animal).Inventory!.Items);
+    }
+
+    [Fact]
+    public void Dropping_a_death_item_from_open_loot_drops_it_on_the_ground_and_butchers_the_body()
+    {
+        using var rig = new Rig();
+        var looter = rig.Add(1000, 2000);
+        var animal = rig.Add(1010, 2000, player: false, squad: 1, faction: 2);
+        var meat = Item("meat", 1, 1, 3, stack: true);
+        meat.Death = true;
+        rig.Cold(animal).Inventory!.Add(meat);
+        rig.Body(animal).KnockOut(10000);
+        rig.World.RunTick();
+        DropOpenLootItem(rig, looter, animal, meat);
+
+        Assert.Equal((true, DeathCause.Butchered), (rig.Body(animal).Dead, rig.Body(animal).Cause));
+        Assert.Contains($"{rig.Cold(animal).Name} has been butchered", rig.World.TakeMessages());
+        Assert.Empty(rig.Cold(animal).Inventory!.Items);
+        Assert.Null(rig.World.Player.Held);
+
+        var dropped = Assert.Single(rig.World.GroundItems.All);
+        Assert.Equal(("meat", 3, false), (dropped.Item.Record, dropped.Item.Quantity, dropped.Item.Death));
+    }
+
+    [Fact]
+    public void Dropping_a_normal_item_from_open_loot_drops_it_on_the_ground_without_killing_the_body()
+    {
+        using var rig = new Rig();
+        var looter = rig.Add(1000, 2000);
+        var enemy = rig.Add(1010, 2000, player: false, squad: 1, faction: 2);
+        var sword = Item("sword", 1, 1, 1);
+        rig.Cold(enemy).Inventory!.Add(sword);
+        rig.Body(enemy).KnockOut(10000);
+        rig.World.RunTick();
+        DropOpenLootItem(rig, looter, enemy, sword);
+
+        Assert.False(rig.Body(enemy).Dead);
+        Assert.Empty(rig.Cold(enemy).Inventory!.Items);
+        Assert.Null(rig.World.Player.Held);
+
+        var dropped = Assert.Single(rig.World.GroundItems.All);
+        Assert.Equal("sword", dropped.Item.Record);
+    }
+
+    /// <summary>
+    /// Opens and uses the controlled player's real loot session; a factionless synthetic actor cannot own a Coop inventory window.
+    /// </summary>
+    static void DropOpenLootItem(Rig rig, CharacterId looter, CharacterId body, ItemInstance item)
+    {
+        var world = rig.World;
+        world.Players.SetMembership(PlayerId.Local, rig.Cold(looter).Faction, FactionPermission.All);
+        world.Players.AssignInitial(PlayerId.Local, looter);
+        world.Commands.Enqueue(PlayerId.Local, new OpenLootOrder([looter], body) { Tick = world.Tick });
+        for (int t = 0; t < 200 && world.Player.OpenLoot != body; t++) world.RunTick();
+        Assert.Equal(body, world.Player.OpenLoot);
+
+        var token = new InventoryItemToken(0, item.Record, item.Section, item.X, item.Y, item.Quantity, item.Quality);
+        world.Commands.Enqueue(PlayerId.Local, new LiftItem(looter, ItemOwner.Of(body), token, item.Quantity)
+        {
+            Tick = world.Tick, ControlledCharacters = [looter], Serial = 1, ExpectedHeldSerial = 0,
+            InventoryRevision = world.InventoryRevision(rig.Cold(body).Inventory!), SessionId = (ulong)world.Player.LootSessionId
+        });
+        world.RunTick();
+        Assert.NotNull(world.Player.Held);
+        Assert.Equal(ItemOwner.Of(body), world.Player.Held.From);
+        Assert.Equal(looter, world.Player.Held.Actor);
+
+        world.Commands.Enqueue(PlayerId.Local, new DropHeld
+        {
+            Tick = world.Tick, ControlledCharacters = [looter], HolderActor = looter, Serial = 2, ExpectedHeldSerial = 1,
+            SessionId = (ulong)world.Player.LootSessionId
+        });
+        world.RunTick();
     }
 
     // ------------------------------------------------------------------ determinism

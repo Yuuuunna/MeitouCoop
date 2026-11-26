@@ -318,6 +318,7 @@ public static class PlayerCommandRouting
         Locks.ForceLockOrder c => c.Characters,
         Locks.ShackleOrder c => c.Characters,
         Locks.PutShacklesOrder c => c.Characters,
+        Locks.TakeOffShacklesOrder c => [c.Wearer],
         Locks.UseBedOrder c => c.Characters,
         Locks.PutInBedOrder c => c.Carriers,
         Items.HeldCommand c => [.. new[] { c is Items.LiftItem lift ? lift.Actor : c.HolderActor }.Concat(c.ControlledCharacters).Distinct()],
@@ -398,7 +399,7 @@ public static class PlayerCommandRouting
         Trading.OpenPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
         Trading.AcceptPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
         Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.CageClickOrder
-            or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
+            or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.TakeOffShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
             or Crime.PutInCageOrder or Crime.PayBailOrder
             => new(CommandFactionSource.Character, Character: Characters(command).FirstOrDefault()),
         _ => new(CommandFactionSource.None),
@@ -437,7 +438,7 @@ public static class PlayerCommandRouting
         or Carrying.StealthKoOrder or Carrying.RescueJobCommand or Carrying.TakeLootItem or Carrying.PutLootItem
         or Carrying.CloseLoot or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder
         or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.CageClickOrder
-        or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
+        or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.TakeOffShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
         or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
         or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld or Items.RotateHeld
         or Items.PickUpItemOrder

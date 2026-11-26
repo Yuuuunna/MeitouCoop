@@ -89,7 +89,7 @@ flipped above the pointer near the screen's bottom covered the cursor and took t
   token a tag or release (HTTP 403 "Resource not accessible by integration") on a commit whose `.github/workflows/` files differ from
   the current master, as it lacks the `workflows` permission. So pushing a workflow edit while a release runs fails its release step;
   re-run it from a new dispatch, or publish the run's artifacts by hand with `gh release create` (launcher 1.1.1 was).
-- Nightlies: `nightly.yml` runs twice a day (05:00 UTC "nightly", 16:00 UTC "daily", or by hand) and publishes
+- Nightlies: `nightly.yml` runs twice a day (05:00 UTC "nightly", 17:00 UTC "daily", or by hand) and publishes
   `v<X.Y.Z+1>-nightly.<yyyymmdd>`, a second build on the same UTC day `….<yyyymmdd>.2`
   (patch after the newest full release) as a pre-release without a changelog section; its notes list every
   commit since the newest game tag (GitHub's generated notes cover only merged pull requests, so nightlies don't use them). It is skipped when nothing
@@ -418,18 +418,19 @@ interpolated string, which no translation could match.
   cache; a cold start with a long list is not measured), and the list is walked again on every change.
 - A mod whose `RE_Kenshi.json` names DLLs (`Plugins`, `PreloadPlugins`) is marked as a plugin mod whose DLLs Meitou ignores
   ([RE_Kenshi](formats/rekenshi.md)), unless it also has `meitou.json`: then only the code-mod note shows. One with `FileRebinds` says
-  they are applied to the map files, one with `SoundBanks` that they load before the game's ([data entries](formats/rekenshi.md#data-entries)).
+  they are applied to the map files, one with `SoundBanks` that they load before the game's ([data entries](formats/rekenshi-data.md)).
   The ignored plugin and code mod subtitles use distinct colours.
 - A mod Meitou has built in (`CoveredMods`, Meitou.Core, the table the game uses: [RE_Kenshi](formats/rekenshi.md)) says so and names
   the setting it became and that the mod is not run, instead of the plugin or code-mod note.
-- An RE_Kenshi plugin (no `meitou.json`) with an endorsed port on the Steam workshop ([endorsed ports](formats/rekenshi.md#endorsed-ports),
-  matched by `.mod` name or workshop item) names the port and its maintainer and, while the list does not hold it (a workshop mod by its
-  item, a local copy by its `.mod` name), has a **Get the port** button. The button, and once per mod the first listing in which such a
+- An RE_Kenshi plugin (no `meitou.json`) with an endorsed port on the Steam workshop (see [RE_Kenshi compatibility](formats/rekenshi.md),
+  matched by workshop item or known `.mod` name) names the port and its maintainer. If a mod has multiple endorsed ports, the row shows
+  the first installed one or offers the default. The list identifies installed ports by workshop item or known local `.mod` name. When
+  none is installed, the row has a **Get the port** button. The button, and once per mod the first listing in which such a
   mod is enabled and its port is not installed (one question for all of them), shows a table of each RE_Kenshi mod beside its port and
   maintainer and asks whether to subscribe now: **Subscribe** ([Workshop subscribe](#workshop-subscribe); offered only where Steam can
   be asked), **Open its page** (the ports' workshop pages) or No thanks. Each mod asked about on a listing is kept in `launcher.json`
   (`OfferedPorts`) and not asked again. Not asked while another question or the first-start dialog is open.
-- Each covered workshop item names the Steam update it was matched against. When the installed copy is newer (its `timeupdated` in
+- A covered workshop item can record the Steam update it was checked against. When the installed copy is newer (its `timeupdated` in
   `steamapps/workshop/appworkshop_233860.acf`, `WorkshopUpdates`), the row adds that it has updated since, with the date, and that some new
   features may be missing. A local copy has no date and gets no such note.
 - Any other RE_Kenshi plugin (not built in, no endorsed port) keeps the ignored-DLLs note and has a Request button opening the public wishlist

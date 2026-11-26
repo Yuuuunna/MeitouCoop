@@ -36,7 +36,7 @@ public partial class DialogueTests
     public void ConversationLogsStayWithTheirParticipantsAndHintQueriesDoNotPostMessages()
     {
         using var v = new MultiplayerVillage(); v.B.State.Money = 100;
-        v.OpenBoth();
+        v.OpenBoth(secondRemainsOpen: false);
         Assert.Contains(v.A.State.Messages.Capture().Items, m => m.Kind == PlayerMessageKind.Dialogue && m.Text.Contains("rich", StringComparison.Ordinal));
         Assert.Contains(v.B.State.Messages.Capture().Items, m => m.Kind == PlayerMessageKind.Dialogue && m.Text == "Hello.");
         Assert.DoesNotContain(v.B.State.Messages.Capture().Items, m => m.Text.Contains("rich", StringComparison.Ordinal));
@@ -64,9 +64,9 @@ public partial class DialogueTests
         ]), []);
         using var v = new MultiplayerVillage(data, sharedFaction: true);
         v.Send(v.A.Id, new TalkOrder(v.First, v.NpcA) { Tick = 0 }); v.World.RunTicks(2);
-        var first = v.View(v.A.Id);
+        Assert.Null(v.Dialogue.PublishConversation(v.A.Id));
+        Assert.Equal("Come back later.", v.Village.Bubble(v.NpcA));
         Assert.True(v.World.WantsToTalk(v.NpcA, v.A.Id)); Assert.False(v.World.WantsToTalk(v.NpcA, v.B.Id));
-        v.Send(v.A.Id, new EndConversation { Tick = 0, SessionId = first.SessionId }); v.World.RunTick();
         ulong before = v.World.StateHash();
         Assert.True(v.World.CanTalk(v.NpcA, v.First)); Assert.False(v.World.CanTalk(v.NpcA, v.Second));
         Assert.Equal(before, v.World.StateHash());
@@ -84,7 +84,8 @@ public partial class DialogueTests
         v.Send(v.B.Id, new TalkOrder(v.Second, v.NpcA) { Tick = 0 }); v.World.RunTicks(2);
         Assert.Null(v.Dialogue.PublishConversation(v.B.Id)); Assert.True(v.World.WantsToTalk(v.NpcA, v.A.Id));
         v.Send(v.A.Id, new TalkOrder(v.First, v.NpcA) { Tick = 0 }); v.World.RunTicks(2);
-        Assert.Equal("Your promised follow-up.", v.View(v.A.Id).Text);
+        Assert.Null(v.Dialogue.PublishConversation(v.A.Id));
+        Assert.Equal("Your promised follow-up.", v.Village.Bubble(v.NpcA));
         Assert.False(v.World.WantsToTalk(v.NpcA, v.A.Id));
     }
 

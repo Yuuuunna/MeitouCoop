@@ -73,13 +73,14 @@ public static class ContainerAccess
             if (d < bestDistance) (best, bestDistance) = (s, d);
         }
         if (best < 0) return;
+        InventoryPause.Told(world, best);
         var walker = table.Cold(best)!;
         void Notice(string text) => world.Post(order.Issuer ?? PlayerId.Local, text);
         if (locked)
         {
             if (own)
             {
-                Notice($"{world.ShownName(walker)}: It's locked.");
+                Notice($"{world.ShownName(walker, ShownPlace.Notice)}: It's locked.");
                 return;
             }
 
@@ -141,12 +142,42 @@ public static class ContainerAccess
     }
 
     /// <summary>
+    /// Whether the character in <paramref name="slot"/> still stands at the open container <paramref name="id"/> on the order that opened it (row 26
+    /// in place): its pause (<see cref="InventoryPause"/>), which the order holds until the window closes.
+    /// </summary>
+    internal static bool Holds(World world, int slot, string id) =>
+        world.Characters.Next[slot].Task == (byte)CharacterTask.Idle
+        && world.Characters.Cold(slot)!.Running is { Row: Meitou.Data.Gameplay.Ai.TaskType.LootTarget, Source: TaskSource.Order } run
+        && run.Site == id && world.Players.All.Any(owner => owner.State.OpenContainer == id
+            && owner.State.ContainerOpener == world.Characters.IdOf(slot)
+            && (owner.State.ContainerAccess is not { } access || access.Valid(world)));
+
+    /// <summary>
+    /// The walker in <paramref name="slot"/> stops at container <paramref name="id"/>: its order's walk becomes the work in place
+    /// (<see cref="CharacterTask.Idle"/>), as an opening in reach starts it (<see cref="StartContainer"/>), so the order runs on while the window
+    /// is open (<see cref="Holds"/>).
+    /// </summary>
+    static void Arrive(CharacterTable table, int slot, string id)
+    {
+        var cold = table.Cold(slot)!;
+
+        if (cold.Running is { Row: Meitou.Data.Gameplay.Ai.TaskType.LootTarget, Source: TaskSource.Order, Task: CharacterTask.GoTo } run
+                && run.Site == id)
+        {
+            cold.Running = run with { Task = CharacterTask.Idle };
+        }
+
+        TaskStart.Stand(table, slot);
+    }
+
+    /// <summary>
     /// The window of container <paramref name="id"/> opens for the walker in <paramref name="slot"/>.
     /// </summary>
     static void Open(World world, PlayerState player, int slot, string id)
     {
         (player.OpenContainer, player.ContainerOpener, player.OpeningContainer) = (id, player.ContainerWalker, null);
         world.EmitSound(SoundKind.Inspected, slot, world.Characters.Next[slot].Position);
+        InventoryPause.Focus(world, slot, player);
     }
 
     /// <summary>
@@ -208,7 +239,7 @@ public static class ContainerAccess
                 var at = Flat(fixture.Position);
                 if (Vector2.Distance(Flat(table.Next[s].Position), at) <= ContainerReach && SameFloor(table.Next[s].Position, fixture.Position))
                 {
-                    if (table.Next[s].Task == (byte)CharacterTask.GoTo) TaskStart.Stand(table, s);
+                    if (table.Next[s].Task == (byte)CharacterTask.GoTo) Arrive(table, s, wanted);
                     Open(world, player, s, wanted);
                 }
                 else if (table.Next[s].Task != (byte)CharacterTask.GoTo || Vector2.Distance(table.Next[s].Goal, at) > ContainerReach) player.OpeningContainer = null;
@@ -223,6 +254,8 @@ public static class ContainerAccess
                 keep = SameFloor(table.Next[o].Position, world.Fixtures.Find(open)!.Position)
                     && Vector2.Distance(Flat(table.Next[o].Position), Flat(world.Fixtures.Find(open)!.Position)) <= TradingRange;
             if (!keep) CloseContainer(player);
+            else if (Holds(world, o, open) && InventoryPause.CombatEnds(world, o, table.Cold(o)!))
+                TaskStart.End(world, o, TaskEnd.Done);
         }
         if (player.OpenContainer is null && player.OpeningContainer is null) player.ContainerAccess = null;
     }
@@ -239,8 +272,14 @@ public static class ContainerAccess
         if (world.CommandPlayer(command) is not { } player) return;
         if (command.SessionId != 0 && command.SessionId != player.ContainerSessionId) return;
         if (command.Issuer is not null && (player.ContainerAccess?.Player != command.Issuer || command.SessionId == 0 || command.SessionId != player.ContainerSessionId)) return;
+        if (player.OpenContainer is not null && (player.ContainerAccess is not { } access || access.Valid(world)))
+            InventoryPause.Closed(world, player.ContainerOpener);
         CloseContainer(player);
-        if (command.Issuer is null) player.OpenLoot = player.OpeningLoot = CharacterId.None;
+        if (command.Issuer is null)
+        {
+            if (!player.OpenLoot.IsNone) InventoryPause.Closed(world, player.LootOpener);
+            player.OpenLoot = player.OpeningLoot = CharacterId.None;
+        }
     }
 
     internal static bool MayUseContainer(World world, SimCommand command, ulong sessionId, Locks.Fixture fixture, CharacterId actor)

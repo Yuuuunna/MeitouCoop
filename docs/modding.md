@@ -95,7 +95,7 @@ public sealed class MyMod : IMod
     public void Initialize(ModContext c)
     {
         c.AddSystem("counter", ctx => new CounterSystem(), SystemAnchor.AfterPart(StandardParts.Combat));
-        c.AddDialogueCondition(1000, check => check.Matches(/* computed answer */ true));
+        c.AddDialogueCondition(1100, check => check.Matches(/* computed answer */ true));
         c.Harmony.PatchAll(typeof(MyMod).Assembly);
     }
 }
@@ -247,7 +247,8 @@ is the consent, as in RimWorld: the game loads every enabled code mod's code, wi
 
 Only where a Harmony patch would break an invariant without an error; everything else is Harmony. A new point is added when a patch
 in the wild keeps breaking, not ahead of demand. Mod codes start at `SimulationExtensions.FirstModCode` (1000); a code another mod
-holds refuses the second mod.
+holds refuses the second mod. The game holds the codes of BFrizz's Extra Extensions, which it builds in: dialogue conditions 1000-1006 and record
+type 1000 (VARIABLE) refuse a mod as taken by `BFrizz_Extra_Extensions` ([dialogue](game/dialogue.md#extra-extensions-conditions)).
 
 - **Tick systems:** `AddSystem(name, factory, anchor)`. `SystemAnchor.Before(part)` goes before the first system of that
   `StandardParts` member, `AfterPart(part)` after its last, `End` after all; a part the world does not build puts the system at the
@@ -798,9 +799,9 @@ holds refuses the second mod.
   Engine API, not yet checked in a running world.
 - **Dialogue codes:** `AddDialogueCondition(code, handler)` and `AddDialogueEffect(code, handler)`, named from FCS data in a
   DIALOG_ACTION's `condition name` / `action name`. A condition gets `DialogueCheck` (world, speaker, the subject `who` picked, the
-  condition) with `Matches(bool)` and `Compare(double)` that apply the vanilla value and `compare by` rules; it only reads (it also runs
-  for interface previews). An effect gets `DialogueAct` (world, speaker, target, effect) in a serial step. An unregistered code
-  computes "no" / does nothing, as an unknown vanilla code. A handler that throws is logged once with the mod id and code; that call computes
+  condition, its DIALOG_ACTION's `tag` included) with `Matches(bool)` and `Compare(double)` that apply the vanilla value and `compare by` rules; it only reads (it also runs
+  for interface previews). An effect gets `DialogueAct` (world, speaker, target, effect) in a serial step. An unregistered condition
+  passes and an unregistered effect does nothing, as an unknown vanilla code ([conditions](game/dialogue.md#conditions)). A handler that throws is logged once with the mod id and code; that call computes
   "no" / does nothing more, and the handler is still asked later (the interface asks conditions too, so a drop would depend on what it asked).
 - **World states:** `AddWorldState(record)` claims a WORLD_EVENT_STATE of the merged data (`ModWorldState`, `src/Meitou.Simulation/Factions`; a
   record of another type, or one another mod claimed, refuses the mod, and so loses all its registrations, not only the claim: two mods that
@@ -1091,7 +1092,18 @@ holds refuses the second mod.
   `meitou-mods/character-ids.json` ([save](formats/save.md#character-ids)); after a load a player character has its id when `IModSaveData.Read` and
   `IWorldReady` run, an NPC when its platoon is made. A character the save does not write loses its id, which is never given again. An import starts
   with none. The host records every birth at startup and assigns lasting ids on first access to the starter registry or at checkpoint capture.
-  Other characters get ids on demand. Assigned ids enter the state hash.
+  Other characters get ids on demand. Assigned ids enter the state hash. Engine API, not in the original.
+- **Character tags:** `world.CharacterTags` (`CharacterTags`) keeps one free string per mod id on a character, so several mods mark one
+  character without overwriting each other (a rival, a war leader, the mod that named a character). `Set(character, context.Id, tag)` sets it
+  (null or empty removes it; an empty mod id throws; false for a character not in the world) and gives the character its lasting id (Character
+  ids, above) when it has none, so it runs where `GetOrGive` may and throws where `GetOrGive` would. Tags are kept by lasting id, so a tag goes
+  where the id goes (saves and loads, squad moves, renames, an NPC's platoon leaving the world and coming back), and a new character in a reused
+  slot starts with none. `Get(character or LastingId, mod)` reads one (null: none) and `Of(character or LastingId)` every mod's, by mod id in
+  ordinal order; reads run in any phase, and the `LastingId` forms also for a character out of the world. `Find(mod, tag)` is the character in
+  the world with that mod's tag (the lowest lasting id when several have it; none when none in the world has), `FindIds(mod, tag)` the lasting ids
+  of all, in or out of the world (`LastingIds.KeptIds` tells which are gone for good); both scan every tagged character, so call them at a load or
+  an event, not per character per tick. Saved with the ids in `meitou-mods/character-ids.json` ([save](formats/save.md#character-ids)); the tags
+  of living characters in the world enter the state hash once any tag is set or loaded. Engine API, not in the original.
 - **Character save fields:** `world.SaveFields` (`CharacterSaveFields`, `Meitou.Simulation.Saving`) keeps a mod's per-character values in
   the vanilla save, under keys of its choosing (an original plugin's own, so a save taken to the original keeps them):
   `SetInt`/`SetFloat`/`SetBool`/`SetString(character, CharacterSaveRecord, key, value)` and `Remove`, read back with `Int`/`Float`/`Bool`/
@@ -1146,7 +1158,9 @@ holds refuses the second mod.
   `Tint` (RGBA, each 0 to 1) is multiplied into a node's picture (image, portrait) and skin, as MyGUI's `Widget::setColour`; its text keeps
   `TextColour`. `PortraitOf = characterId` on an image node draws that character's live portrait as the squad bar does (current gear and
   pose): the cell the host already draws it in (squad bar, squads screen, character trade row), else a free one after those and before the
-  conversation's; a character not in the snapshot or past the free cells shows nothing. A root of `UiSlots.Overlay` picks its layer with
+  conversation's; a character not in the snapshot or past the free cells shows nothing. The overlay, screen controls and screen overrides
+  (`UiWidgetOverride.PortraitOf`) share the cells each frame: one cell per character however many ask, and a cell no one asks for is free the
+  next frame. A root of `UiSlots.Overlay` picks its layer with
   `Layer` (`UiOverlayLayer`): `Hud` (default: over the HUD, under the windows), `Back` (under the HUD and windows, over the name tags,
   floaters and speech; the original's `Back` layer) or `Popup` (over the windows, under the right-click menu and tooltips); input follows the
   drawing order. `UiFrameContext.Measure(text, font, scale)` (also `UiScreenContext.Frame`) answers a caption's size in pixels as the painter
@@ -1160,7 +1174,8 @@ holds refuses the second mod.
   (its own hinting failures do not change the font's); the line height and baseline stay the font's own, and no kerning applies between
   fallback glyphs. False when the file does not exist or was added already; a file FreeType cannot open, or one with no outlines, is skipped
   for every font and logged once. Text drawn before is drawn again with it. Kept for the process. Cost: once per character and font size the first time it is drawn, nothing for characters
-  the game's font has. With none added nothing changes. Engine API, not in the original.
+  the game's font has. In Meitou mode the Kenshi folder's language fonts follow the added ones ([mygui](formats/mygui.md)); in Faithful mode
+  only the added ones are asked, and with none nothing changes. Engine API, not in the original.
 - **Interface actions:** `context.Interface` (`ModInterface`) acts on the game's screens from the host's thread (a UI action, key action, menu
   row, hit feed): `OpenScreen(ModScreen kind, ScreenTarget target)` opens `CharacterEditor` (a recruit's edit, free with race and gender kept,
   of `target.Characters`; false while no listed character is in the snapshot yet, so a mod opening it on a character made this tick tries again
@@ -1211,7 +1226,9 @@ holds refuses the second mod.
   screen controls, the source is asked for each arranged widget whose name matches `widgetPattern` (exact, or `*` and `?` wildcards; at most
   512 widgets per source and frame), with `UiScreenContext` (`Widget` the widget, `AnchorWidget`/`Anchor` its name and rectangle, `Item` for an
   item cell, `Character` for a portrait or the screen's) and answers a `UiWidgetOverride` (null: no change): `Caption` (its text, at most 4096
-  characters, inline `#RRGGBB` tags as in the game's texts), `TextColour` (RGBA, each 0 to 1, before the skin's) or `Visible` false (left out:
+  characters, inline `#RRGGBB` tags as in the game's texts), `TextColour` (RGBA, each 0 to 1, before the skin's), `PortraitOf` (a
+  `CharacterId`: the widget's own picture is replaced by that character's live portrait, cells shared as for an image node's `PortraitOf`
+  under "Interface", so a layout's image box shows a recruit's own face) or `Visible` false (left out:
   not drawn, not clicked; its children are widgets of their own). Sources apply in registration order, each seeing the last one's changes.
   `UiScreenContext.State` is what a screen keeps to itself, by key: the stats window's `selected` (the stat its description shows: a stat's
   number as in its rows' `stat:N` actions, a mod skill's `mod:N`, empty for none) and `race-bonus-line` (the race XP bonus paragraph its
@@ -1395,14 +1412,21 @@ holds refuses the second mod.
   - `Name`: a name of its own rather than its record's, where the game shows it: a character's (rolled from a name list, or given by the
     player), a squad's, an outpost's, the player's faction's once he renames it. `Field` says what it names (`character`, `squad`, `outpost`,
     `faction`, `place`), `Key` is the record it was made from ("" none). Put on one line and cut to 80 characters.
+  - A character's name, asked as either kind, also says which character and where: `Character` is its lasting id's value (Character ids,
+    below; 0 when no mod has given it one, and for every other text) and `Place` a `ShownPlace`: `Label` (above its head), `Squad` (the squad
+    bar and lists), `Panel` (its own panels: the status panel, inventory, stats, the jobs list), `Window` (trade, slaves for sale, crafting,
+    prospecting, faction information, a confirm), `Tooltip`, `Menu` (the right-click menu's title), `Notice` (notices, floaters, the event
+    log), `Dialogue` (the conversation window and log, bubbles, choices, a name a token fills in), `Unknown` otherwise. So a mod gives one
+    character a title ("Captain {n} of Stoat") by giving it a lasting id, keeping the title under that id and answering for that `Character`
+    in the places it picks; every other character's name is untouched. A name passed only as text (a crafter in a tooltip) has `Character` 0.
   - `DialogueLine`: a dialogue line's text, in speech bubbles, the conversation window (the line, the choice buttons and the log) and the
     message log. `Key` is the line's record string id and `Text` the text it was given (one of its texts, picked as the game picks it), before its
     tokens: return a text with the tokens you want (`/YOURNAME/`, a word swap's `/NAME/`), and each takes the value the game's own text got for
     the token of that name (in order; a token the game's text did not have is empty). A word swap's line is asked too, under its own id. The
     game's text still decides everything: whether a choice is offered, how long a bubble stays, the dialogue log. A character's name built from
     tokens is not asked; the names tokens fill in (`/MYNAME/`, `/YOURNAME/`, `/TARGETFACTION/`, `/PLAYERFACTION/`) are asked on their own, as a `Record` or `Name`.
-  Display only: records, saves, the state hash and every decision keep the game's text. The answer for a kind, key, text, tag and field is kept until
-  `registration.RefreshText()`, which a mod calls when its answers change (a word learned, an item identified, a save loaded whose state its
+  Display only: records, saves, the state hash and every decision keep the game's text. The answer for a kind, key, text, tag, field, character and
+  place is kept until `registration.RefreshText()`, which a mod calls when its answers change (a word learned, an item identified, a save loaded whose state its
   answers read); text already handed out (a line said, a notice posted) keeps what it got. So a source runs once per text shown, not per frame,
   but it may be asked on any thread (messages and dialogue are made on the simulation's threads), one call at a time (other text waits meanwhile, so
   keep it quick and never wait on the game): read only the context and the mod's own state, safely across threads. Texts other than names are cut to 4,000 characters. A source that throws is reported once
@@ -1870,7 +1894,7 @@ holds refuses the second mod.
   `AiSystem.WeighsGoal(world, slot, type)` (the lists the chooser weighs: the role's list of the running package, the obeyed squad's
   slave list, the race's `AI Goals`, in the hour's window), or per squad `PopulationSystem.GoalDuty(world, squad, role, type)` (public, from
   `world.Systems`; the running package's role list in the hour's window, a campaign squad's phase package included) or `GoalsOf`, the role from
-  `AiSystem.RoleOf(squad, id, cold)`. Only the chooser moves them: a chooser goal of that type (below), which the chooser weighs against the
+  `AiSystem.RoleOf(world, squad, id, cold)` (a member standing in for a leader who is down takes the leader's). Only the chooser moves them: a chooser goal of that type (below), which the chooser weighs against the
   package's other goals, or an order (Ordering characters, below).
 - **Chooser goals and jobs** (`Meitou.Simulation.Ai`, [rules](simulation.md#engine-goals) "Code mods' goals"; **Observed**, by reading
   `ChooserRegistry`, `ModGoal`, `DutyGoals` and `AiSystem`): `AddGoalType(type, name)` and `AddJobType(type, name)` claim task type numbers from

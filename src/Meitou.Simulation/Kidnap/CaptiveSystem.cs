@@ -1691,7 +1691,7 @@ public sealed partial class CaptiveSystem(PopulationData data, CombatSystem? com
 
         // "{1} has been eaten alive." for the player's own (FUN_140856bc0: of the player's faction, or of a squad that is).
         if (eaten && (cc.IsPlayer || world.IsPlayerFaction(cc.Faction)))
-            world.PostCharacter(cc, Loc.Tr("{1} has been eaten alive.", world.ShownName(cc)));
+            world.PostCharacter(cc, Loc.Tr("{1} has been eaten alive.", world.ShownName(cc, ShownPlace.Notice)));
 
         return wasDead ? eaten : medical.Dead;
     }

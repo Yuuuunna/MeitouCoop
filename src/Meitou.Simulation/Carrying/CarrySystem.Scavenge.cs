@@ -172,7 +172,11 @@ public sealed partial class CarrySystem
             cold.LiftTime = 0;
             var start = cold.LootFlags = LootStartFlags(world, cold, victim);
             Crimes?.NpcLooting(world, i, t, (start & (LootStart.NotPlayerSide | LootStart.FoodOnly)) != 0, (start & LootStart.WantsWeapon) != 0);
-            if ((start & LootStart.Animal) != 0 && PlayerSide(world, victim)) world.PostCharacter(victim, $"{world.ShownName(cold)} is butchering {world.ShownName(victim)} for meat!!");
+            if ((start & LootStart.Animal) != 0 && PlayerSide(world, victim))
+            {
+                string butcherName = world.ShownName(cold, ShownPlace.Notice), victimName = world.ShownName(victim, ShownPlace.Notice);
+                world.PostCharacter(victim, $"{butcherName} is butchering {victimName} for meat!!");
+            }
         }
         var flags = cold.LootFlags;
         bool animal = (flags & LootStart.Animal) != 0;

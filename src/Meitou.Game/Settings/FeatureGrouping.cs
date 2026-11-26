@@ -29,7 +29,8 @@ sealed class FeatureGrouping(SettingsMenu menu)
     internal static readonly FeatureGroup[] FeatureGroups =
     [
         // Display
-        new("Upscaling", WorldFrame.UpscalerSliders[0], [WorldFrame.UpscalerSliders[1], WorldFrame.UpscalerSliders[2], WorldFrame.DlssPresetSlider]),
+        new("Upscaling", WorldFrame.UpscalerSliders[0], [WorldFrame.UpscalerSliders[1], WorldFrame.UpscalerSliders[2], WorldFrame.DlssPresetSlider,
+            WorldFrame.SmaaQualitySlider]),
         new("HDR output", "hdr", ["hdrPaperNits", "hdrPeakNits"]),
 
         // Lighting: the shadows first (the sun's switch heads them; the lamps' and the contact shadows are inside)
@@ -91,6 +92,7 @@ sealed class FeatureGrouping(SettingsMenu menu)
         // Sky & weather
         new("Haze", "Haze", ["Haze strength (1 = game)", WorldFrame.HazeDistanceSlider]),
         new("Clouds", "Clouds", [WorldFrame.CloudHeightSlider, "Cloud shadows", "Cloud shadows in fog"]),
+        new("High Altitude Clouds", "High Altitude Clouds", WorldFrame.HighCloudSliders),
         new("Weather particles", WorldFrame.ParticleSliders[0], [WorldFrame.ParticleSliders[1]]),
         new("Fog", "Fog", []),
         new("Lit dust", "Lit dust", []),

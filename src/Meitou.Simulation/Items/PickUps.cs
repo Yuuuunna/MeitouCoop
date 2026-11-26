@@ -100,14 +100,15 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
 
     /// <summary>
     /// The act-out a pick-up or a container's opening works in where the character stands (<see cref="CharacterTask.Idle"/>) is done once the
-    /// item is taken or the container opened.
+    /// item is taken, or the container opened and its window closed again (the pause, <see cref="InventoryPause"/>).
     /// </summary>
     bool ITaskHandler.Done(World world, int slot, CharacterTask task)
     {
         var table = world.Characters;
         if (table.Next[slot].Task != (byte)task) return true;
         return task == CharacterTask.Idle && table.Cold(slot)!.PickingUpItem is null
-                && !world.Players.All.Any(owner => owner.State.OpeningContainer is not null && owner.State.ContainerWalker == table.IdOf(slot));
+                && !world.Players.All.Any(owner => owner.State.OpeningContainer is not null && owner.State.ContainerWalker == table.IdOf(slot))
+                && !(table.Cold(slot)!.Running?.Site is { } site && ContainerAccess.Holds(world, slot, site));
     }
 
     /// <summary>
@@ -338,7 +339,8 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
             if (item.Item.Quantity < before) world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
             if (item.Item.Quantity < before && item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is { } inside)
                 world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy, owner, inside);
-            if (c.IsPlayer) world.Post(player.IsNone ? PlayerId.Local : player, $"{world.ShownName(c)}: Not enough room in my inventory");
+            if (c.IsPlayer)
+                world.Post(player.IsNone ? PlayerId.Local : player, $"{world.ShownName(c, ShownPlace.Notice)}: Not enough room in my inventory");
         }
     }
 

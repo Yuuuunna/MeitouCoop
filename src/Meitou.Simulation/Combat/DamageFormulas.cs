@@ -40,9 +40,8 @@ public readonly record struct DamagePacket(float Cut, float Blunt, float Pierce,
 
 /// <summary>
 /// The damage of a blow from the wielder's stats and the weapon (docs/game/combat.md "Damage per blow", all <b>Observed</b>: <c>FUN_140883ba0</c>,
-/// <c>FUN_140883c60</c>, <c>FUN_140883d10</c>, <c>FUN_140884020</c>). Every stat passed in is the <i>effective</i> stat: the stat times the injury
-/// and hunger multiplier of <c>Bodies.StatMultiplier</c> (and the race scale slot, 1 for humans). <c>lerp(t, a, b)</c> is the game's, parameter
-/// first, and is not clamped.
+/// <c>FUN_140883c60</c>, <c>FUN_140883d10</c>, <c>FUN_140884020</c>). Callers supply modified strength and dexterity, raw weapon skill for a person
+/// or scaled martial arts for an animal, and scaled raw toughness for fists. <c>lerp(t, a, b)</c> is the game's, parameter first, and is not clamped.
 /// </summary>
 public static class DamageFormulas
 {
@@ -83,11 +82,12 @@ public static class DamageFormulas
     /// <summary>
     /// The rating a fist blow is scaled by (<c>FUN_140884e00</c>, <b>Verified</b>): lerp(e, 0.2, 1) x (martial arts + the gear's <c>unarmed bonus</c>
     /// - the dust's attack penalty), e the encumbrance factor (1 unburdened). <paramref name="unarmedBonus"/> carries the indoors modifier inside
-    /// (<c>FUN_140884580</c> with the flag every combat caller sets). <paramref name="martialArts"/> is the stat times the stats' read-time scale,
-    /// without the injury multiplier (the owner's slot 0x398 factor is 1 for a person, <c>FUN_1405e5990</c>).
+    /// (<c>FUN_140884580</c> with the flag every combat caller sets). <paramref name="martialArts"/> is the stored stat, without the injury
+    /// multiplier; the whole is times <paramref name="scale"/>, the owner's slot 0x398 factor (1 for a person, <c>FUN_1405e5990</c>; an animal's
+    /// age, the stats' scale).
     /// </summary>
-    public static float UnarmedRating(float martialArts, float unarmedBonus, float dustPenalty, float encumbrance) =>
-        Lerp(Math.Clamp(encumbrance, 0, 1), 0.2f, 1f) * (martialArts + unarmedBonus - dustPenalty);
+    public static float UnarmedRating(float martialArts, float unarmedBonus, float dustPenalty, float encumbrance, float scale = 1) =>
+        Lerp(Math.Clamp(encumbrance, 0, 1), 0.2f, 1f) * (martialArts + unarmedBonus - dustPenalty) * scale;
 
     /// <summary>
     /// A fist (<b>Verified</b>, <c>FUN_1408868b0</c> disassembled): with f = lerp(rating x 0.01, 0.25, 1), total = f x (<c>unarmed damage mult</c> x

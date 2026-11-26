@@ -55,7 +55,9 @@ internal static class GameComponentSchema
         F(1070, "MaxFactionSize", (WorldSnapshot x) => x.MaxFactionSize, (x, v) => x with { MaxFactionSize = v }),
         F(1071, "MaxSquadSize", (WorldSnapshot x) => x.MaxSquadSize, (x, v) => x with { MaxSquadSize = v }),
         F(1072, "MaxSquads", (WorldSnapshot x) => x.MaxSquads, (x, v) => x with { MaxSquads = v }),
-        F(1073, "ModViews", (WorldSnapshot x) => x.ModViews, (x, v) => x with { ModViews = v }), ];
+        F(1073, "CraftStations", (WorldSnapshot x) => x.CraftStations, (x, v) => x with { CraftStations = v }),
+        F(1074, "ModViews", (WorldSnapshot x) => x.ModViews, (x, v) => x with { ModViews = v }),
+    ];
     /// <summary>
     /// Independently replicated character values; binary codecs retain their own uncompressed format.
     /// </summary>
@@ -179,6 +181,7 @@ internal static class GameComponentSchema
         F(2108, "Attacking", (CharacterSnapshot x) => x.Attacking, (x, v) => x with { Attacking = v }),
         F(2109, "HasMedkit", (CharacterSnapshot x) => x.HasMedkit, (x, v) => x with { HasMedkit = v }),
         F(2110, "HasSplintKit", (CharacterSnapshot x) => x.HasSplintKit, (x, v) => x with { HasSplintKit = v }),
+        F(2111, "ShacklesOpen", (CharacterSnapshot x) => x.ShacklesOpen, (x, v) => x with { ShacklesOpen = v }),
     ];
 
 

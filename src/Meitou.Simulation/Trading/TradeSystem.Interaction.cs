@@ -340,7 +340,7 @@ public sealed partial class TradeSystem
             if (sell) { squad.Money -= price; Funds(world).Money += price; }
             else { Funds(world).Money -= price; squad.Money += price; }
             receipt = paid;
-            world.Post(playerId, Loc.Tr(sell ? "{1} sold {2} for c.{3}" : "{1} bought {2} for c.{3}", world.ShownName(cold), Units(units, item.ShownName()), price));
+
             _heldDeal = world.TradeObservers.Active ? new HeldDeal(c, t, sell, item.Record, units, price, buyback) : null;
             return true;
         }
@@ -404,7 +404,7 @@ public sealed partial class TradeSystem
             if (item.Contents is null) Take(shop.Window, item, placed);
             Funds(world).Money -= price;
             squad.Money += price;
-            world.Post(playerId, Loc.Tr("{1} bought {2} for c.{3}", world.ShownName(cold), Units(placed, item.ShownName()), price));
+
             ReportDeal(world, c, t, false, item.Record, placed, price, buyback);
         }
 
@@ -515,7 +515,7 @@ public sealed partial class TradeSystem
             if (equipped) Assembly.RefreshEquipment(cold);
             squad.Money -= price;
             Funds(world).Money += price;
-            world.Post(playerId, Loc.Tr("{1} sold {2} for c.{3}", world.ShownName(cold), Units(placed, item.ShownName()), price));
+
             ReportDeal(world, c, t, true, item.Record, placed, price, buyback);
         }
 
@@ -697,7 +697,7 @@ public sealed partial class TradeSystem
                     Charges = item.Charges,
                     MaxCharges = item.MaxCharges,
                     StolenFrom = stolen ? item.StolenFrom : -1,
-                    StolenOwner = stolen ? world.Characters.OwnerNameOf(item.Owner) : null,
+                    StolenOwner = stolen ? world.ShownOwnerNameOf(item.Owner, ShownPlace.Tooltip) : null,
                     ModTag = item.ModTag,
                     FenceChance = odds is { } shown ? Math.Clamp(shown, 0, 1) : null,
                     FenceOdds = odds is < 1 ? Math.Max(odds.Value, 0) : null,
@@ -728,7 +728,9 @@ public sealed partial class TradeSystem
                 { From.Holder: ItemHolder.Character } h when goodsOf.ContainsKey(h.From.Character) && world.Characters.TryResolveNext(h.From.Character, out int sellerSlot) => View(h.Item, -1, true, world.Characters.Cold(sellerSlot)!.Faction, world.Characters.Cold(sellerSlot)!.Stats?[StatsEnumerated.Thieving] ?? 0, sellerSlot),
                 _ => null,
             };
-            return new TradeView(_customer, _trader, world.ShownName(world.Characters.Cold(t)!), squad.Money, CanReadFunds(world) ? Funds(world).Money : 0, shop.Window.Width, shop.Window.Height, stock, goods, shop.Terms.BuysStolen, shop.Terms.BuysIllegal)
+            string traderName = world.ShownName(world.Characters.Cold(t)!, ShownPlace.Window);
+            return new TradeView(_customer, _trader, traderName, squad.Money, CanReadFunds(world) ? Funds(world).Money : 0,
+                shop.Window.Width, shop.Window.Height, stock, goods, shop.Terms.BuysStolen, shop.Terms.BuysIllegal)
             {
                 Held = held,
                 GoodsOf = goodsOf,

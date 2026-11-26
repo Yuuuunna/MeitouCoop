@@ -171,6 +171,74 @@ public partial class WorldCheckpointCoordinatorTests
         Assert.NotNull(restored.Coordinator.Capture());
     }
 
+    /// <summary>
+    /// Character tags and Extra Extensions variables are captured with every player's roles, detached before IO and restored before the next
+    /// authoritative world is activated. A later live change must not alter an already captured checkpoint.
+    /// </summary>
+    [Fact]
+    public void CharacterTagsAndVariablesRoundTripWithDetachedMultiplayerCheckpoint()
+    {
+        using var s = new Scene();
+        AddCheckpointVariable(s.Data);
+        var world = s.Runtime.World;
+        int otherFaction = s.Data.RegisterFaction("runtime:b", "B", s.Data.PlayerFaction);
+        var other = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(other.Id, otherFaction, FactionPermission.All);
+        var squad = SquadManagement.NewSquad(world, s.Data.Db, Vector3.Zero, "B", otherFaction);
+        var second = world.Characters.Spawn(new CharacterHot { Position = Vector3.One }, new CharacterCold
+        {
+            Name = "Second role", RecordId = s.Data.Db.OfType(FcsRecordType.Character).First().StringId,
+            Faction = otherFaction, IsPlayer = true, SquadId = squad.Id,
+        }, world.Tick);
+        squad.Members.Add(second);
+        squad.Leader = second;
+        world.Players.AssignInitial(other.Id, second);
+
+        Assert.True(world.CharacterTags.Set(s.Role, "rivals", "first"));
+        Assert.True(world.CharacterTags.Set(second, "rivals", "second"));
+        var firstId = world.Characters.Cold(s.Role.Slot)!.LastingId;
+        var secondId = world.Characters.Cold(second.Slot)!.LastingId;
+        world.Variables.Set("checkpoint-variable", 42);
+        var captured = s.Coordinator.Capture();
+        Assert.Throws<InvalidOperationException>(() => world.CharacterTags.Set(s.Role, "rivals", "during-save"));
+
+        s.Runtime.Step(publish: false, views: false);
+        Assert.True(world.CharacterTags.Set(s.Role, "rivals", "later"));
+        world.Variables.Set("checkpoint-variable", -4);
+        s.Coordinator.Commit(captured);
+
+        var candidate = Data();
+        AddCheckpointVariable(candidate);
+        var loaded = s.Store.LoadCurrent()!;
+        var restored = s.Coordinator.Restore(loaded, candidate, d => [new PlayerSystem(d)], Options(candidate));
+        Assert.Null(restored.CleanupFailure);
+        var current = s.Runtime.World;
+        var first = current.CharacterTags.Find("rivals", "first");
+        var backSecond = current.CharacterTags.Find("rivals", "second");
+        Assert.NotEqual(CharacterId.None, first);
+        Assert.NotEqual(CharacterId.None, backSecond);
+        Assert.Equal(firstId, current.Characters.Cold(first.Slot)!.LastingId);
+        Assert.Equal(secondId, current.Characters.Cold(backSecond.Slot)!.LastingId);
+        Assert.True(current.Players.CanControl(s.Player.Id, first));
+        Assert.True(current.Players.CanControl(other.Id, backSecond));
+        Assert.False(current.Players.CanControl(s.Player.Id, backSecond));
+        Assert.Equal(42, current.Variables.Value(candidate.Db, "checkpoint-variable"));
+        Assert.Equal(7, candidate.Db.Find("checkpoint-variable")!.GetInt("value"));
+        Assert.Throws<InvalidOperationException>(() => SaveImport.Filter(loaded.World.Clone(), ImportOptions.None, candidate));
+    }
+
+    /// <summary>
+    /// A plugin VARIABLE record whose shared catalogue default differs from its saved value.
+    /// </summary>
+    static void AddCheckpointVariable(PopulationData data)
+    {
+        var record = SyntheticTown.Rec("checkpoint-variable", (FcsRecordType)Meitou.Data.Gameplay.VariableData.RecordType, "Checkpoint variable");
+        record.Ints["value"] = 7;
+        var file = new FcsFile();
+        file.Records.Add(record);
+        data.Db.Apply(file, "checkpoint-variables.mod");
+    }
+
     [Fact]
     public void OlderDraftCannotOverwriteANewerCommitAndSameDraftRetryIsIdempotent()
     {

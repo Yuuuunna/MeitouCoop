@@ -124,6 +124,9 @@ static class SaveProbe
                 Vector2? point = a.Count > 4 ? new(float.Parse(a[3]), float.Parse(a[4])) : null;
                 ObeyProbe.Run(probe, a[0], a[1], point, a.Count > 2 ? int.Parse(a[2]) : 15);
                 return true;
+            case ("defeat", >= 1):
+                DefeatProbe.Run(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 0, a.Count > 2 ? int.Parse(a[2]) : 30);
+                return true;
             case ("ko", >= 1): Knockout(probe, int.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 15); return true;
             case ("cages", >= 1): Cages(probe, a[0], a.Count > 1 ? a[1] : null); return true;
             case ("home", _): Home(probe); return true;
@@ -1152,12 +1155,19 @@ static class SaveProbe
     }
 
     /// <summary>
-    /// The bed the first character named like <paramref name="name"/> lies in: its record, yaw and use node yaws, the lie spot and the sleeper's own
-    /// place and yaw as loaded, in degrees (#718: a sleeper lying across a one-node bed).
+    /// The bed each character named like <paramref name="name"/> lies in: its record, yaw and use node yaws, the lie spot, the bed's tilt and lean
+    /// and the sleeper's own place and yaw as loaded, in degrees (#718: a sleeper lying across a one-node bed; #1420: a tilted house's beds).
     /// </summary>
     static void Sleeper(ProbeWorld probe, string name)
     {
-        int who = probe.Named(name)[0];
+        foreach (int who in probe.Named(name)) Sleeper(probe, who);
+    }
+
+    /// <summary>
+    /// One sleeper's bed: as <see cref="Sleeper(ProbeWorld, string)"/>.
+    /// </summary>
+    static void Sleeper(ProbeWorld probe, int who)
+    {
         var c = probe.Characters.Cold(who)!;
         var me = probe.Characters.Next[who];
         Console.WriteLine($"{probe.Who(who)} inWhat={c.InWhat} at {me.Position:F1} yaw={Degrees(me.Yaw):F1}");
@@ -1171,7 +1181,9 @@ static class SaveProbe
         var (spot, yaw) = FixtureRegistry.LieSpot(bed, me.Position, probe.World.GameHours);
         Console.WriteLine($"bed {bed.Id} '{probe.Db.Find(bed.RecordId)?.Name}' at {bed.Position:F1} marker={bed.Marker:F1} yaw={Degrees(bed.Yaw):F1} "
             + $"clip={bed.Bed.Clip} nodes=[{nodes}]");
-        Console.WriteLine($"lie spot {spot:F1} yaw={Degrees(yaw):F1}");
+        float up = bed.Rotation is { } whole ? Vector3.Transform(Vector3.UnitY, whole).Y : 1;
+        Console.WriteLine($"lie spot {spot:F1} yaw={Degrees(yaw):F1} tilt={Degrees(MathF.Acos(Math.Clamp(up, -1, 1))):F1} "
+            + $"lean={FixtureRegistry.LeanOf(bed)?.ToString() ?? "none"}");
     }
 
     /// <summary>
@@ -1389,6 +1401,7 @@ static class SaveProbe
 
         var dialogue = probe.World.Systems.OfType<DialogueSystem>().First();
         for (int waited = 0; dialogue.PublishConversation() is null && waited < 60 * 40; waited += 20) probe.Tick(20);
+        PrintTalk(probe.World);
         foreach (int choice in choices.Prepend(-1))
         {
             if (choice >= 0)
@@ -1406,6 +1419,16 @@ static class SaveProbe
             + $"{probe.Who(npc)} player={t.Cold(npc)!.IsPlayer}");
         PrintRequest(probe, dialogue.PublishRequest());
         probe.PrintMessages();
+    }
+
+    /// <summary>
+    /// The talk lines and bubbles said since the last call, and the dialogue log's talk, say and bubble entries (a Talk that ends at once shows no
+    /// window, only its bubble).
+    /// </summary>
+    static void PrintTalk(World world)
+    {
+        foreach (var line in world.TakeSaid()) Console.WriteLine($"  SAID {line.Owner}: {line.Text}");
+        foreach (string line in world.DialogueLines.Take()) Console.WriteLine($"  LOG {line}");
     }
 
     /// <summary>
@@ -2270,6 +2293,7 @@ static class SaveProbe
               assault <name> [rounds] [interval]  the player's squad attacks a named character; who is near, indoors or out, and how each senses the leader
               move <name> <x> <z> [rounds]  order a character to walk to a point, then watch it
               premises [rounds] [interval]  the building the leader stands in (needs --nav): public flags, house lock, doors, residents, who is inside, lines said
+              defeat <guard> [bounty] [rounds]  a lone player character knocked out, then event 15 fired at it from each awake leader named so until one speaks: its lines and orders
               ko <slot> [rounds]       the sneaking leader's stealth KO order on a slot: the chance, the target's spot meter and the task every 20 ticks
               slaves <radius> [rounds] [interval]  slave state, owner faction, master squad and squad town near the leader; with rounds, each
                                          slave's task, goal, workplace and gap to its marker every interval (200) ticks, and how many work

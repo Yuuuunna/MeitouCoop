@@ -122,6 +122,14 @@ attributed placement without a validator is rejected. Preview and authority shar
 Authority uses live sites/roles, complete CPU footprints, resource readings and owned-parent floor surfaces;
 missing declared collision cannot count as empty space. Parent references are canonical world keys.
 
+**Observed** (source): `PlaceBuildings.WallLines` describes each wall line once, including its plan range, master, endpoints, snaps and
+direction. Runtime shares the preview's pure `WallLine`/`WallJointPass` geometry, but reconstructs each line from live nodes, research and
+finite terrain samples before comparing its records and ordered transforms. Submitted snap flags cannot establish a joint by themselves.
+Only sites successfully accepted earlier in this command become queued ghosts; pre-existing connectors keep the placed-building rules.
+Validated line pieces use their own indexed joint passes. An undone suffix may leave a valid prefix, but a partial or failed line cannot
+provide the chained continuation of a complete line. Single-piece commands remain supported without line metadata. Candidate snap lookup
+uses linear endpoint scans rather than an all-walls pairwise join graph.
+
 **Observed** (`PlacementCheck.SlopeBlock`): exterior placement retains the positive `max slope` limit when no `affects footprint` node
 has readable bounds, even without `match slope`; missing bounds cannot establish the ghost's vertical tolerances.
 
@@ -135,7 +143,9 @@ town and owner together, so unassigned town number 0 never shares electricity be
 **Verified** by `PlacementAuthorityTests`: competing/duplicate placement, live blockers, missing geometry,
 unready footprint corners, parent ownership/floors/completion, resources, slope, transforms, observation
 range and revoked grants. The install-backed `HeadlessContentTests` loads real content, prepares a second
-navigation region and places an exterior building without GPU initialization. Placement still inherits
+navigation region and places an exterior building without GPU initialization. `WallPlacementAuthorityTests` additionally covers real and
+level-wall joints, forged snaps, pose/order changes, queued versus placed connectors, mixed plans, chained lines, undo prefixes and missing
+terrain samples using synthetic geometry. Placement still inherits
 the engine's unresolved snap/use-node and surface-rule limitations; these checks do not prove all indoor,
 ceiling, wall-joint or mod-content placement. Cold collision loading is synchronous and needs integration
 with region preparation; request-id deduplication is still separate unfinished work.

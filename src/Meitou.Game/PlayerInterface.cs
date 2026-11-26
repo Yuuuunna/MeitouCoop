@@ -1304,6 +1304,9 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         CharacterEditor.EditorPointerUp(button);
         bool contextRelease = ContextMenuWindow.ContextMenuRelease(button, p);
         if (button == MouseButton.Left) Production.ResearchPointerUp(p, contextRelease);
+
+        // A left release the context menu took still ends a job row's drag (its copy would follow the pointer on).
+        if (button == MouseButton.Left && contextRelease) OrdersPanel.JobDrag = null;
         if (contextRelease) return;
         if (button == MouseButton.Left && GroundItemPicks.LabelPress is { } labelled)
         {

@@ -641,7 +641,10 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
 - **Triggers**: law dialogue packages ("police", "Npc MILITARY Law 3", "... Holy Nation Law 3", "Npc TOUGH Vigilante Law 3", gate and city
   guards) answer events 8 `THIEF_CAUGHT_STEALING_FROM_ME`, 41 `WITNESS_GENERIC_ASSAULT`, 43 `WITNESS_THIEF_OR_LOCKPICK`, 44 `BOUNTY_SPOTTED`,
   45 `ESCAPED_PRISONER_SPOTTED`, 40 `ESCAPED_EX_SLAVE_SPOTTED`, 15 `I_DEFEATED_SQUAD` ("Law enforcement defeats squad (arrest them)",
-  gated by `DC_CARRYING_BOUNTY_ALIVE` false) and 1 `PLAYER_TALK_TO_ME` with lines carrying `DA_ARREST_TARGET` (29). Bounty dialogues
+  gated by `DC_CARRYING_BOUNTY_ALIVE` false, and by the speaker being in a non-player town (31) and its squad's leader (19), a target squad not
+  only animals (38), chance permanent and temporary 50, **Verified** by `meitou-tools record` / `probe talk` on record 13613-Escapes.mod; fired by the melee
+  striker that downs a squad's last standing member,
+  [squad defeat](factions-squads-towns.md#35-what-fires-relation-changes-observed-decompile)) and 1 `PLAYER_TALK_TO_ME` with lines carrying `DA_ARREST_TARGET` (29). Bounty dialogues
   branch on `DC_BOUNTY_AMOUNT_ACTUAL`: "Small bounty" (0 < b < 1050) offers a fine; refusing or lacking money runs `DA_ARREST_TARGET`;
   "small fry" (1050 < b < 25000) and "super high" (> 25000) arrest at once. "Surrender" exists only as these dialogue choices; there is no
   surrender state.
@@ -668,7 +671,9 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
   packages; **Verified** by probe): desire 1 when the cage finder finds a free cage, else 0 (AI slot 33 `FUN_140598a90`); target finder
   `FUN_14099bfc0`: the first sensed character (mask 0x400e/0x221) not carried, not of a `not real` faction, not an animal (slot `0x248`), not
   imprisoned, that has a perceived bounty with the guard (`FUN_140853fd0`: the entry for the guard's booking faction, visible while
-  `+0x110 > 0`, or when the target is down and an enemy), or that the guard's squad marks with flag 7, or regards as an enemy.
+  `+0x110 > 0`, or when the target is down and an enemy), or that the guard's squad marks with flag 7, or regards as an enemy. Both enemy tests
+  are the guard's vfunc `0x3e8` (`isEnemy`, `FUN_14079c950`) with 1, squad memory first ([combat](combat.md#enemy-test), **Verified**, decompile of both), so a
+  body the guard's squad tagged TEMP_ENEMY (DA 29's fight outside his town) is taken whatever the faction relation.
   **Observed** (installed 1.0.68 disassembly, `FUN_14099bfc0`, `FUN_140853960`; [sense tags](perception.md#sense-tags-who-is-an-enemy)):
   exclude mask 0x221 removes allies (bit 0), current slaves (state 1, bit 5) and prisoners (bit 9) before any bounty test.
   Effect 129 leads the planner to 203 Arresting (list B: target down, unarmed, carried) and then the cage goals. 203's desire (AI slot 32
@@ -704,7 +709,9 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
   literals 5, 40, 4, 0.6, 0.75 `data_values.txt`, **Verified**; the meter's own step, `FUN_140855e80`, **Observed** as for a sneaker,
   [perception](perception.md)). So a stealth-0 target in full view of an awake guard in his town takes 45 x 2.5 = 112.5 s. Meitou
   (`ArrestSettings.RecognitionSeconds` 45): one meter per suspect filling in 45 s while any looker sees it (engine); not while the target is
-  carried or imprisoned. Recognition fires `EV_BOUNTY_SPOTTED` (44) at every call, with no
+  carried or imprisoned, while a down or dead one counts (`ArrestSystem.Spottable`; the function tests nothing else of the target, nor does its
+  caller `FUN_1408580d0`, which runs it for every sensed character and only then tags a dead one; the sense gather holds the dead, and the event
+  fire `FUN_140685660` / `FUN_140684990` refuses a dead speaker only, **Verified**, decompile). Recognition fires `EV_BOUNTY_SPOTTED` (44) at every call, with no
   timer, while the looker is not in combat mode (`FUN_140436610`), its squad does not love the target (`FUN_140599590`: long tags & 0xc) and it does not regard it as
   friendly (vfunc `0x3f0` = `FUN_1407923d0` with 0: real factions, its own test includes the love); a bounty below 1 sets the target's `+0x110` to 250 instead, under the same gates (**Verified**, decompile). The
   bounty branch itself (no uniform piece, `+0x100` <= 0) is taken only while the looker does not regard the target as friendly with the disguise read

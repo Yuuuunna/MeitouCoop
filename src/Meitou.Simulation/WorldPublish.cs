@@ -303,6 +303,7 @@ public sealed partial class World
             FoliageOutposts = PublishFoliageOutposts(population),
             WorkSites = _production?.LocalWorkSitesView(this) ?? [],
             MapSquads = _mapSquads.Published(this),
+            CraftStations = _production?.CraftStationsView(this) ?? [],
             Crafts = _production?.CraftsView(this) ?? Snapshot.Crafts,
             Smiths = _production?.SmithsView(this) ?? Snapshot.Smiths
         };
@@ -616,6 +617,7 @@ public sealed partial class World
         s.PortraitSerial = cold?.PortraitSerial ?? 0;
         s.LastingId = cold?.LastingId ?? LastingId.None;
         s.ShacklesLocked = shown && Locks.LockSystem.WornShackles(cold) is not null;
+        s.ShacklesOpen = shown && cold is { IsPlayer: true } && Locks.LockSystem.OpenShackles(cold) is not null;
         s.CanBeShackled = shown && cold is { IsPlayer: false } && Locks.LockSystem.CanBeShackled(cold, true);
         s.CarriesShackles = selected && Locks.LockSystem.CarriedShackles(cold) is not null;
         s.HasMedkit = selected && cold is not null && FirstAid.FirstAidSystem.MedkitAtHand(cold);
@@ -921,7 +923,7 @@ public sealed partial class World
         return InventoryItemView.Of(index, item) with
         {
             StolenFrom = stolen ? item.StolenFrom : -1,
-            StolenOwner = stolen ? ShownOwnerNameOf(item.Owner) : null,
+            StolenOwner = stolen ? ShownOwnerNameOf(item.Owner, ShownPlace.Tooltip) : null,
             StealChance = steal?.Invoke(item)
         };
     }
@@ -1012,12 +1014,13 @@ public sealed partial class World
     }
 
     /// <summary>
-    /// A locked item worn (not in the main grid): shackles. A loop, not Any with a lambda: it runs for every character on every publish.
+    /// Shackles worn in the boots or armour section, locked or not (<see cref="Locks.LockSystem.CuffSection"/>; the original's flag 0x10,
+    /// <c>FUN_1405c8a10</c>). A loop, not Any with a lambda: it runs for every character on every publish.
     /// </summary>
     static bool WearsLocked(Items.Inventory worn)
     {
         foreach (var item in worn.Items)
-            if (item.IsLocked && item.Section != "main") return true;
+            if (item.IsLocked && Locks.LockSystem.CuffSection(item.Section)) return true;
 
         return false;
     }

@@ -1635,7 +1635,11 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
         Deeds?.Caged(world, g, b);
         Arrests?.Claim(world, g, d.Body, cage);
-        if (table.Cold(b) is { IsPlayer: true } body) world.PostCharacter(body, $"{world.ShownName(body)} has been locked in a cage by {World.ShownName(data.Factions[d.Faction])}");
+        if (table.Cold(b) is { IsPlayer: true } body)
+        {
+            string bodyName = world.ShownName(body, ShownPlace.Notice), factionName = World.ShownName(data.Factions[d.Faction]);
+            world.PostCharacter(body, $"{bodyName} has been locked in a cage by {factionName}");
+        }
         return End(world, d);
     }
 

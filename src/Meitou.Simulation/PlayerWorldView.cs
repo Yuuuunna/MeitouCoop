@@ -269,6 +269,8 @@ public sealed partial class World
                 .Select(c => c with { Occupant = visible.Contains(c.Occupant) ? c.Occupant : CharacterId.None }).ToArray(),
             OwnedTownBuildings = player.Memberships.Where(m => Manage(m.Key)).SelectMany(m => Fixtures.OwnedProperties(m.Key)).ToHashSet(StringComparer.Ordinal),
             Machines = machines,
+            CraftStations = (_production?.CraftStationsView(this, state.Faction) ?? [])
+                .Where(station => managedMachines.Contains(station.Site)).ToArray(),
             WorkSites = workSites,
             MachinesVersion = Machines.Version,
             Research = activeFaction?.Research ?? ResearchSnapshot.Empty,
