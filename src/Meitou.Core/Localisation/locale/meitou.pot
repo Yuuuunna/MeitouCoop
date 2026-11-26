@@ -561,13 +561,11 @@ msgstr ""
 msgid "An animal in a cage or on a pole breathes, looks around and lies down when knocked out. In the game it stands frozen there, since the cage's poses are for people only."
 msgstr ""
 
-#: src/Meitou.Game/Settings/GamePages.cs src/Meitou.Game/SettingsMenu.cs
-
 #: src/Meitou.Game/Settings/GamePages.cs
 msgid "An item dragged out of a knocked-out or dead character's inventory onto the ground drops there, as a take from that character: it can be seen as theft, and a body whose meat or parts are dropped is butchered. In the game it goes back to the body."
 msgstr ""
 
-#: src/Meitou.Game/Settings/GamePages.cs
+#: src/Meitou.Game/Settings/GamePages.cs src/Meitou.Game/SettingsMenu.cs
 msgid "Animals pick up items"
 msgstr ""
 
@@ -1385,6 +1383,7 @@ msgstr ""
 
 #: src/Meitou.Game/SettingsMenu.cs
 msgid "Controlled by the server."
+msgstr ""
 
 #: src/Meitou.Game/Settings/SettingHints.cs
 msgid "Controls the coverage of the thicker Altocumulus clouds."
@@ -1823,12 +1822,10 @@ msgid "Draw the interface at the screen's size over a stretched picture (virtual
 msgstr ""
 
 #: src/Meitou.Game/Settings/GamePages.cs src/Meitou.Game/SettingsMenu.cs src/Meitou.Game/Ui/ServerRuleValues.cs
-
-#: src/Meitou.Game/Settings/GamePages.cs
 msgid "Drop from loot"
 msgstr ""
 
-#: src/Meitou.Game/Settings/GamePages.cs
+#: src/Meitou.Game/Settings/GamePages.cs src/Meitou.Game/SettingsMenu.cs src/Meitou.Game/Ui/ServerRuleValues.cs
 msgid "Dropped items kept"
 msgstr ""
 
@@ -3702,6 +3699,7 @@ msgstr ""
 
 #: src/Meitou.Game/Settings/ModSettingsRows.cs
 msgid "Mod settings cannot be changed while connected."
+msgstr ""
 
 #: src/Meitou.Game/Ui/RecordModsText.cs
 msgid "Mod: {1}"
@@ -7573,11 +7571,6 @@ msgstr ""
 msgid "{1} at {2}: run {3} of {4}, launch {5} of {6}"
 msgstr ""
 
-#: src/Meitou.Simulation/Trading/TradeSystem.Interaction.cs
-msgid "{1} bought {2} for c.{3}"
-msgstr ""
-
-
 #: launcher/Meitou.Launcher/GraphicsPage.cs
 msgid "{1} changes from the game"
 msgstr ""
@@ -7754,11 +7747,6 @@ msgstr ""
 #: launcher/Meitou.Launcher/Benchmarks/BenchmarkRunner.cs
 msgid "{1} skipped: this build has no such benchmark."
 msgstr ""
-
-#: src/Meitou.Simulation/Trading/TradeSystem.Interaction.cs
-msgid "{1} sold {2} for c.{3}"
-msgstr ""
-
 
 #: src/Meitou.Game/Mods/GameMods.cs
 msgid "{1} squad(s) given their own squad AI options by a mod that is not loaded follow yours again."

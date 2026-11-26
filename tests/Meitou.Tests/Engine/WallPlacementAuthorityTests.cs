@@ -33,6 +33,7 @@ public class WallPlacementAuthorityTests
         public readonly WorldPlayer Actor;
         public readonly Dictionary<string, BuildingBuildData> Data;
         public readonly List<(string Key, string Record, Vector3 Position, Quaternion Rotation)> Level = [];
+        public Func<float, float, float> Terrain = Ground;
         readonly PlacementServices _services;
 
         public Scene()
@@ -42,14 +43,14 @@ public class WallPlacementAuthorityTests
             var box = Record("box", 0, 10);
             box.Bools["links together"] = false;
             var records = new[] { wall, Record("short", 4, 40), Record("connector", 1, 0), Record("wedge", 2, 0), box };
-            Data = records.Select(BuildingBuildData.From).ToDictionary(data => data.Id);
             var tech = SyntheticTown.Rec("wall-tech", FcsRecordType.Research, "Wall tech");
             tech.References["enable buildings"] = [SyntheticTown.Ref("wall"), SyntheticTown.Ref("box")];
             var db = SyntheticTown.Database(extra: [.. records, tech]);
+            Data = records.Select(record => BuildingBuildData.From(db.Find(record.StringId)!)).ToDictionary(data => data.Id);
             var constants = GameConstants.FromDatabase(db);
             _services = new PlacementServices
             {
-                Ground = Ground,
+                Ground = (x, z) => Terrain(x, z),
                 Footprint = Footprint,
                 StaticAround = (_, _) => Level.Select(item => new PlacedFootprint(item.Key,
                     Footprint(item.Record).Place(item.Position, item.Rotation), item.Record, item.Position, item.Rotation)),
@@ -102,6 +103,7 @@ public class WallPlacementAuthorityTests
             var intent = new WallLineIntent("wall", start, end, snappedStart is not null, snappedEnd is not null, reversed);
             return new PlaceBuildings(pieces.Select(piece => new PlannedBuilding(piece.Data.Id, piece.Position, piece.Rotation)).ToArray())
             {
+                Tick = 0,
                 WallLines = [new PlannedWallLine(0, pieces.Count, intent)],
             };
         }
@@ -165,11 +167,11 @@ public class WallPlacementAuthorityTests
         using var placed = new Scene();
         var wall = new PlannedBuilding("wall", Scene.At, Quaternion.Identity);
         placed.Add("old-connector", "connector", Scene.At, Quaternion.Identity);
-        placed.Send(new PlaceBuildings([wall]));
+        placed.Send(new PlaceBuildings([wall]) { Tick = 0 });
         Assert.DoesNotContain(placed.World.Buildings.All, site => site.Owner == 2);
 
         using var queued = new Scene();
-        queued.Send(new PlaceBuildings([new PlannedBuilding("connector", Scene.At, Quaternion.Identity), wall]));
+        queued.Send(new PlaceBuildings([new PlannedBuilding("connector", Scene.At, Quaternion.Identity), wall]) { Tick = 0 });
         Assert.Equal(2, queued.World.Buildings.All.Count());
     }
 
@@ -186,6 +188,7 @@ public class WallPlacementAuthorityTests
         var plans = new[] { ordinary }.Concat(first.Plans).Concat(second.Plans).ToArray();
         var command = new PlaceBuildings(plans)
         {
+            Tick = 0,
             WallLines = [first.WallLines[0] with { FirstPlan = 1 }, second.WallLines[0] with { FirstPlan = first.Plans.Count + 1 }],
         };
 
@@ -218,6 +221,7 @@ public class WallPlacementAuthorityTests
         var bad = first.Plans.Select(plan => plan with { Position = plan.Position + new Vector3(10, 0, 0) });
         var command = new PlaceBuildings(bad.Concat(second.Plans).ToArray())
         {
+            Tick = 0,
             WallLines = [first.WallLines[0], second.WallLines[0] with { FirstPlan = first.Plans.Count }],
         };
 
@@ -237,6 +241,7 @@ public class WallPlacementAuthorityTests
         var second = scene.Line(next, next + new Vector3(800, 0, 0), new WallSnap(next, Vector3.UnitZ, 1));
         var command = new PlaceBuildings(first.Plans.Concat(second.Plans).ToArray())
         {
+            Tick = 0,
             WallLines = [first.WallLines[0], second.WallLines[0] with { FirstPlan = first.Plans.Count }],
         };
 
@@ -255,5 +260,19 @@ public class WallPlacementAuthorityTests
         scene.Send(command);
 
         Assert.Equal(2, scene.World.Buildings.All.Count());
+    }
+
+    [Fact]
+    public void ANonFiniteIntermediateGroundSampleRejectsTheLine()
+    {
+        using var scene = new Scene();
+        var command = scene.Line(Scene.At, Scene.At + new Vector3(0, 0, 800));
+        scene.Terrain = (x, z) => z > Scene.At.Z + 100 && z < Scene.At.Z + 150 ? float.NaN : Scene.Ground(x, z);
+        var batch = scene.Placement.BeginBatch(scene.World, scene.Actor.Id, 2, command);
+
+        Assert.Equal(PlacementFailure.NotAvailable, batch.Check(0));
+        Assert.Equal(PlacementFailure.InvalidPlan, batch.Check(1));
+        scene.Send(command);
+        Assert.Empty(scene.World.Buildings.All);
     }
 }

@@ -98,7 +98,7 @@ public sealed class UpstreamInteractionNetworkTests
         Assert.Equal("main", s.Cuffs(s.First).Section);
         Assert.Equal("boots", s.Cuffs(s.Second).Section);
         Assert.False(s.View().Snapshot.Characters.Single(c => c.Id == s.First).ShacklesOpen);
-        Assert.Equal("shackles", Assert.Single(s.View().Events.Sounds.Where(e => e.Value.Kind == SoundKind.ShacklesOff)).Value.Item);
+        Assert.Equal("shackles", Assert.Single(s.View().Events.Sounds, e => e.Value.Kind == SoundKind.ShacklesOff).Value.Item);
 
         var otherConnection = s.World.Authority.Open(s.B.Id);
         Assert.True(s.World.Authority.BeginSynchronization(otherConnection));
@@ -106,7 +106,7 @@ public sealed class UpstreamInteractionNetworkTests
 
         var replay = await s.Channel.ReceiveCommand(command);
         Assert.Equal(await pending, replay);
-        Assert.Single(s.View().Events.Sounds.Where(e => e.Value.Kind == SoundKind.ShacklesOff));
+        Assert.Single(s.View().Events.Sounds, e => e.Value.Kind == SoundKind.ShacklesOff);
         Assert.Empty(s.World.GroundItems.Published());
     }
 
@@ -163,6 +163,8 @@ public sealed class UpstreamInteractionNetworkTests
         Assert.Equal(sounds, replica.View.Events.Sounds.Select(e => e.Value));
         Assert.Throws<InvalidDataException>(() => codec.Encode(source with { Snapshot = source.Snapshot with
             { CraftStations = [new("bench", "One"), new("bench", "Two")] } }));
+        Assert.Throws<InvalidDataException>(() => codec.Encode(source with { Snapshot = source.Snapshot with
+            { CraftStations = [new(new string('站', 342), "Too long in UTF-8")] } }));
     }
 
     [Fact]

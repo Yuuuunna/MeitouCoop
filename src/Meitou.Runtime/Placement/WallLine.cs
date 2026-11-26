@@ -93,12 +93,7 @@ public static class WallLine
         foreach (var (data, position, rotation) in walls)
         {
             if (!data.LinksTogether) continue;
-            var (start, end) = Ends(data, position, rotation);
-            var dir = Horizontal(Vector3.Transform(Vector3.UnitZ, Normalised(rotation)));
-            var endDir = dir;
-            if (data.LinkType == Connector)
-                endDir = Vector3.Transform(dir, Quaternion.CreateFromAxisAngle(Vector3.UnitY, ConnectorTurnDegrees * MathF.PI / 180));
-            links.Add(new WallLink(start, end, dir, endDir));
+            links.Add(Link(data, position, rotation));
         }
         for (int i = 0; i < links.Count; i++)
             for (int j = 0; j < links.Count; j++)
@@ -113,6 +108,19 @@ public static class WallLine
                     a.JoinsAtEnd++;
             }
         return links;
+    }
+
+    /// <summary>
+    /// One wall's endpoints and directions before join counts; authority checks needing only a particular joint need not compare every wall pair.
+    /// </summary>
+    public static WallLink Link(BuildingBuildData data, Vector3 position, Quaternion rotation)
+    {
+        var (start, end) = Ends(data, position, rotation);
+        var direction = Horizontal(Vector3.Transform(Vector3.UnitZ, Normalised(rotation)));
+        var endDirection = data.LinkType == Connector
+            ? Vector3.Transform(direction, Quaternion.CreateFromAxisAngle(Vector3.UnitY, ConnectorTurnDegrees * MathF.PI / 180))
+            : direction;
+        return new WallLink(start, end, direction, endDirection);
     }
 
     /// <summary>

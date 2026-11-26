@@ -446,6 +446,14 @@ World fields 1056–1058 add `MapSquads` (Knowledge), `WorkSites` and `FoliageOu
 79 and 166 encode item rotation, squad autonomy, squad home, machine arrangement and held rotation respectively. The engine/build
 compatibility identity fences peers with older component or command schemas; protocol 21 framing is unchanged.
 
+**Observed** (schema): field 1073 (`CraftStations`, Economy) uses the existing keyed collection manifest and per-site entries; keys have the
+shared 1024-byte UTF-8 limit, with at most 65,536 entries and 4096 UTF-16 units per name. Field 2111 (`ShacklesOpen`, Vitals) is a changed-only
+boolean projected only for controlled characters. Command 156 removes a wearer's currently unlocked shackles after authority revalidation.
+`PlaceBuildings.WallLines` carries ordered, disjoint plan ranges and one finite `WallLineIntent` per line; the authority regenerates the
+pieces before granting any joint collision pass. `ShacklesOff` and `Victory` fit the existing five-bit sound-kind field. These additions
+require the [current engine build identity](networking.md), without changing protocol 21 framing. Scope and measurements are documented
+in [the interaction bandwidth increment](networking.md#crafting-and-interaction-increment).
+
 **Observed** (`JsonComponentCompression`, schema encode/decode): ordinary JSON fields and keyed collection entries of at least 1 KiB use independent
 Brotli streams (quality 1, window 22) only when the complete envelope saves at least 128 bytes and 12.5%. The envelope is `00 4D 4A 43`,
 version byte `01`, exact uncompressed length (little-endian int32), then the stream; a field's existing presence byte remains outside it.

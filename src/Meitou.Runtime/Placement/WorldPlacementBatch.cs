@@ -49,6 +49,11 @@ sealed class WorldPlacementBatch : IConstructionPlacementBatch
     readonly Dictionary<string, int> _accepted = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Accepted plan identities for constant-time continuation validation, independent of the number of sites already placed.
+    /// </summary>
+    readonly HashSet<int> _acceptedPlans = [];
+
+    /// <summary>
     /// A verified line and the shared pass computed from its actual snapped joints.
     /// </summary>
     sealed record ResolvedLine(IReadOnlyList<WallPiece> Pieces, WallJointPass Pass);
@@ -76,7 +81,11 @@ sealed class WorldPlacementBatch : IConstructionPlacementBatch
     /// <summary>
     /// A failed plan is never registered; successfully placed sites remain live geometry for the rest of the batch.
     /// </summary>
-    public void Accepted(int index, BuildSite site) => _accepted.Add(site.Id, index);
+    public void Accepted(int index, BuildSite site)
+    {
+        _accepted.Add(site.Id, index);
+        _acceptedPlans.Add(index);
+    }
 
     /// <summary>
     /// Line pieces use their once-regenerated line context rather than rebuilding ordinary ghost snap candidates for every piece.
@@ -92,7 +101,10 @@ sealed class WorldPlacementBatch : IConstructionPlacementBatch
         if (lineIndex >= 0)
         {
             if (!_resolved.TryGetValue(lineIndex, out var resolved))
+            {
+                _resolved[lineIndex] = null;
                 _resolved[lineIndex] = resolved = ResolveLine(lineIndex, query.Services);
+            }
             if (resolved is null) return null;
 
             int piece = index - _command.WallLines[lineIndex].FirstPlan;
@@ -161,13 +173,26 @@ sealed class WorldPlacementBatch : IConstructionPlacementBatch
         foreach (var start in starts)
             foreach (var end in ends)
             {
-                var pieces = WallLine.Layout(master, _placement.Data, services.Ground, intent.Start, start, intent.End, end, intent.Reversed);
+                var pieces = WallLine.Layout(master, _placement.Data, (x, z) => Ground(services, x, z),
+                    intent.Start, start, intent.End, end, intent.Reversed);
                 if (!Matches(line, pieces)) continue;
 
                 return new ResolvedLine(pieces, new WallJointPass(pieces, WallLine.Shortest(master, _placement.Data),
                     start?.Point, end?.Point));
             }
         return null;
+    }
+
+    /// <summary>
+    /// Every terrain sample must exist and be finite; the layout's zero-delta fallback must not turn unavailable ground into a straight wall.
+    /// </summary>
+    static float Ground(PlacementServices services, float x, float z)
+    {
+        if (!float.IsFinite(x) || !float.IsFinite(z)) throw new InvalidDataException("Invalid wall terrain sample coordinates.");
+
+        float height = services.Ground(x, z);
+        if (!float.IsFinite(height)) throw new InvalidDataException("Wall terrain sample is unavailable.");
+        return height;
     }
 
     /// <summary>
@@ -179,18 +204,20 @@ sealed class WorldPlacementBatch : IConstructionPlacementBatch
         foreach (var snap in WorldWallSnaps.At(_world, services, _placement.Data, intent.Start))
             if (snap.Reverses == intent.Reversed) yield return snap;
 
+        if (_placement.Data(intent.Master) is not { LinkType: 0 }) yield break;
+
         for (int previous = 0; previous < index; previous++)
         {
             var prior = _command.WallLines[previous];
             var old = prior.Intent;
             if (old.Master != intent.Master || old.Reversed != intent.Reversed || old.EndSnapped
-                || !_resolved.TryGetValue(previous, out var resolved) || resolved is null || prior.PieceCount != resolved.Pieces.Count
-                || Enumerable.Range(prior.FirstPlan, prior.PieceCount).Any(plan => !_accepted.ContainsValue(plan))) continue;
+                || !_resolved.TryGetValue(previous, out var resolved) || resolved is null || prior.PieceCount != resolved.Pieces.Count) continue;
 
             var last = resolved.Pieces[^1];
             var (start, end) = WallLine.Ends(last.Data, last.Position, last.Rotation);
             var point = old.Reversed ? start : end;
             if (!WorldWallSnaps.Near(point, intent.Start)) continue;
+            if (Enumerable.Range(prior.FirstPlan, prior.PieceCount).Any(plan => !_acceptedPlans.Contains(plan))) continue;
 
             var flat = old.End - old.Start;
             flat.Y = 0;

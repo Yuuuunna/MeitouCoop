@@ -23,18 +23,31 @@ static class WorldWallSnaps
         int mask = 3)
     {
         var known = world.Buildings.All.Select(site => site.Id).ToHashSet(StringComparer.Ordinal);
-        var walls = world.Buildings.All.Select(site => (Data: data(site.Record), site.Position, site.Rotation))
+        var links = world.Buildings.All.Select(site => (Data: data(site.Record), site.Position, site.Rotation))
             .Concat(services.LinkedAround(new(point.X, point.Z), LevelReach)
                 .Where(wall => !known.Contains(wall.Key)).Select(wall => (Data: data(wall.Record), wall.Position, wall.Rotation)))
             .Where(wall => wall.Data is { LinksTogether: true })
-            .Select(wall => (wall.Data!, wall.Position, wall.Rotation));
-        var found = new HashSet<WallSnap>();
-        foreach (var link in WallLine.Links(walls))
+            .Select(wall => WallLine.Link(wall.Data!, wall.Position, wall.Rotation)).ToArray();
+        var candidates = new List<(int Wall, WallSnap Snap)>();
+        for (int i = 0; i < links.Length; i++)
         {
-            var start = new WallSnap(link.Start, link.StartDirection, link.JoinsAtStart == 0 ? 2 : 3);
-            var end = new WallSnap(link.End, link.EndDirection, link.JoinsAtEnd == 0 ? 1 : 3);
-            if ((start.Code & mask) != 0 && Near(start.Point, point) && found.Add(start)) yield return start;
-            if ((end.Code & mask) != 0 && Near(end.Point, point) && found.Add(end)) yield return end;
+            var link = links[i];
+            if (Near(link.Start, point)) candidates.Add((i, new WallSnap(link.Start, link.StartDirection, 2)));
+            if (Near(link.End, point)) candidates.Add((i, new WallSnap(link.End, link.EndDirection, 1)));
+        }
+        if (candidates.Count == 0) yield break;
+
+        // Every candidate is within 0.01 of point, so two different candidate walls necessarily join. Otherwise at most the one wall's two
+        // endpoints need a linear neighbor scan. This preserves the original's free/joined codes without an all-walls quadratic join graph.
+        bool multipleWalls = candidates.Any(candidate => candidate.Wall != candidates[0].Wall);
+        var found = new HashSet<WallSnap>();
+        foreach (var (wall, candidate) in candidates)
+        {
+            bool joined = multipleWalls || links.Where((_, index) => index != wall).Any(other =>
+                Vector3.DistanceSquared(candidate.Point, other.Start) < WallLine.JoinDistanceSquared
+                || Vector3.DistanceSquared(candidate.Point, other.End) < WallLine.JoinDistanceSquared);
+            var snap = candidate with { Code = joined ? 3 : candidate.Code };
+            if ((snap.Code & mask) != 0 && found.Add(snap)) yield return snap;
         }
     }
 
