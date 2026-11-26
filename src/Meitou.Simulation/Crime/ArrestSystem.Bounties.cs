@@ -2,6 +2,7 @@ using System.Numerics;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Simulation.Aggro;
 using Meitou.Simulation.Ai;
+using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Locks;
 using Meitou.Simulation.Movement;
@@ -617,24 +618,61 @@ public sealed partial class ArrestSystem : IOrderOwner
 
     /// <summary>
     /// A bounty the target carries that the guard sees (goal 204's finder, <c>FUN_140853fd0</c>, <b>Verified</b>): the entry of the guard's booking
-    /// faction is above 0, and either the target is recently wanted (the status marker above 0) or it is down and the guard regards it as an enemy.
+    /// faction is above 0, and either the target is recently wanted (the status marker above 0) or it is down and the guard regards it as an enemy
+    /// (<see cref="Enemy"/>, the guard's vfunc <c>0x3e8</c> with 1).
     /// </summary>
-    internal bool PerceivedBounty(CharacterCold guard, CharacterCold target)
+    internal bool PerceivedBounty(World world, int g, CharacterCold guard, int t, CharacterCold target)
     {
         if ((target.Bounties?.BookedAmount(Crimes.Relations, guard.Faction) ?? 0) <= 0) return false;
         if (target.RecentlyWanted > 0) return true;
 
-        return target.Medical is { Incapacitated: true } && Enemy(guard, target);
+        return target.Medical is { Incapacitated: true } && Enemy(world, g, guard, t, target);
     }
 
     /// <summary>
-    /// Whether the guard's faction regards the target's as an enemy.
+    /// Whether the guard regards the target as an enemy (<c>isEnemy</c>, <c>FUN_14079c950</c>, <b>Verified</b>, docs/game/combat.md "Enemy test"):
+    /// never one of its own faction; the squads' memory decides first (<see cref="CharacterFacts.SquadMemoryEnemy"/>: a target the guard's squad
+    /// tagged TEMP_ENEMY, as DA 29's fight does, is an enemy whatever the factions), else the faction part (<see cref="FactionEnemy"/>).
     /// </summary>
-    internal bool Enemy(CharacterCold guard, CharacterCold target)
+    internal bool Enemy(World world, int g, CharacterCold guard, int t, CharacterCold target)
+    {
+        if (guard.Faction == target.Faction) return false;
+        if (CharacterFacts.SquadMemoryEnemy(world, Talk?.Memory, g, guard, t, target) is { } memory) return memory;
+
+        return FactionEnemy(world, guard, target);
+    }
+
+    /// <summary>
+    /// The faction part of <c>FUN_14079c950</c> with its disguise flag set, as both arrest callers pass it (<b>Verified</b>, decompile; docs/game/
+    /// perception.md "Slot 125"): a working disguise stands in for the target's faction and skips the slave test; else a slave target (state 1)
+    /// needs the guard hostile to its owner's faction, which is never the guard's own; a slave guard spares its master's faction; a freed guard
+    /// regards nobody as an enemy, and a freed target only a guard of a faction that is not real or has a default relation below -30; then the
+    /// guard's faction is hostile to the one the target passes for (relation -30 or less, <c>FUN_1406b25d0</c>, no coexistence test).
+    /// </summary>
+    bool FactionEnemy(World world, CharacterCold guard, CharacterCold target)
     {
         var relations = Crimes.Relations;
-        return relations.Contains(guard.Faction) && relations.Contains(target.Faction) && AggroSystem.IsEnemy(relations, guard.Faction, target.Faction);
+        if (!relations.Contains(guard.Faction)) return false;
+
+        bool disguised = WorkingDisguise(target);
+        if (!disguised && target.SlaveState == 1 && !HostileTo(guard.Faction, target.SlaveOwner)) return false;
+        if (guard is { SlaveState: 1, SlaveMaster: >= 0 } && world.Squads.Find(guard.SlaveMaster)?.Faction == target.Faction) return false;
+        if (guard.Freed || target.Freed && !FreedStillHostile(guard.Faction)) return false;
+
+        return HostileTo(guard.Faction, disguised ? target.DisguiseFaction : target.Faction);
     }
+
+    /// <summary>
+    /// Whether <paramref name="mine"/> is hostile to <paramref name="theirs"/>, a known faction (relation -30 or less; never its own).
+    /// </summary>
+    bool HostileTo(int mine, int theirs) => Crimes.Relations.Contains(theirs) && Crimes.Relations.IsHostile(mine, theirs);
+
+    /// <summary>
+    /// Whether a guard of <paramref name="faction"/> still regards a freed target as an enemy: its faction is not real or its default relation is
+    /// below <see cref="AggroSystem.FreedHostility"/>.
+    /// </summary>
+    bool FreedStillHostile(int faction) =>
+        Crimes.Relations.Factions[faction] is { } own && (own.NotReal || own.DefaultRelation < AggroSystem.FreedHostility);
 
     /// <summary>
     /// Adds the cagings to the world hash, only while there are any.

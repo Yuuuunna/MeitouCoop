@@ -6366,3 +6366,70 @@ msgstr "Este personaje no puede hablar ahora."
 #. machine-translated
 msgid "You do not have permission to spend this faction's funds."
 msgstr "No tienes permiso para gastar los fondos de esta facción."
+
+msgid "Take off Shackles"
+msgstr "Quitar grilletes"
+
+#. machine-translated
+msgid "High Altitude Clouds"
+msgstr "Nubes altas"
+
+#. machine-translated
+msgid "altocumulus and cirrus"
+msgstr "altocúmulos y cirros"
+
+#. machine-translated
+msgid "the game's sky has only its one low cloud layer; Meitou can add altocumulus 10 km up and faint cirrus 26 km up that drift and change shape over time, bend down to a real horizon, glow at sunset after the land is dark and hide the stars at night; the lower clouds pass in front of them (Vulkan; docs/render-clouds.md \"High clouds\")"
+msgstr "el cielo del juego solo tiene su única capa de nubes bajas; Meitou puede añadir altocúmulos a 10 km y cirros tenues a 26 km de altura que se desplazan y cambian de forma con el tiempo, se curvan hacia un horizonte real, brillan al atardecer cuando la tierra ya está oscura y ocultan las estrellas de noche; las nubes más bajas pasan por delante (Vulkan; docs/render-clouds.md \"High clouds\")"
+
+#. machine-translated
+msgid "Adds high altitude clouds to the skybox. From ImpulseSpecifix's Dynamic Skies."
+msgstr "Añade nubes altas a la skybox. De Dynamic Skies de ImpulseSpecifix."
+
+#. machine-translated
+msgid "Altocumulus amount"
+msgstr "Cantidad de altocúmulos"
+
+#. machine-translated
+msgid "Controls the coverage of the thicker Altocumulus clouds."
+msgstr "Controla la cobertura de los altocúmulos, más gruesos."
+
+#. machine-translated
+msgid "Altocumulus density"
+msgstr "Densidad de altocúmulos"
+
+#. machine-translated
+msgid "Controls the density (thickness/visibility) of the Altocumulus clouds."
+msgstr "Controla la densidad (grosor/visibilidad) de los altocúmulos."
+
+#. machine-translated
+msgid "Cirrus amount"
+msgstr "Cantidad de cirros"
+
+#. machine-translated
+msgid "Controls the coverage of the thinner Cirrus clouds."
+msgstr "Controla la cobertura de los cirros, más finos."
+
+#. machine-translated
+msgid "Cirrus density"
+msgstr "Densidad de cirros"
+
+#. machine-translated
+msgid "Controls the density (thickness/visibility) of the Cirrus clouds."
+msgstr "Controla la densidad (grosor/visibilidad) de los cirros."
+
+#. machine-translated
+msgid "Drop from loot"
+msgstr "Soltar desde el saqueo"
+
+#. machine-translated
+msgid "An item dragged out of a knocked-out or dead character's inventory onto the ground drops there, as a take from that character: it can be seen as theft, and a body whose meat or parts are dropped is butchered. In the game it goes back to the body."
+msgstr "Un objeto arrastrado desde el inventario de un personaje inconsciente o muerto al suelo cae allí, como si se lo quitaras a ese personaje: puede verse como robo, y un cuerpo cuya carne o piezas se sueltan queda despedazado. En el juego vuelve al cuerpo."
+
+#. machine-translated
+msgid "Mod: {1}"
+msgstr "Mod: {1}"
+
+#. machine-translated
+msgid "Mods: {1}"
+msgstr "Mods: {1}"

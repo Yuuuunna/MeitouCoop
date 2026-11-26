@@ -452,6 +452,54 @@ public partial class ProductionTests
         world.Commands.Enqueue(a.Id, repeat); world.ApplyPausedInterfaceCommands(); Assert.True(first.Craft.Repeat);
     }
 
+    /// <summary>
+    /// Each recipient's selected faction chooses the crafting list independently of the legacy player, while management revocation immediately
+    /// removes station controls even when the machine remains observable nearby.
+    /// </summary>
+    [Fact]
+    public void CraftStationsFollowTheRecipientsSelectedFactionAndCurrentAssetPermissions()
+    {
+        using var rig = new Rig(Database(), Constants, [Workshop, Workshop]);
+        var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2));
+        var b = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(a.Id, 3, FactionPermission.ManageAssets);
+        world.Players.SetMembership(b.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[1])!.Owner = 3;
+        foreach (var player in new[] { a, b })
+        {
+            var actor = world.Characters.Spawn(new CharacterHot { Position = At },
+                new CharacterCold { IsPlayer = true, Faction = player.State.Faction }, 0);
+            world.Players.AssignInitial(player.Id, actor);
+        }
+        world.RunTick();
+        var ca = world.Authority.Open(a.Id);
+        var cb = world.Authority.Open(b.Id);
+        Assert.True(world.Authority.BeginSynchronization(ca));
+        Assert.True(world.Authority.BeginSynchronization(cb));
+        WorldSnapshot View(AuthorityConnection connection) => world.Authority.CaptureView(connection, new(), new(100))!.Snapshot;
+
+        Assert.Equal(rig.Sites[0], Assert.Single(View(ca).CraftStations).Site);
+        Assert.Equal(rig.Sites[1], Assert.Single(View(cb).CraftStations).Site);
+        Assert.Equal(PlayerFaction, world.Player.Faction);
+        var original = rig.Production.CraftStationsView(world, PlayerFaction);
+        _ = rig.Production.CraftStationsView(world, 3);
+        Assert.Same(original, rig.Production.CraftStationsView(world, PlayerFaction));
+
+        Assert.True(world.Players.SelectFaction(a.Id, 3));
+        Assert.Equal(rig.Sites[1], Assert.Single(View(ca).CraftStations).Site);
+        world.Players.SetMembership(a.Id, 3, FactionPermission.None);
+        Assert.Empty(View(ca).CraftStations);
+        Assert.Contains(View(ca).Machines, machine => machine.Site == rig.Sites[1]);
+        Assert.Equal(rig.Sites[1], Assert.Single(View(cb).CraftStations).Site);
+
+        world.Buildings.Find(rig.Sites[1])!.Owner = PlayerFaction;
+        Assert.Empty(View(cb).CraftStations);
+        Assert.True(world.Players.SelectFaction(a.Id, PlayerFaction));
+        Assert.Equal(rig.Sites, View(ca).CraftStations.Select(station => station.Site));
+    }
+
     [Fact]
     public void FurnaceToggleRequiresItsOwnersPermissionAndCannotReplayAnOldDisplay()
     {

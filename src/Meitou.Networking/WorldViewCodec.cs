@@ -487,6 +487,12 @@ public sealed partial class WorldViewCodec
     /// </summary>
     static void ValidateModPresentation(WorldSnapshot snapshot)
     {
+        if (snapshot.CraftStations is not { } stations || stations.Count > 65536
+            || stations.Any(station => string.IsNullOrWhiteSpace(station.Site) || station.Site.Length > 4096
+                || station.Name is null || station.Name.Length > 4096)
+            || stations.Select(station => station.Site).Distinct(StringComparer.Ordinal).Count() != stations.Count)
+            throw new InvalidDataException("Invalid crafting station directory.");
+
         foreach (var character in snapshot.Characters)
         {
             StatusEffectPresentationCodec.Validate(character.Effects);

@@ -19,6 +19,12 @@ WORLD_EVENT_STATE (`FUN_1409a7e00`, **Observed** by code): holds when every `NPC
 enemy` hostile to it. With `player involvement`, an `NPC is` other than alive or an `NPC is NOT` alive also needs the unique's player
 flag. A unique with no entry counts as alive, so a new game answers by the data alone; nothing is stored. A `world state` list entry
 (`FUN_1409a9a70`: spawn gates, weighted picks, campaigns) passes when the state's answer equals (v0 == 1); a missing record is skipped.
+BFrizz's Extra Extensions ([variables](dialogue.md#variables)) ANDs three VARIABLE lists onto the answer (its `isTrue` hook): `variable equals`,
+`variable less than`, `variable greater than`. For each list the record has, the first reference whose VARIABLE has an int `value` decides:
+`value` ==, < or > its val0; the later references are not read. A list with no such reference (or none at all) fails the state. **Observed**
+(disassembly of the workshop build's `BFrizz_Extra_Extensions.dll`: it compares `value` with val0, unlike the 'less' / 'greater' swap in
+the published `WorldStates.cpp` and the repository's first commit). fcs.def also declares `variables equal`, which the plugin never reads.
+Meitou (`WorldStates.VariablesHold`, the variables read live) as the plugin.
 Meitou only: a code mod may set a state's answer, which then replaces the conditions ([modding](../modding.md), "World states").
 
 ## Squad factory
@@ -71,7 +77,12 @@ The real-content reproduction above does not reject the slaves' chosen mines at 
 CARRY_MODE ragdoll (`FUN_1407d1440`, [ragdolls](ragdolls.md)), or posture `+0xe0` of 3 PS_PLAYING_DEAD or 4 PS_KO; a limb-only ragdoll or a crawl is not down) and not `inSomething` (`+0x2f8`, bed or cage), else the backup under the same test, else the first member of the container list (animals included) that is not down and
 stands in a loaded or requested zone, cached as the backup; else the leader itself, usable or not. That member scan tests the *leader's* `+0x2f8`, not the member's (so a leader in a
 bed or cage is kept). The stored leader is never replaced there. Meitou (`PopulationSystem.EffectiveLeader`, `Squad.Backup`):
-the same rule for a loaded platoon's place, the unload anchor and the owner character of a building's goods ([theft](carry-loot.md#theft-and-witnesses)); down is `CharacterFacts.Down`, the same `isDown`. A campaign's announcement is task 129 in the leader's AI package, and animals get only
+the same rule for a loaded platoon's place, the unload anchor and the owner character of a building's goods ([theft](carry-loot.md#theft-and-witnesses)); down is `CharacterFacts.Down`, the same `isDown`.
+The AI reads it too (`PopulationSystem.ActingLeaderOf`, the same search without caching the backup, so the think's partitions may ask): the effective
+leader takes the Leader list ([precedence](ai-tasks.md#precedence) step 4, `AiSystem.RoleOf`) and walks the patrol, and a member following its leader
+(a LEADER goal, a patrol's followers, the default follow target) follows it. **Observed** (#1453 save, `probe watch`): a manhunter carrying his
+knocked-out leader walked the patrol with him on his shoulder, as the issue's video of the original shows; before, he followed the leader he carried.
+A campaign's announcement is task 129 in the leader's AI package, and animals get only
 `dialog animal`, so an animal never announces. Meitou keeps one leader: a squad without one (leaving, a save or stand-in without a leader), and an NPC squad whose leader died while a member
 lives, takes its first living member that is not an animal, else its first living one (`SquadRegistry.Successor`, engine choice), who then acts
 the leader's goals (a patrol), so the squad does not stand by the corpse. A player squad edited on the squads screen still makes its index 0 the leader.
@@ -375,9 +386,17 @@ included), else 0.025 (outside every town too).
   (15, 143, 288), Self preservation (32) or Attack Target (5) costs no kind 1 and kind 2 per downing. Meitou: `FactionDeeds.Rating` (the mind's goal in a fight its AI started, else the fight's row; a defence, row 13, rates 0 as the
   32 or protect goal the original plans it under).
 - `FUN_140673a20(self, other, tag)` (not a witness function) sets a long-term tag (`CharacterPerceptionTags_LongTerm`, read by DC 23) in
-  `self`'s squad memory (`platoon+0x98`, `FUN_140673930`, time-stamped): 1 MY_INTRUDER (trespass), 5 MY_CAPTOR (cage), 7 / 8 (the victim's
-  squad tags the striker DEFEATED_MY_SQUAD_ONCE and the striker's tags the victim SQUAD_LOST_TO_ME_ONCE, on a downing blow when
-  `FUN_140793160` finds the victim's squad all down), 9 KILLED_MY_FRIEND (death). Meitou keeps the memory ([dialogue](dialogue.md#squad-memory)) and writes 5 for cagings and arrests, 7, 8 and 9 for blows (`FactionDeeds.Remember`); trespass (1) is not written.
+  `self`'s squad memory (`platoon+0x98`, `FUN_140673930`, time-stamped): 1 MY_INTRUDER (trespass), 5 MY_CAPTOR (cage), 7 / 8 (see the squad
+  defeat below), 9 KILLED_MY_FRIEND (death). Meitou keeps the memory ([dialogue](dialogue.md#squad-memory)) and writes 5 for cagings and
+  arrests, 9 for killing blows (`FactionDeeds.Remember`) and 7 / 8 at a squad defeat; trespass (1) is not written.
+- **Squad defeat** (**Verified**, 1.0.68 decompile of the melee hit `FUN_1404394f0`): after a landed blow (with a striker) that leaves the
+  victim KO'd (`+0x5b9`) or dead (`+0x5bc`), when `FUN_140793160(victim's platoon, 0)` finds no member both not down and upright
+  ([carry-loot](carry-loot.md), slave escape), in order: tag 7 DEFEATED_MY_SQUAD_ONCE in the victim's squad on the striker, tag 8
+  SQUAD_LOST_TO_ME_ONCE in the striker's squad on the victim, event 15 I_DEFEATED_SQUAD from the striker at the victim (`FUN_140685070` ->
+  `FUN_140684990`, the only call with a literal 15), and an animal striker (vfunc `0x248`) posts `VO_Creature_Victory` (the string's only use). No test
+  compares the two squads (nor does the tag write `FUN_140671840`, nor `FUN_140684990`), so a squadmate's blow counts; no latch, so a blow
+  on one already down fires again. The bolt hit `FUN_140439c90` has none of it. Meitou: `Combat.SquadDefeat` (the event deferred a tick like
+  the other combat events, `SoundKind.Victory`).
 
 Meitou: `FactionDeeds` (blows, cagings, first aid), `CrimeSystem` (the ally witness), `PlayerRelations.DeclareWar` / `EndWar` / `Add`
 (the messages); [simulation](../simulation.md#hostility-and-relations).
@@ -571,7 +590,10 @@ Meitou: [ground items](../simulation.md#items-and-eating).
     `PopulationSystem.Regenerate`, a save's never-made one `MakeUnmade`). A save writes it under both keys and names the platoon of that template as
     `residents` (`WriteResidents`, `SaveCapture.NameResidents`). A new game's squads are all made at once, housemates first, so every home starts
     with its own template.
-- **Squads** (`FUN_14057f820`): `housemates` (v0, or Rand(v0, v1) when v1 > 0) first, then the squad. Platoon point: a
+- **Squads** (`FUN_14057f820`): `housemates` (v0, or Rand(v0, v1) when v1 > 0) first, then the squad. All of them are made in one faction: the
+  home template's `faction`, else the building's owner (the town's), so a housemate's own `faction` is never read (**Observed**, decompile: the
+  faction is resolved once and every platoon is made by that faction's `FUN_1407f42f0`). UWE's faction-less `Theives Guild Plastic Surgeon` and
+  `Theives Guild recruit` housemates of the `Thieves Guild` are therefore Shinobi Thieves (#1433; Meitou `PopulationSystem.HouseResidents`). Platoon point: a
   random free node of NodeType 0 (SHOPKEEPER), else 2 (GUARD_POST), else 1 (GENERAL), else the building. Characters
   (`FUN_140583a10`): a GENERAL node, else SHOPKEEPER, at node + (0, 10, 0), else the platoon point. The squad's home is the building.
 - **Bar squads** (`FUN_1409fcd20`, **Verified** by decompile and constants): n = v0 > 2 ? (int)(v1 x 0.5 x 0.0099999998 x v0): 0 (the second factor is the double nearest the

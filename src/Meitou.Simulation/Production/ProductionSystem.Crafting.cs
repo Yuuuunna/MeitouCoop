@@ -51,6 +51,11 @@ public sealed partial class ProductionSystem
     readonly SmithViewCache _smiths;
 
     /// <summary>
+    /// The crafting stations last published (<see cref="CraftStationsView"/>), handed out again while unchanged.
+    /// </summary>
+    readonly Dictionary<int, IReadOnlyList<CraftStationView>> _craftStationViews = [];
+
+    /// <summary>
     /// The crafts some research can unlock; a record no research enables is never offered (<see cref="EverOffered"/>).
     /// </summary>
     HashSet<(CraftKind, string)> EverEnabled()
@@ -335,6 +340,57 @@ public sealed partial class ProductionSystem
     /// What a bench can craft, for its Craft tab: every option with its recipe and whether it can be queued now.
     /// </summary>
     public IReadOnlyList<CraftOptionView> CraftOptions(World world, string site) => _craftOptions.Of(world, site);
+
+    /// <summary>
+    /// The crafting stations the overview's Craft tab lists, in the machines' order: the original's STATIONS (<c>FUN_1402bed80</c>, <b>Verified</b>,
+    /// decompile) collects the loaded buildings of crafting functionality whose faction is the player's or an ally of it (<c>FUN_1406b2630</c>), so a
+    /// town's bench of another faction is left out (#1445). The same list while unchanged.
+    /// </summary>
+    public IReadOnlyList<CraftStationView> CraftStationsView(World world) => CraftStationsView(world, world.Player.Faction);
+
+    /// <summary>
+    /// The station list for an explicit viewing faction; callers still apply the recipient's asset permissions and observation scope.
+    /// </summary>
+    public IReadOnlyList<CraftStationView> CraftStationsView(World world, int faction)
+    {
+        var fresh = world.Machines.All
+            .Where(m => m.Craft is not null)
+            .Select(m => CraftStationOf(world, m, faction))
+            .OfType<CraftStationView>()
+            .ToArray();
+        if (_craftStationViews.TryGetValue(faction, out var previous) && fresh.SequenceEqual(previous)) return previous;
+
+        return _craftStationViews[faction] = fresh;
+    }
+
+    /// <summary>
+    /// A crafting machine's station when its site stands and is the player's faction's or an ally's, named by its site, else its record; null for
+    /// any other.
+    /// </summary>
+    CraftStationView? CraftStationOf(World world, Machine m, int faction)
+    {
+        if (Site(world, m.Site) is not { } site || !PlayerOrAlly(faction, site.Owner)) return null;
+        if (TownBuildingOf(world, m.Site) is { } found && world.Fixtures.IsDestroyed(found.Building))
+            return null;
+
+        return new CraftStationView(m.Site, site.Name.Length > 0 ? site.Name : RecordName(site.Record));
+    }
+
+    /// <summary>
+    /// A record's shown name; its id when it is missing.
+    /// </summary>
+    string RecordName(string record) => _db.Find(record) is { } r ? ShownText.Record(record, r.Name) : record;
+
+    /// <summary>
+    /// Whether <paramref name="owner"/> is the player's faction or one it regards as an ally (relation 50 or more, <c>FUN_1406b2630</c>).
+    /// </summary>
+    bool PlayerOrAlly(int player, int owner)
+    {
+        if (player < 0 || owner < 0) return false;
+        if (owner == player) return true;
+
+        return _towns?.Relations is { } r && r.Contains(player) && r.Contains(owner) && r.IsAlly(player, owner);
+    }
 
     /// <summary>
     /// Every option of a crafting machine's bench with its recipe and whether it can be queued now (<see cref="CraftOptionsCache"/> keeps them).

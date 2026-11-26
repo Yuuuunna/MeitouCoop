@@ -69,6 +69,7 @@ static class ServerRuleValues
             "Guards give up lost suspects" => rules.ArrestLostFix,
             "Bags in the inventory" => rules.BagSearchFix,
             "Talk across shop counters" => rules.CounterTalk,
+            "Drop from loot" => rules.DropFromLoot,
             "Turret fire is a crime" => rules.TurretAssault,
             "Squad XP" => rules.SquadXp,
             "Others' XP" => rules.OthersXp,

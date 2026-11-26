@@ -1,6 +1,6 @@
 using System.Numerics;
 using Meitou.Data.Gameplay.Construction;
-using Meitou.Game.Building;
+using Meitou.Runtime.Placement;
 
 namespace Meitou.Tests.Gameplay;
 

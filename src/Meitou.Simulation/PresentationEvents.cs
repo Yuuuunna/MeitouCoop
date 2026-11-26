@@ -61,7 +61,8 @@ internal sealed class PresentationEventJournal(TimeProvider? clock = null)
     }
     internal void Add(SoundEvent value, PlayerId? owner)
     {
-        value = value with { Item = value.Kind == SoundKind.ShacklesOn ? value.Item is { Length: > 4096 } item ? item[..4096] : value.Item : null };
+        value = value with { Item = value.Kind is SoundKind.ShacklesOn or SoundKind.ShacklesOff
+            ? value.Item is { Length: > 4096 } item ? item[..4096] : value.Item : null };
         lock (_gate)
         {
             Trim();
@@ -110,7 +111,8 @@ internal sealed class PresentationEventJournal(TimeProvider? clock = null)
                 if (e.Speech is { } spoken && visible.Contains(spoken.Speaker))
                     speech.Add(new(e.Id, spoken.Speaker, spoken.Line with { Player = e.TargetOwner == player }));
                 if (e.Sound is not { } sound) continue;
-                bool personal = sound.Kind is SoundKind.ShacklesOn or SoundKind.BountyPaid or SoundKind.DismantleDone or SoundKind.ReleasedFromPrison;
+                bool personal = sound.Kind is SoundKind.ShacklesOn or SoundKind.ShacklesOff or SoundKind.BountyPaid
+                    or SoundKind.DismantleDone or SoundKind.ReleasedFromPrison;
                 bool positional = sound.Kind is SoundKind.BoltStuck or SoundKind.TurretShot or SoundKind.WallBroken or SoundKind.FedToMachine
                     || sound.Kind == SoundKind.Posted && sound.Subject.IsNone;
                 bool broadcast = sound.Kind == SoundKind.PostedInterface;

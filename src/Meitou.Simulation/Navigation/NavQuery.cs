@@ -68,8 +68,10 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     /// </summary>
     static long s_searches, s_expanded, s_exhausted;
     /// <summary>
-    /// How far (units) from the start / the goal a polygon may be and still count. Engine choice: the original looks for the start face within 500
-    /// Havok units (5000 Kenshi units) and the goal face within about 30 (Observed, docs/game/pathfinding.md, "Path queries").
+    /// How far (units) from the start / the goal a polygon may be and still count, and the goal's arrival tolerance. Engine choice: the original
+    /// looks for the start face within 500 Havok units (5000 Kenshi units) and the goal face in a box of half size 300 (docs/game/pathfinding.md,
+    /// "Geometry and queries"); a goal with no polygon within 30 takes the nearest within <see cref="GoalFloorReach"/>
+    /// (<see cref="NavWorld.TryFindGoalPolygon"/>).
     /// </summary>
     public const float StartSnap = 60, GoalSnap = 30;
     /// <summary>

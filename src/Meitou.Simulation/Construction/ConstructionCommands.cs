@@ -29,8 +29,24 @@ namespace Meitou.Simulation.Construction;
 public sealed record PlannedBuilding(string Record, Vector3 Position, Quaternion Rotation, int Floor = 0, string? Parent = null,
     Vector3 BoundsSize = default, bool Outside = false);
 
+/// <summary>
+/// A wall line's placement intent. The authority resolves snapped link points and regenerates its pieces; these fields never grant a collision pass.
+/// </summary>
+public sealed record WallLineIntent(string Master, Vector3 Start, Vector3 End, bool StartSnapped, bool EndSnapped, bool Reversed);
+
+/// <summary>
+/// The contiguous plans produced by one wall line. Undo may retain a prefix of the regenerated line's pieces.
+/// </summary>
+public sealed record PlannedWallLine(int FirstPlan, int PieceCount, WallLineIntent Intent);
+
 /// <summary>Build mode's Confirm: creates a site per plan, in order, for the player faction (docs/simulation.md "Buildings"). A plan failing the data rules is dropped with a message.</summary>
-public sealed record PlaceBuildings(IReadOnlyList<PlannedBuilding> Plans) : FactionCommand;
+public sealed record PlaceBuildings(IReadOnlyList<PlannedBuilding> Plans) : FactionCommand
+{
+    /// <summary>
+    /// Wall line intents, once per line; ordinary single-building commands leave this empty.
+    /// </summary>
+    public IReadOnlyList<PlannedWallLine> WallLines { get; init; } = [];
+}
 
 /// <summary>A displayed building and, for forwarded wall operations, its displayed root.</summary>
 public abstract record ConstructionSiteCommand : OrderCommand

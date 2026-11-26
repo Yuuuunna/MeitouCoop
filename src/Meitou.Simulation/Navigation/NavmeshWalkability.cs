@@ -120,6 +120,11 @@ public sealed partial class NavmeshWalkability : IWalkability
     public float GameSpeed { get; set; } = 1;
 
     /// <summary>
+    /// Whether the host loads the navigation zones requested by routes; fixed test and tool worlds leave this disabled.
+    /// </summary>
+    public bool StreamsZones { get; set; }
+
+    /// <summary>
     /// When each zone without a mesh was last passed by a provisional route (a <see cref = "System.Diagnostics.Stopwatch"/> timestamp),
     /// for <see cref = "RouteZones"/>.
     /// </summary>
@@ -204,7 +209,10 @@ public sealed partial class NavmeshWalkability : IWalkability
     public float GroundHeight(float x, float z, float nearY) => !AllowUnloadedFallback && !_world.Contains(WorldLayout.ZoneOf(x, z)) && float.IsFinite(nearY) ? nearY : TryStand(_world, x, z, nearY, out float y) ? y : Ground(_world, x, z);
     /// <inheritdoc/>
     public float TerrainHeight(float x, float z) => Ground(_world, x, z);
-    /// <inheritdoc cref = "IWalkability.WaterBed"/>
+    /// <inheritdoc/>
+    public bool AwaitsMesh(float x, float z) => !_world.Contains(WorldLayout.ZoneOf(x, z));
+
+    /// <inheritdoc cref="IWalkability.WaterBed"/>
     public float WaterBed(float x, float z, float y)
     {
         var w = _world;
@@ -511,13 +519,53 @@ public sealed partial class NavmeshWalkability : IWalkability
             return exact;
         long[] ground = key is null ? [] : NavQuery.LastSearchReached();
         var nearest = part.Points[^1];
-        bool arrives = Arrives(nearest, to);
+        bool arrives = Arrives(w, nearest, to);
+
+        // A frontier shared by the start and goal regions can still join through unloaded navigation.
+        if (!arrives && key is { } goal && Unproven(w, goal.Item1, ground) is { Count: > 0 } open)
+            return Provisional(part, to, open, incarnation);
+
         if (key is { } found && cache is not null && Current())
             Remember(cache, found, new(nearest, arrives, ground, Volatile.Read(ref _tick)));
 
         // An off-mesh work centre can retain its reachable same-floor approach; a blocked on-mesh goal stays shut off.
         bool workingEdge = !AllowUnloadedFallback && key is null && MathF.Abs(nearest.Y - to.Y) <= NavQuery.GoalFloorSlack;
         return arrives || workingEdge ? part : PathResult.ShutOff;
+    }
+
+    /// <summary>
+    /// The zones not loaded that both <paramref name="ground"/> (the walker's, as the failed search covered it) and the goal polygon's ground
+    /// border (<see cref="NavFrontier"/>); empty when either is closed inside the loaded zones, which proves the goal unreachable. Observed (#1421
+    /// save): a hilltop in 28.46 whose only way down runs through 28.47 had no path while 28.47 was not loaded, so a move order to it was dropped.
+    /// Always empty when the host streams no zones in (<see cref="StreamsZones"/>); zones off the world's grid never load.
+    /// </summary>
+    HashSet<ZoneCoordinate> Unproven(NavWorld w, NavRef goal, long[] ground)
+    {
+        if (!StreamsZones) return [];
+
+        var fromGoal = NavFrontier.OfGoal(w, goal);
+        fromGoal.RemoveWhere(z => !z.IsInsideGrid);
+        if (fromGoal.Count == 0) return fromGoal;
+
+        var fromWalker = NavFrontier.OfGround(w, ground);
+        fromWalker.RemoveWhere(z => !z.IsInsideGrid);
+        if (fromWalker.Count == 0) return fromWalker;
+
+        fromGoal.UnionWith(fromWalker);
+        return fromGoal;
+    }
+
+    /// <summary>
+    /// The path to the nearest point reached, then on to the goal provisionally, with the <paramref name="open"/> zones asked for
+    /// (<see cref="RouteZones"/>): every walker asks again once they are live.
+    /// </summary>
+    PathResult Provisional(PathResult part, Vector3 to, HashSet<ZoneCoordinate> open, long incarnation)
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        foreach (var zone in open)
+            _routeZones.AddOrUpdate(zone, (now, incarnation), (_, previous) => previous.Incarnation > incarnation ? previous : (now, incarnation));
+
+        return Authoritative(new PathResult([.. part.Points, to]) { Exact = part.Points.Count });
     }
 
     /// <summary>
@@ -530,6 +578,21 @@ public sealed partial class NavmeshWalkability : IWalkability
         && MathF.Abs(end.Y - goal.Y) <= NavQuery.GoalFloorSlack;
 
     /// <summary>
+    /// Whether a path ending at <paramref name="end"/> has arrived at <paramref name="goal"/> (<see cref="Arrives(Vector3, Vector3)"/>), or, for
+    /// a goal off the mesh (no polygon within <see cref="NavQuery.GoalSnap"/>), at the mesh's point the goal snaps to
+    /// (<see cref="NavWorld.TryFindGoalPolygon"/>): a goal on a rock is reached at the rock's foot. Observed (#1421 save, 28.46, path-check): the
+    /// snap's polygon there joins its neighbour by an edge 2 units long, too narrow to pass, so the exact search failed and its nearest point, 19
+    /// short of the snapped point and 90 from the goal, ended no path.
+    /// </summary>
+    static bool Arrives(NavWorld w, Vector3 end, Vector3 goal)
+    {
+        if (Arrives(end, goal)) return true;
+        if (w.TryFindPolygon(goal, NavQuery.GoalSnap, out _, out _)) return false;
+
+        return w.TryFindGoalPolygon(goal, out _, out var snapped) && Arrives(end, snapped);
+    }
+
+    /// <summary>
     /// Reuses a failed search only for starts on ground that search actually covered; reaching its endpoint alone is insufficient.
     /// </summary>
     PathResult? Remembered(NavWorld world, Vector3 from, Vector3 to, NavAgent agent, (NavRef, float, bool)? key,
@@ -538,7 +601,7 @@ public sealed partial class NavmeshWalkability : IWalkability
         if (key is not { } known || cache is null || !cache.Found.TryGetValue(known, out var hit) || !Fresh(hit.At)) return null;
         if (!world.TryFindPolygon(from, NavQuery.StartSnap, out var start, out _) || Array.BinarySearch(hit.Ground, start.Key) < 0) return null;
 
-        bool arrives = Arrives(hit.Nearest, to);
+        bool arrives = Arrives(world, hit.Nearest, to);
         if (hit.Arrived && !arrives) return null;
         var near = new NavQuery(world, Doors).FindPath(from, hit.Nearest, agent, null, out _);
         if (!near.Found) return null;

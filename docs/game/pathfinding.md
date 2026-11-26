@@ -37,7 +37,7 @@ cache includes level and collision file stamps, gate side/code points and interi
 preparation before zone activation; held zones keep their collision. Runtime changes gather a replacement from an immutable snapshot while
 the old shapes remain usable. Only a current replacement increments the collision generation, and multiple changes coalesce per cache entry.
 
-**The goal face** (**Verified**, decompile): a walk's goal goes to the path thread unchanged in height (the set-destination step `FUN_140661270` passes the goal point to the agent's request `FUN_140145cf0`, which scales it by 0.1 into Havok units). The thread (`FUN_1403ae490`) finds the goal face with `FUN_1403a46b0`: the navmesh query mediator's closest point (`FUN_1403b5010`, mediator slot `0x20`) in a box of half size 30 Havok units (300 world units) round the goal, else a vertical search over 500 Havok units (`FUN_1403a1df0`). The closest point is the Havok query's, by distance in 3D (inferred from Havok's API, not decoded). So where a goal's own floor is cut away under it (a row of prisoner cages cuts the ground floor's mesh) and an upper floor lies straight over it, the ground beside it, nearer in 3D, is taken. Meitou: `NavWorld.TryFindGoalPolygon` keeps its XZ-first snap within `NavQuery.GoalSnap` and, when that lands more than `NavQuery.GoalFloorSlack` (40, engine choice) off the goal's height, takes a polygon on the goal's floor that is nearer the goal in 3D, within `NavQuery.GoalFloorReach` (300). A goal given with its floor (an order's height, a building site's; `MovementSystem.GoalHeight`) keeps that floor's height when no surface there is within reach of it, where it took the floor above. A walk to a character (a talk, an approach, a stalker's follow, a shackle job) and each queued move order after the first carry the target's height (`MovementSystem.AimAt` / `GoToAt`), as the original passes its goal; a walk given only X/Z takes the walker's own height, so one to a character upstairs, or in a cage that cuts its floor's mesh, ended on the walker's storey under it.
+**The goal face** (**Verified**, decompile): a walk's goal goes to the path thread unchanged in height (the set-destination step `FUN_140661270` passes the goal point to the agent's request `FUN_140145cf0`, which scales it by 0.1 into Havok units). The thread (`FUN_1403ae490`) finds the goal face with `FUN_1403a46b0`: the navmesh query mediator's closest point (`FUN_1403b5010`, mediator slot `0x20`) in a box of half size 30 Havok units (300 world units) round the goal, else a vertical search over 500 Havok units (`FUN_1403a1df0`). The closest point is the Havok query's, by distance in 3D (inferred from Havok's API, not decoded). So where a goal's own floor is cut away under it (a row of prisoner cages cuts the ground floor's mesh) and an upper floor lies straight over it, the ground beside it, nearer in 3D, is taken. Meitou: `NavWorld.TryFindGoalPolygon` keeps its XZ-first snap within `NavQuery.GoalSnap` (30), else the nearest polygon within `NavQuery.GoalFloorReach` (300 each way, the original's box), so a goal on ground the mesh leaves out (a steep slope, a rock) ends at its edge (#1421: a map move to such a hilltop was dropped; `NavmeshWalkability.Arrives` takes the snapped point as the goal for it), and, when that lands more than `NavQuery.GoalFloorSlack` (40, engine choice) off the goal's height, takes a polygon on the goal's floor that is nearer the goal in 3D, within `NavQuery.GoalFloorReach` (300). A goal given with its floor (an order's height, a building site's; `MovementSystem.GoalHeight`) keeps that floor's height when no surface there is within reach of it, where it took the floor above. A walk to a character (a talk, an approach, a stalker's follow, a shackle job) and each queued move order after the first carry the target's height (`MovementSystem.AimAt` / `GoToAt`), as the original passes its goal; a walk given only X/Z takes the walker's own height, so one to a character upstairs, or in a cage that cuts its floor's mesh, ended on the walker's storey under it.
 
 ### Refit snap
 
@@ -466,7 +466,12 @@ faces it only drew thin cuts, so the floor under the walls stayed meshed and wal
 the floor; polygons whose centre is outside it are dropped from the interior (so neither the border closure nor a join keeps them).
 **Ruin joins** (engine choice after the original's stitch, which joins open edges within 2 apart and 10 in height, Generator): every ruin's open edges
 link to the exterior's along its hull within `NavInteriors.RuinHullJoinDistance` (5; both are cut on the hull, ours each up to a cell and the 1.3-cell
-contour error off it). **Observed** (`--compare-interiors`, 24 ruins whose tiles were built intact, before: none reached): reached now 6 (Old Storm
+contour error off it). A doorless interior's hull join also links exterior ground the zone's own seeds did not keep (not another building's
+door polygons), and that link does not keep it (`NavInteriors.CarryKeep`): the street's seeds or the closure from the next zone decide, so ground
+only the interior touches stays pruned. A ruin has no door seed, and where the street round it is kept only by the closure (Venge, zone 37.34) a
+join to kept polygons alone found none and the ruin stayed sealed. **Observed** (#1474's save, `probe path`): from the street the Waystation ruin
+`37.34:3-rebirth-INGAME`'s floor is reached up its steps; before, no path. **Observed** (`--compare-interiors`, 24 ruins whose tiles were built
+intact, before: none reached): reached now 6 (Old Storm
 House `9.56:12-`, Outpost s-I `14.5:6-`, Ancient Lab `18.15:130-`, Longhouse `18.35:23-`, Old Storm House `29.28:52-`, Outpost s-III `50.24:66-`:
 their floor meets the exterior on the hull, our edges 2.6..4.3 apart, height 0.1..1); the other 18 stay unjoined: within 10 in height their nearest
 exterior edge is 9.0..135 away or none (Outposts s-II/s-IV and Watchtowers: the boundary ring stands 9..11 inside the hull and the exterior ends ~4
@@ -648,7 +653,8 @@ at 1166.4; the original has no faces on the riser and a hole over the cap, the g
 `FilterLowHangingWalkableObstacles`): a cutting top is walked only under the climb (9 cells, 4.5), not at it: 45.9's ours only 8,068 → 1,860;
 over 15 zones (`--compare`) ours only −371, original only +139 (0.5 %); towns' interiors ours only −19.3k, original only +1.75k. Without the
 filter the towns' ours only falls 70.6k but original only rises 9.1k, so some low obstacle the original walks over (which) needs it.
-**Unseeded interiors** (engine choice): an interior is joined whatever its own pruning kept, to exterior polygons the exterior's pruning kept, and
+**Unseeded interiors** (engine choice): an interior is joined whatever its own pruning kept, to exterior polygons the exterior's pruning kept
+(a doorless interior's hull join also to ground it did not keep, "Ruin joins"), and
 every region joined to a kept polygon is kept (`NavInteriors.CarryKeep`, not over narrow exterior edges: "Narrow portals"); exterior polygons stay
 limited to kept ones, else a door joined to a pruned landing satisfied the door and skipped the doorway's kept ground (Storm House Lagoon `40.41:10-`,
 Metal Wallhouse `51.43:1281-Dialogue-INGAME`).
@@ -802,7 +808,12 @@ border with its floor 42 above the terrain, before 20.32 was built stood 1 unit 
 11.6 s the build took, then went on at the floor height. With 20.32 cached it went live 1.6 to 6.5 s after it was asked for.
 <a id="unreachable-goals"></a>**Unreachable goals.** A goal on the loaded ground of the walker's block that its ground cannot reach (shut in or out,
 a door shut for paths at run time, `NavDoors`, on the only way) gets no path (`PathResult.ShutOff`), unless the nearest point reached is within the
-goal's snap: nothing walks at it. **Observed** (original 1.0.68, issue #560's save with Universal Wasteland Expansion, a move order to the ramp
+goal's snap: nothing walks at it. Only proven unreachable ground counts: where both the walker's ground and the goal polygon's (within its zone) have
+an unlinked edge on a border to a zone not loaded, the walker gets the path to the nearest point and the goal after it provisionally, those zones are
+asked for and the walker asks again once they are live (`NavFrontier`, `NavmeshWalkability.StreamsZones`; engine choice: the original has every tile).
+**Observed** (#1421 save, Meitou's mesh): a hilltop at (-15074, 69100) in 28.46 joins the ground below only through 28.47; with 28.47 not loaded a move
+order to it was dropped at once, or on asking again when 28.46 went live mid-walk. The original's tiles join it to the ground round it in one
+component (scratch probe over `tile26..30.43..48.hkt`, faces joined by shared edges). **Observed** (original 1.0.68, issue #560's save with Universal Wasteland Expansion, a move order to the ramp
 past the Tower of Mist's locked Ancient Lab Ramp Gate): the original does not move the walker at all. A task's walk that ends so is "Task
 impossible: X can't get to Y" (**Verified**, `FUN_14059c6d0`, [arrival](buildings-production.md)): the target is ignored for 20 s and the task
 ends (Meitou: `ProductionSystem.Impossible` for the operators' and haulers' walks; a player's move order is dropped and its straight hop out of a
@@ -1084,7 +1095,10 @@ The figures below were measured without the cap. **Observed** (`meitou-tools nav
 (Hub 20.32 10,183 to about 6,200; the original's tile has 5,857 faces); a zone builds in about twice the time. Over 2,352 random pairs in 20.32
 (radius 4) polygons expanded per search fell 965 to 560 and search time 20..30 %, paths 1 % longer. The original's ground ours lacks stayed within 0.1
 point of its area (`orig%`) but in 18.39, 1.4 to 1.7 %: a walkable AshlandsRibs top (y ~293, -61200,35000) has no link to the ground and is pruned. Interiors cover the original's interior faces as before. DotRecast refuses some watershed contours Recast
-only warns about (two outlines round a hole; "Bad outline", in a town zone of `--survey-interiors towns`): such a tile is built monotone.
+only warns about (two outlines round a hole; "Bad outline", in a town zone of `--survey-interiors towns`), and some polygon steps it throws on
+(a vertex removal whose hole has fewer than three corners: `RcMeshs.Triangulate` indexes a third one, **Verified** against DotRecast 2026.3.1's
+source): such a tile is built monotone, and one refused monotone too is left without polygons rather than failing the zone. **Observed**
+(`navmesh --zone 14,35 --base`): one watershed tile there (from -82944, 14400) threw so and failed the whole zone; built monotone, the zone builds.
 <a id="uncovered-contours"></a>**Uncovered contours** (engine choice, `NavUncoveredArea`): Recast's polygon step ear-clips each contour in plan and, finding no ear left,
 keeps the triangles made so far and only warns ("Bad triangulation"), so the rest of the region gets no polygon. A watershed tile whose polygons
 cover less area in plan than its contours is built monotone too, and the monotone mesh kept when it leaves less uncovered. **Observed** (#1393, zone
@@ -1093,7 +1107,14 @@ cover less area in plan than its contours is built monotone too, and the monoton
 crossed itself and the upper stair (x -37170..-37157, original face 2694 at 699..708) had no polygon, so no path led in or out. Over 10 zones
 (23.22, 20.32, 14.23, 18.35, 19.29, 27.22, 42.22, 21.42, 18.39, 28.60) three tiles change (23.22 two, 21.42 one), each then covered whole; three
 others leave the same area uncovered either way (4.5..296 square cells) and stay watershed. `--compare`: 23.22's
-original-only area 985 → 718, ours-only unchanged; 21.42 within 7; the Hub pins unchanged. A walker shut out of its goal whose own polygon is the reachable one
+original-only area 985 → 718, ours-only unchanged; 21.42 within 7; the Hub pins unchanged. A polygon that is not convex (a corner turning against
+the winding) counts as uncovered whole, since the mesh's point test (`ZoneNavMesh.Contains`) takes every polygon as convex. **Observed** (#1430, zone
+19.33, `navmesh --base --probe -57694,8085,60,6`, the reporter's save in `probe --nav walk`): a watershed region's outline touched itself at
+two points on the tile line x -57600; the triangle across the pinch came out inverted and merged into a 6-corner polygon with one reflex corner,
+whose signed area summed whole. Its half-plane test left a band of ground (z 8062..8108, 143 samples the original's tile has) off the mesh. The
+path search still crossed it and every step into it was refused, so the player's squad walked back and forth below the band. Built monotone, the tile
+covers the band (417 samples both) and the walk goes on up the slope. Over the 10 zones above and 19.33 (base data), 4 watershed tiles held a non-convex
+polygon (19.33 one, 27.22 one, 18.39 two) and their monotone builds none, so each is built monotone. A walker shut out of its goal whose own polygon is the reachable one
 nearest the goal walks across it to the point nearest the goal; before, it got no path (`NavigationTests`: a gate's closed door, the polygon up to the wall).
 
 ## Gate codes

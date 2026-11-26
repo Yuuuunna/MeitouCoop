@@ -47,8 +47,12 @@ public sealed partial class ArrestSystem
     /// The faction a looker takes <paramref name="c"/> for: its uniform's while the disguise works (<see cref="DisguiseWorks"/>, not blown), else its
     /// own.
     /// </summary>
-    public static int SeenFaction(CharacterCold c) =>
-        c.DisguiseFaction >= 0 && c.DisguiseLevel > DisguiseWorks && c.RecentlyWanted <= 0 ? c.DisguiseFaction : c.Faction;
+    public static int SeenFaction(CharacterCold c) => WorkingDisguise(c) ? c.DisguiseFaction : c.Faction;
+
+    /// <summary>
+    /// Whether <paramref name="c"/>'s disguise works: a uniform faction, a level above <see cref="DisguiseWorks"/> and not blown.
+    /// </summary>
+    static bool WorkingDisguise(CharacterCold c) => c.DisguiseFaction >= 0 && c.DisguiseLevel > DisguiseWorks && c.RecentlyWanted <= 0;
 
     /// <summary>
     /// The clothing disguise (<c>AI::vfunc_9</c> <c>FUN_1405a51e0</c>, <b>Observed</b>): a uniform hat 0.4, a uniform body armour 0.4 (its faction
@@ -100,7 +104,7 @@ public sealed partial class ArrestSystem
             if (!next[s].Alive || table.Cold(s) is not { } c || !world.IsPlayerFaction(c.Faction)) continue;
             (c.DisguiseLevel, c.DisguiseFaction) = c.Medical is { Dead: true } ? (0, -1) : DisguiseOf(c.Inventory);
             if (c.DisguiseMarks is { } marks) for (int m = 0; m < marks.Length; m++) marks[m] = MathF.Max(0, marks[m] - seconds);
-            if (c.DisguiseFaction < 0 || c.DisguiseLevel <= DisguiseWorks || c.RecentlyWanted > 0 || !Suspect(world, s)) continue;
+            if (c.DisguiseFaction < 0 || c.DisguiseLevel <= DisguiseWorks || c.RecentlyWanted > 0 || !Spottable(world, s)) continue;
             var at = next[s].Position;
             var target = table.IdOf(s);
             var secure = SecureLocation(world, at);
@@ -186,7 +190,7 @@ public sealed partial class ArrestSystem
         {
             if (!FreeGuard(world, w)) return;
             if (Talks) Spotted(world, w, s, BountySpotted);
-            else OrderArrest(world, w, s, CapturesInTown(world, world.Characters.IdOf(w), c));
+            else EngineArrest(world, w, s, c);
             return;
         }
         c.RecentlyWanted = CrimeSystem.RecentlyWantedSeconds;

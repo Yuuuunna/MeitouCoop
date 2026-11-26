@@ -28,18 +28,30 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
     public const float MaxLift = 1000, BuildReach = ConstructionSystem.JoinTownRange;
     readonly Dictionary<string, BuildingBuildData?> _buildings = new(StringComparer.Ordinal);
     readonly Dictionary<string, IReadOnlyList<PlacedMesh>> _parts = new(StringComparer.Ordinal);
-    BuildingBuildData? Data(string id)
+    internal BuildingBuildData? Data(string id)
     {
         if (!_buildings.TryGetValue(id, out var result))
             _buildings[id] = result = db.Find(id)is { Type: Meitou.Data.Fcs.FcsRecordType.Building } r ? BuildingBuildData.From(r) : null;
         return result;
     }
 
-    public PlacementFailure Check(World world, PlayerId? actor, int faction, PlannedBuilding plan)
+    public PlacementFailure Check(World world, PlayerId? actor, int faction, PlannedBuilding plan) =>
+        Check(world, actor, faction, plan, null, -1);
+
+    /// <summary>
+    /// Retains line intent and accepted sites for this command only; every check still reads live authority state.
+    /// </summary>
+    public IConstructionPlacementBatch BeginBatch(World world, PlayerId? actor, int faction, PlaceBuildings command) =>
+        new WorldPlacementBatch(this, world, actor, faction, command);
+
+    /// <summary>
+    /// The ordinary authority check with a command-local wall geometry context.
+    /// </summary>
+    internal PlacementFailure Check(World world, PlayerId? actor, int faction, PlannedBuilding plan, WorldPlacementBatch? batch, int index)
     {
         try
         {
-            return CheckCore(world, actor, faction, plan);
+            return CheckCore(world, actor, faction, plan, batch, index);
         }
         catch (Exception error)when (error is IOException || error is InvalidDataException)
         {
@@ -47,7 +59,7 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
         }
     }
 
-    PlacementFailure CheckCore(World world, PlayerId? actor, int faction, PlannedBuilding plan)
+    PlacementFailure CheckCore(World world, PlayerId? actor, int faction, PlannedBuilding plan, WorldPlacementBatch? batch, int index)
     {
         if (Data(plan.Record)is not { } data || !Finite(plan.Position) || !float.IsFinite(plan.Rotation.LengthSquared()) || MathF.Abs(plan.Rotation.LengthSquared() - 1) > 0.01f || plan.Floor is < 0 or > 3 || !WorldLayout.ZoneOf(plan.Position.X, plan.Position.Z).IsInsideGrid)
             return PlacementFailure.InvalidPlan;
@@ -106,15 +118,7 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
 
         if (!_parts.TryGetValue(plan.Record, out var layout))
             _parts[plan.Record] = layout = WorldObjectLayout.Building(db, db.Find(plan.Record)!, "placement", Vector3.Zero, Quaternion.Identity, new BuildingState());
-        bool Joint(BuildingSnapshot other)
-        {
-            if (!data.LinksTogether || other.Owner != faction || Data(other.Record)is not { LinksTogether: true } link)
-                return false;
-            var end = plan.Position + Vector3.Transform(new Vector3(0, 0, data.LinkLength), plan.Rotation);
-            var otherEnd = other.Position + Vector3.Transform(new Vector3(0, 0, link.LinkLength), other.Rotation);
-            return Vector3.DistanceSquared(plan.Position, otherEnd) <= ConstructionSystem.JoinDistanceSquared || Vector3.DistanceSquared(end, other.Position) <= ConstructionSystem.JoinDistanceSquared;
-        }
-
+        bool snappedWall = batch?.IsLine(index) != true && WorldWallSnaps.MatchesGhost(world, service, Data, data, plan);
         var query = new PlacementQuery(data, plan.Position, plan.Rotation, PlacementCheck.YawOf(plan.Rotation), plan.Floor, layout, [], characters, sites, towns(), factionRecord(faction), service)
         {
             On = floor,
@@ -122,9 +126,15 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
             SnappedOn = snappedOn,
             NeedsSnap = !data.HasGunTurret && data.SnapsTo.Count > 0 && db.Find(data.SnapsTo[0])?.GetBool("is node") == true,
             WallPiece = data.LinksTogether,
-            IgnoreSite = other => Joint(other) || snappedOn is not null && data.HasGunTurret && IsWall(other.Record),
-            PassThrough = snappedOn is not null && data.HasGunTurret ? IsWall : null
+            Ignore = snappedWall ? (record, _, _) => IsWall(record) : null,
+            PassThrough = snappedOn is not null && data.HasGunTurret ? IsWall : null,
+            QueuedPassThrough = data.LinksTogether ? IsConnectorOrWedge : null,
         };
+        if (batch is not null)
+        {
+            if (batch.Query(query, index) is not { } prepared) return PlacementFailure.InvalidPlan;
+            query = prepared;
+        }
         // The submitted transform is already the preview's settled transform. A hypothetical corrective nudge must not authorize a floating or buried site.
         if (PlacementCheck.Margins(query)is { Down: < -0.001f } or { Up: < -0.001f })
             return PlacementFailure.NotLevel;
@@ -135,6 +145,11 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
     /// A turret attached to a wall's real node may overlap adjoining wall pieces, as in its preview.
     /// </summary>
     bool IsWall(string record) => Data(record) is { LinksTogether: true };
+
+    /// <summary>
+    /// Only queued connectors and wedges pass an ordinary unsnapped wall ghost.
+    /// </summary>
+    bool IsConnectorOrWedge(string record) => Data(record) is { LinksTogether: true, LinkType: 1 or 2 };
 
     static bool Finite(Vector3 p) => float.IsFinite(p.X) && float.IsFinite(p.Y) && float.IsFinite(p.Z);
     static bool Observed(World world, PlayerId player, int faction, Vector3 position)

@@ -42,11 +42,14 @@ Linux runs DLSS through NGX (`Upscalers/Ngx.cs`): NVIDIA's NGX client library (t
 built into `libmeitou_ngx.so` by `tools/scripts/build-ngx-shim.sh`) over the driver's `libnvidia-ngx.so.1`, with the DLSS
 model `libnvidia-ngx-dlss.so.<version>`; each file is looked for in `MEITOU_DLSS_PATH`, then beside the executable, and
 NGX gets the same two folders to find the model. The client library is linked on Ubuntu 22.04 for releases, so it
-loads on glibc 2.35 and newer; on an older glibc the game logs the loader's error and runs without DLSS. FSR on Linux needs our build of the FidelityFX library ("Frame generation"); our patch changes no shader or
-upscaler logic. FFX's Vulkan backend reports shader model 5.1, so the FSR 3 upscaler never forces wave64 there; its one choice by GPU is
-the history reprojection, a Lanczos lookup table on cards with 32-64 lane subgroups (AMD) and the computed kernel elsewhere (FFX 1.1.4
-`ffx_fsr3upscaler.cpp`, `ffx_vk.cpp`). **Verified** (2026-11-24, RTX 4070, the lookup table forced in a debug build, native scale,
-mean |Laplacian| 19.95 against 19.94): the table path is as sharp. `MEITOU_NGX_LOG=1` prints NGX's whole log (its verbose level).
+loads on glibc 2.35 and newer; on an older glibc the game logs the loader's error and runs without DLSS. FSR on Linux needs our build of the FidelityFX library ("Frame generation"); our patch changes no shader, and of the
+upscaler logic only the history reprojection's kernel. FFX's Vulkan backend reports shader model 5.1, so the FSR 3 upscaler never forces wave64
+there; its one choice by GPU is that kernel: AMD's code takes a Lanczos lookup table on cards with 32-64 lane subgroups (AMD, RADV) and the
+computed kernel elsewhere (FFX 1.1.4 `ffx_fsr3upscaler.cpp`, `ffx_vk.cpp`); our patch takes the computed one everywhere. **Verified** (2026-11-25,
+RTX 4070, issue #1423's save, 2560x1362, Quality, still camera, mean |Laplacian|): AMD's branch forced, the table smears the world (4.42, the
+computed kernel 7.90); the patched branch forced, 7.90. The table read point-sampled or with `texelFetch` gives 7.16 and the computed weight in
+its place 7.90, so its weights go wrong only between table entries, with linear filtering. At native scale the table path is as sharp (19.95
+against 19.94, 2026-11-24). `MEITOU_NGX_LOG=1` prints NGX's whole log (its verbose level).
 NGX is loaded only when the model and the client library are in one of those folders and `MEITOU_DLSS` is not `0`, and
 handed only a device on NVIDIA's own driver (not NVK); without DLSS (other GPU, no NVIDIA driver, no libffi) it is shut
 down at once and the game runs on. Builds copy both to the output folder, never into a publish; the Linux release zip
@@ -99,10 +102,15 @@ swapchain code needs Vulkan headers 1.3.237+, so the script uses Khronos' 1.3.29
   samples (**Observed**: validation VUID-vkCmdDraw-None-09600 otherwise).
 - **Teardown:** the frame-generation context is destroyed before the swapchain context, also when a failed swapchain remake falls
   back to the plain swapchain.
-- **Queues:** AMD's swapchain takes four queues (game, present, image acquire, async compute); we take them all from the graphics
-  family and need at least 3. **Observed** (Iris Xe, Windows, 2026-10-30): the family has 1 queue, so frame generation stays off
-  with a log line. Typical AMD and Intel drivers also expose one graphics queue; AMD's samples take
-  present and async compute from other families.
+- **Queues:** AMD's swapchain takes four roles (game, present, image acquire, async compute), each on its own queue: it rejects any two on one
+  (FFX 1.1.4 `FrameInterpolationSwapchainVK.cpp`), and async compute may be left empty, as it is used only for asynchronous work, which we never
+  allow. The game is the graphics queue; the others come from the graphics family's further queues, then from a compute family without graphics
+  (`VulkanDevice.ComputeQueues`, made only for what the graphics family lacks); present takes the first whose family can present to the
+  window. RADV has one graphics queue, and its compute family has several that can present (Mesa `radv_physical_device.c`, `wsi_common.c`: any
+  family with graphics, compute or transfer). `MEITOU_GRAPHICS_QUEUES=<n>` caps the graphics family's queues. **Observed** (RTX 4070, Linux,
+  gamescope, 2026-11-25): capped at 2, image acquire and async compute on compute family 2, frame generation active, no errors; capped at 1 it
+  stays off with a log line, as NVIDIA's compute family cannot present. Present on a compute queue (RADV) is untested.
+  **Observed** (Iris Xe, Windows, 2026-10-30, before compute queues were taken): one graphics queue, frame generation stayed off.
 - **DLSS:** on Windows DLSS goes through Streamline whichever frame generation runs (NGX, `meitou_ngx.dll`, only where Streamline does not
   load). Under AMD's swapchain Streamline does not see the presents: it logs once "presentCommon() was not observed", and DLSS goes on
   working (**Observed**, 2026-11-17: the picture at the same-state floor, no growth over 96 s). Before the runtime switch, FSR 3 took NGX and

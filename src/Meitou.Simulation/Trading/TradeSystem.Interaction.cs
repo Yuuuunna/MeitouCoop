@@ -340,7 +340,7 @@ public sealed partial class TradeSystem
             if (sell) { squad.Money -= price; Funds(world).Money += price; }
             else { Funds(world).Money -= price; squad.Money += price; }
             receipt = paid;
-            world.Post(playerId, Loc.Tr(sell ? "{1} sold {2} for c.{3}" : "{1} bought {2} for c.{3}", world.ShownName(cold), Units(units, item.ShownName()), price));
+
             _heldDeal = world.TradeObservers.Active ? new HeldDeal(c, t, sell, item.Record, units, price, buyback) : null;
             return true;
         }
@@ -404,7 +404,7 @@ public sealed partial class TradeSystem
             if (item.Contents is null) Take(shop.Window, item, placed);
             Funds(world).Money -= price;
             squad.Money += price;
-            world.Post(playerId, Loc.Tr("{1} bought {2} for c.{3}", world.ShownName(cold), Units(placed, item.ShownName()), price));
+
             ReportDeal(world, c, t, false, item.Record, placed, price, buyback);
         }
 
@@ -515,7 +515,7 @@ public sealed partial class TradeSystem
             if (equipped) Assembly.RefreshEquipment(cold);
             squad.Money -= price;
             Funds(world).Money += price;
-            world.Post(playerId, Loc.Tr("{1} sold {2} for c.{3}", world.ShownName(cold), Units(placed, item.ShownName()), price));
+
             ReportDeal(world, c, t, true, item.Record, placed, price, buyback);
         }
 

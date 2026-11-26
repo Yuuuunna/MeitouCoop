@@ -121,6 +121,10 @@ sealed class BuildMode(PlayerInterface player)
     /// </summary>
     WallSnap? _wallEndSnap, _ghostSnap;
     /// <summary>
+    /// The wall line's end this frame: the snapped point, else the cursor's.
+    /// </summary>
+    Vector3 _wallEnd;
+    /// <summary>
     /// The host building of the <c>is node</c> snap point the current ghost snapped onto; null when not snapped to a building's node.
     /// </summary>
     SnapHost? _ghostSnappedOn;
@@ -495,7 +499,15 @@ sealed class BuildMode(PlayerInterface player)
         var snapshot = player.Session.CurrentSnapshot;
         var query = new PlacementQuery(building, position, rotation, _ghostYaw, on?.Floor ?? 0, host.Parts(building.Id),
             BuildQueue, snapshot.Characters, snapshot.Buildings, host.Towns(), host.PlayerFactionId(), host.Placement)
-        { On = on, Surface = surface, Lift = _ghostLift, PassThrough = surface is null ? null : IsWall };
+        {
+            On = on,
+            Surface = surface,
+            Lift = _ghostLift,
+            PassThrough = surface is null ? null : IsWall,
+            // An unsnapped wall ghost outside a line passes queued connectors and wedges, not placed ones (Verified, FUN_1404283e0,
+            // FUN_140428290); a snapped one passes every wall (SnapToWall).
+            QueuedPassThrough = building.LinksTogether ? IsConnectorOrWedge : null,
+        };
         query = SnapToWall(query) ?? SnapToTarget(host, query, hit, ray) ?? Settled(query);
         _ghostSnappedOn = query.SnappedOn;
 
@@ -549,14 +561,14 @@ sealed class BuildMode(PlayerInterface player)
     PlacementQuery? SnapToWall(PlacementQuery q)
     {
         var building = q.Building;
-        if (building is not { LinksTogether: true, LinkType: 0 or 3 } || Building.WallLine.Find(WallLinks(q.Position), q.Position) is not { } snap)
+        if (building is not { LinksTogether: true, LinkType: 0 or 3 } || Runtime.Placement.WallLine.Find(WallLinks(q.Position), q.Position) is not { } snap)
             return null;
 
         _ghostSnap = snap;
-        var rotation = Building.WallLine.LookRotation(snap.Direction);
+        var rotation = Runtime.Placement.WallLine.LookRotation(snap.Direction);
         var position = snap.Code == 2 ? snap.Point - Vector3.Transform(new Vector3(0, 0, building.LinkLength), rotation) : snap.Point;
-        var ignore = WallIgnore(new WallPiece(building, position, rotation), [snap.Point]);
-        return q with { Position = position, Rotation = rotation, Yaw = PlacementCheck.YawOf(rotation), Ignore = ignore };
+        // A snapped wall ghost outside a line passes every wall (Verified, FUN_140428290, FUN_1404283e0).
+        return q with { Position = position, Rotation = rotation, Yaw = PlacementCheck.YawOf(rotation), Ignore = (record, _, _) => IsWall(record) };
     }
 
     /// <summary>
@@ -766,6 +778,11 @@ sealed class BuildMode(PlayerInterface player)
     bool IsWall(string record) => BuildData(record) is { LinksTogether: true };
 
     /// <summary>
+    /// Whether a BUILDING record is a wall connector or lower wedge (<c>link type</c> 1 or 2).
+    /// </summary>
+    bool IsConnectorOrWedge(string record) => BuildData(record) is { LinksTogether: true, LinkType: 1 or 2 };
+
+    /// <summary>
     /// The ghost settled on the ground by itself (the original nudges it every frame, FUN_1404d1680): the height it keeps is what the placement is
     /// judged at and what a click queues.
     /// </summary>
@@ -806,7 +823,7 @@ sealed class BuildMode(PlayerInterface player)
                     host.Placement.LinkedAround(new Vector2(near.X, near.Z), LevelWallReach), w => !known.Contains(w.Key))
                 .Select(w => (Data: BuildData(w.Record), w.Position, w.Rotation))
             : [];
-        return Building.WallLine.Links(
+        return Runtime.Placement.WallLine.Links(
             BuildQueue.Select(q => (q.Building, q.Position, q.Rotation))
                 .Concat(sites.Select(s => (Data: BuildData(s.Record), s.Position, s.Rotation)).Where(w => w.Data is not null)
                     .Select(w => (w.Data!, w.Position, w.Rotation)))
@@ -814,24 +831,12 @@ sealed class BuildMode(PlayerInterface player)
     }
 
     /// <summary>
-    /// What never blocks a wall piece (<b>Observed</b>, <c>FUN_140427b00</c>): connectors and wedges, and near a snapped joint the walls with a link
-    /// point at that joint.
+    /// What a line's piece <paramref name="piece"/> passes (<b>Verified</b>, <c>FUN_140428290</c>, <c>FUN_1404283e0</c>): connectors and wedges, and
+    /// the walls <paramref name="pass"/> lets through at the line's snapped joints.
     /// </summary>
-    Func<string, Vector3, Quaternion, bool> WallIgnore(WallPiece piece, IReadOnlyList<Vector3> joints) => (record, position, rotation) =>
+    Func<string, Vector3, Quaternion, bool> WallIgnore(int piece, WallJointPass pass) => (record, position, rotation) =>
     {
-        if (BuildData(record) is not { LinksTogether: true } other) return false;
-        if (other.LinkType is 1 or 2) return true;
-
-        var (start, end) = Building.WallLine.Ends(other, position, rotation);
-        foreach (var joint in joints)
-        {
-            if (!Building.WallLine.NearJoint(piece, joint)) continue;
-
-            bool reached = FlatDistance(start, joint) <= Building.WallLine.JointReach || FlatDistance(end, joint) <= Building.WallLine.JointReach;
-            if (reached) return true;
-        }
-
-        return false;
+        return BuildData(record) is { } other && pass.Passes(piece, other, position, rotation);
     };
 
     /// <summary>
@@ -846,30 +851,36 @@ sealed class BuildMode(PlayerInterface player)
     void LayWall(BuildServices host, (BuildingBuildData Master, Vector3 Start, WallSnap? StartSnap, bool Reversed) line, Vector3 hit)
     {
         var end = new Vector3(hit.X, hit.Y + _ghostLift, hit.Z);
-        var endSnap = Building.WallLine.Find(WallLinks(end), end, line.Reversed ? 1 : 2);
+        var endSnap = Runtime.Placement.WallLine.Find(WallLinks(end), end, line.Reversed ? 1 : 2);
         if (endSnap is { } es && FlatDistance(es.Point, line.Start) < 1) endSnap = null;
         _wallEndSnap = endSnap;
-        var pieces = Building.WallLine.Layout(line.Master, BuildData, host.Placement.Ground, line.Start, line.StartSnap, endSnap?.Point ?? end,
-            endSnap, line.Reversed);
-        var joints = new List<Vector3>();
-        if (line.StartSnap is { } s) joints.Add(s.Point);
-        if (endSnap is { } e) joints.Add(e.Point);
-        var snapshot = player.Session.CurrentSnapshot;
-        var towns = host.Towns();
-        string faction = host.PlayerFactionId();
+        _wallEnd = endSnap?.Point ?? end;
+        var pieces = Runtime.Placement.WallLine.Layout(line.Master, BuildData, host.Placement.Ground, line.Start, line.StartSnap, _wallEnd, endSnap,
+            line.Reversed);
+
+        var shortest = Runtime.Placement.WallLine.Shortest(line.Master, BuildData);
+        var pass = new WallJointPass(pieces, shortest, line.StartSnap is null ? null : line.Start, endSnap?.Point);
         bool available = Unlocked().Contains(line.Master.Id);
-        foreach (var piece in pieces)
-        {
-            float yaw = PlacementCheck.YawOf(piece.Rotation);
-            string? refusal = null;
-            var failure = player.LevelEditorPanel.LevelBuild ? PlacementFailure.None
-                : !available ? PlacementFailure.NotAvailable
-                : PlacementCheck.Evaluate(new PlacementQuery(piece.Data, piece.Position, piece.Rotation, yaw, 0, host.Parts(piece.Data.Id),
-                    BuildQueue, snapshot.Characters, snapshot.Buildings, towns, faction, host.Placement)
-                { WallPiece = true, Ignore = WallIgnore(piece, joints) }, out refusal);
-            var hull = host.Placement.Footprint(piece.Data.Id)?.Place(piece.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, yaw));
-            WallPieces.Add((piece, failure, hull, refusal));
-        }
+        for (int i = 0; i < pieces.Count; i++)
+            WallPieces.Add(CheckWallPiece(host, pieces[i], available, WallIgnore(i, pass)));
+    }
+
+    /// <summary>
+    /// One piece of the line run through the ordinary checks (none in the level editor), with its footprint.
+    /// </summary>
+    (WallPiece Piece, PlacementFailure Failure, Vector2[]? Hull, string? Refusal) CheckWallPiece(BuildServices host, WallPiece piece, bool available,
+        Func<string, Vector3, Quaternion, bool> ignore)
+    {
+        var snapshot = player.Session.CurrentSnapshot;
+        float yaw = PlacementCheck.YawOf(piece.Rotation);
+        string? refusal = null;
+        var failure = player.LevelEditorPanel.LevelBuild ? PlacementFailure.None
+            : !available ? PlacementFailure.NotAvailable
+            : PlacementCheck.Evaluate(new PlacementQuery(piece.Data, piece.Position, piece.Rotation, yaw, 0, host.Parts(piece.Data.Id),
+                BuildQueue, snapshot.Characters, snapshot.Buildings, host.Towns(), host.PlayerFactionId(), host.Placement)
+            { WallPiece = true, Ignore = ignore }, out refusal);
+        var hull = host.Placement.Footprint(piece.Data.Id)?.Place(piece.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, yaw));
+        return (piece, failure, hull, refusal);
     }
 
     /// <summary>
@@ -887,17 +898,19 @@ sealed class BuildMode(PlayerInterface player)
                 player.Notice(PlacementCheck.Message(bad.Failure, bad.Refusal), error: true);
                 return true;
             }
-            foreach (var (piece, _, hull, _) in WallPieces) BuildQueue.Add(new QueuedGhost(piece.Data, piece.Position, piece.Rotation, 0, hull));
+            var intent = new WallLineIntent(line.Master.Id, line.Start, _wallEnd, line.StartSnap is not null, _wallEndSnap is not null,
+                line.Reversed);
+            foreach (var (piece, _, hull, _) in WallPieces)
+                BuildQueue.Add(new QueuedGhost(piece.Data, piece.Position, piece.Rotation, 0, hull) { WallLine = intent });
             WallLine = null;
             if (_wallEndSnap is null && line.Master.LinkType != 3)
             {
-                // The chain goes on from the far end of the last piece, snapped to it.
+                // The chain goes on from the far end of the last piece, snapped there along the old line's start to end (Verified, FUN_140428fe0).
                 var last = WallPieces[^1].Piece;
-                var (start, end) = Building.WallLine.Ends(last.Data, last.Position, last.Rotation);
-                var forward = Vector3.Transform(Vector3.UnitZ, last.Rotation);
-                var dir = Vector3.Normalize(new Vector3(forward.X, 0, forward.Z));
+                var (start, end) = Runtime.Placement.WallLine.Ends(last.Data, last.Position, last.Rotation);
+                var dir = ChainDirection(line.Start, _wallEnd);
                 WallLine = line.Reversed
-                    ? (line.Master, start, new WallSnap(start, dir, 2), true)
+                    ? (line.Master, start, new WallSnap(start, -dir, 2), true)
                     : (line.Master, end, new WallSnap(end, dir, 1), false);
             }
             WallPieces.Clear();
@@ -911,6 +924,15 @@ sealed class BuildMode(PlayerInterface player)
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// The horizontal direction from a line's start to its end; zero when they stand on one spot.
+    /// </summary>
+    static Vector3 ChainDirection(Vector3 start, Vector3 end)
+    {
+        var flat = new Vector3(end.X - start.X, 0, end.Z - start.Z);
+        return flat.LengthSquared() < 1e-9f ? Vector3.Zero : Vector3.Normalize(flat);
     }
 
     /// <summary>
@@ -1127,9 +1149,32 @@ sealed class BuildMode(PlayerInterface player)
         player.InterfaceSounds.Sound("Building_Confirm");
         var planned = BuildQueue.Select(q =>
             new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent, GhostBoundsSize(q.Building), q.Outside));
-        player.Say(new PlaceBuildings([.. planned]) { Tick = player.Session.CommandTick, Faction = player.Session.ActiveFaction });
+        player.Say(new PlaceBuildings([.. planned])
+        {
+            Tick = player.Session.CommandTick,
+            Faction = player.Session.ActiveFaction,
+            WallLines = PlannedLines(),
+        });
         BuildQueue.Clear();
         SetBuildMode(false);
+    }
+
+    /// <summary>
+    /// Describes each contiguous wall line once; undo can leave a prefix, and ordinary ghosts keep no line metadata.
+    /// </summary>
+    List<PlannedWallLine> PlannedLines()
+    {
+        var lines = new List<PlannedWallLine>();
+        for (int first = 0; first < BuildQueue.Count; first++)
+        {
+            if (BuildQueue[first].WallLine is not { } intent) continue;
+
+            int end = first + 1;
+            while (end < BuildQueue.Count && ReferenceEquals(BuildQueue[end].WallLine, intent)) end++;
+            lines.Add(new PlannedWallLine(first, end - first, intent));
+            first = end - 1;
+        }
+        return lines;
     }
 
     /// <summary>
@@ -1581,7 +1626,7 @@ sealed class BuildMode(PlayerInterface player)
     /// <summary>
     /// The verbs the selection has for a site (the original's building branch, docs/game/ui-input.md "Context menu verbs"): Build (2) for an
     /// unfinished one (the quick order); finished, a machine's Use (87) or an automatic machine's Auto-Haul (152), a storage's Auto-Haul (124, the
-    /// "Hauling to" job) and Inventory (26), a furnace's Inventory, a turret's Man Turret (146); Dismantle (96); Meitou's Cancel for a site nothing
+    /// "Hauling to" job) and Inventory (26), any other machine's Inventory when it has one, a turret's Man Turret (146); Dismantle (96); Meitou's Cancel for a site nothing
     /// has been delivered to and the building panel's door buttons. Repair (95) shares construction work; town ruins start rebuilding only on an
     /// explicit order.
     /// </summary>
@@ -1609,8 +1654,8 @@ sealed class BuildMode(PlayerInterface player)
     }
 
     /// <summary>
-    /// A finished machine's verbs: a storage's Auto-Haul and Inventory, a furnace's and a research bench's Inventory, a corpse machine's Corpse
-    /// Disposal, a turret's Man Turret.
+    /// A finished machine's verbs: a storage's Auto-Haul and Inventory, any other machine's Inventory when it has an inventory, a corpse machine's
+    /// Corpse Disposal, a turret's Man Turret.
     /// </summary>
     void AddMachineVerbs(List<(string, Action)> verbs, BuildingSnapshot site, IReadOnlyList<CharacterId> selection,
         Simulation.Production.MachineSnapshot machine, bool own)
@@ -1637,10 +1682,10 @@ sealed class BuildMode(PlayerInterface player)
             }
             ));
         }
-        else if (machine.Function == MachineData.ItemFurnaceFunction) verbs.Add(("Inventory", () => OpenStorage(site)));
-        // A research bench's Use (87) is followed by Inventory (26), as for every building with an inventory (FUN_1407a6bc0, Verified): the
-        // research cost is paid from the benches' inventories only (#1342).
-        else if (ProductionWindows.MachineScreen(machine) == "bench") verbs.Add(("Inventory", () => OpenStorage(site)));
+        // Any other machine with an inventory (its inputs, output or storage grid: a mine, farm, well, refinery, crafting or research bench,
+        // furnace, fuel generator or rain collector) has Inventory (26) after its Use, as FUN_1407a6bc0 adds 26 to every building with an
+        // inventory (Verified, #1456); a research cost is paid from the benches' inventories only (#1342).
+        else if (HasInventory(machine)) verbs.Add(("Inventory", () => OpenStorage(site)));
 
         // A corpse machine (function 11) offers Corpse Disposal (136): with Shift the Corpse disposal job (137 and its finder 138), else order 136
         // for every selected character, its queue cleared (FUN_1407fa650 → FUN_1407f9e20).
@@ -1660,6 +1705,14 @@ sealed class BuildMode(PlayerInterface player)
                 { SiteRevision = site.SiteRevision, Tick = player.Session.CommandTick }
                 : new Simulation.Production.UseTurretOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = player.Session.CommandTick })));
     }
+
+    /// <summary>
+    /// Whether a machine has an inventory the Inventory (26) row opens: input sections, an output section, a storage grid or a crafting bench's
+    /// output (a cooking stove has no inputs; a wind generator, battery, light, turret or training dummy has none).
+    /// </summary>
+    internal static bool HasInventory(Simulation.Production.MachineSnapshot machine) =>
+        machine.Inputs.Count > 0 || machine.Output is not null || machine.HasStorage
+        || machine.Function == CraftBench.CraftingFunction;
 
     /// <summary>
     /// The rows of the code mods' job offers for a site (docs/modding.md "Mod jobs"), shown after its verbs (<see cref="ContextMenuWindow.Menu"/>):

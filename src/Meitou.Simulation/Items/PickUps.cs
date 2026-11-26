@@ -100,14 +100,15 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
 
     /// <summary>
     /// The act-out a pick-up or a container's opening works in where the character stands (<see cref="CharacterTask.Idle"/>) is done once the
-    /// item is taken or the container opened.
+    /// item is taken, or the container opened and its window closed again (the pause, <see cref="InventoryPause"/>).
     /// </summary>
     bool ITaskHandler.Done(World world, int slot, CharacterTask task)
     {
         var table = world.Characters;
         if (table.Next[slot].Task != (byte)task) return true;
         return task == CharacterTask.Idle && table.Cold(slot)!.PickingUpItem is null
-                && !world.Players.All.Any(owner => owner.State.OpeningContainer is not null && owner.State.ContainerWalker == table.IdOf(slot));
+                && !world.Players.All.Any(owner => owner.State.OpeningContainer is not null && owner.State.ContainerWalker == table.IdOf(slot))
+                && !(table.Cold(slot)!.Running?.Site is { } site && ContainerAccess.Holds(world, slot, site));
     }
 
     /// <summary>

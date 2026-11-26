@@ -81,6 +81,15 @@ order finished; every sample holds only `finished0` = `5359-gamedata.base`), flo
 `current prog<k>`, and `paid<k>` (**Observed**, [research](../game/buildings-production.md#research)). Meitou (`Saving/ResearchSave`) round-trips all of them;
 progress of research taken off the queue is not saved (as the original).
 
+<a id="variables"></a>**Variables** (BFrizz's Extra Extensions, [dialogue](../game/dialogue.md#variables); **Observed**: the plugin's source and
+disassembly, `FUN_1406c0750` / `FUN_1406bf780` / `FUN_1406c0840` read by disassembly): its `FactionManager::saveGameState` hook (`FUN_140375210`)
+copies every VARIABLE record (type 1000) of the game data into `quick.save` (`createNewData` with the record's own string id and name, then
+`updateFrom`: all its fields, `value` as it now is). `saveGame` (`FUN_140375360`) empties its container first (`clearButDontDestroyPlatoons`),
+so each save holds each variable once. Its `GameWorld::loadAllPlatoons` hook (`FUN_1409eee70`, called only by `loadGame`, not by an import)
+merges each saved VARIABLE over the game data's record of the same type and id (`updateData`; a saved one the data lacks is dropped). Meitou
+(`Saving/VariableSave`): the same; a capture drops the copied save's VARIABLE records and writes the data's last, each under the next number;
+an import drops them, so the data's values apply (Better Banking's page: "Importing your save will reset all variables").
+
 **Blueprint items** (**Verified**: 1954 INVENTORY_ITEM_STATEs in the owner's saves): `base data sid` is the look ITEM (`BLUEPRINT_ITEM`,
 `BLUEPRINT_ITEM_ARMOUR`, ...), `company sid` = `material sid` = the RESEARCH id, `item function` 11. Meitou (`SavedKit`) rebuilds them from the research.
 
@@ -280,9 +289,11 @@ Meitou only (optional "Blood on weapons and gear", [blood-decals.md](../game/blo
 
 Meitou only ([modding](../modding.md#registration-surface) "Character ids"): `meitou-mods/character-ids.json`, written with the other files
 (`SaveLastingIds`, `SaveGame.LastingIds`) only once a code mod asked for a character's id or the loaded save had the file; not a field of any
-original file. UTF-8 JSON `{ "format": 1, "prefix": p, "next": n, "characters": [ { "hand": [type, C, CS, I, S], "id", "record" } ] }`: `hand` the
-character's handle in this save, `id` its lasting id, `record` the string id of the CHARACTER record it was made from, `prefix` the high half of new
-ids and `next` the counter their low half continues from. The capture writes each character with an id under the handle it just wrote it with (a
+original file. UTF-8 JSON `{ "format": 1, "prefix": p, "next": n, "characters": [ { "hand": [type, C, CS, I, S], "id", "record", "tags" } ] }`:
+`hand` the character's handle in this save, `id` its lasting id, `record` the string id of the CHARACTER record it was made from, `tags` (only when
+it has some) an object of the code mods' tags on it, mod id to tag in ordinal order ([modding](../modding.md#registration-surface) "Character
+tags"; on read a tag that is not a non-empty string, or has an empty mod id, is dropped alone), `prefix` the high half of new ids and `next` the
+counter their low half continues from. The capture writes each character with an id under the handle it just wrote it with (a
 character that changed squads has a new handle), then the loaded file's entries whose characters the save keeps unchanged with the same record (an
 NPC platoon never made, a dead player character kept as read); an entry whose handle the save no longer holds is dropped, an id or handle appears
 once, and the prefix and counter are always written. On load an entry is taken only when its handle names a character of the save made from its
@@ -1121,6 +1132,9 @@ yet, is left out. Round trip checked with a throwaway probe (write, read, clear)
 
 - **Global trust**: the original writes no `+0x18` (the float DC_REPUTATION reads and DA_AFFECT_REPUTATION raises). the relation table writes `relation`, `trust`, `trustNeg` and `relationSID` per entry and
   `rank` (`FUN_1406b37b0`, `FUN_1406b3300`, **Observed**). Meitou saves `+0x18` of every faction as `meitou global trust` (float on the GAMESTATE_FACTION, only while not 0).
+- **Player faction**: the GAMESTATE_FACTION with a `known` list, else `204-gamedata.base` (`SaveGame.PlayerFaction`, `SaveFaction.IsPlayer`); a missing
+  relation table does not mark it, since a Meitou import without relations writes every faction without one. Meitou writes `rank` and the relations
+  the world changed for every other faction, adding an entry the saved table lacks (`SaveCapture.UpdateRelations`).
 - **War flag**: the entry's byte `+2` has no key in the original (**Observed**: the relation writer reads none), so a war declared by a dialogue is forgotten on load. Meitou
   writes bool `meitou war<k>` beside `relation<k>` of the faction's table, only while set.
 - **Bed rent**: the global map of last payments (`FUN_1403576c0`, [locks](../game/locks.md#beds)) is referenced by no other function (**Verified**: references to its
