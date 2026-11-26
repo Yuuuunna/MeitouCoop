@@ -517,12 +517,8 @@ public class KidnapInstallTests(ITestOutputHelper output)
         Assert.SkipWhen(InstallData.Install is null, "Kenshi install not found");
 
         var install = InstallData.Install!;
-        // Fixed English names and base-world placements require the unmodded record set.
-        var db = InstallData.BaseGame!;
-        var levels = WorldLevelData.LoadBaseGame(install, includeInteriors: true);
         using var map = TerrainHeightmap.Open(install);
-        var buildings = TownBuildings.Build(db, levels, new BuildingLayouts(db, levels.Interiors), (x, z) => map.HeightAt((float)x, (float)z));
-        var data = PopulationData.Create(db, levels.Towns(), new GeneratedAppearances(db, install.Root), buildings: buildings);
+        var data = InstallPopulation(map, out var levels);
 
         // The terrain, with the floor the navmesh would give round each cage of the raiders' town: Skinhouse HQ's cages stand on upper floors, 87
         // to 95 above the ground, and a cage is reached only within 15 of its height (FixtureRegistry.AtCage). The heightmap's file reader is not
@@ -547,7 +543,7 @@ public class KidnapInstallTests(ITestOutputHelper output)
         world.RunTicks(15);
         var war = population.Wars[faction];
         foreach (var m in population.Wars) m.UpdateTime = m == war ? 0 : 1e9;
-        var heroes = SpawnHeroes(world, population, db, data, new Vector2(outpost.Position.X - HeroesInset, outpost.Position.Z));
+        var heroes = SpawnHeroes(world, population, data.Db, data, new Vector2(outpost.Position.X - HeroesInset, outpost.Position.Z));
         var table = world.Characters;
         foreach (var h in heroes) table.Cold(h.Slot)!.IsPlayer = true;
 
@@ -607,7 +603,7 @@ public class KidnapInstallTests(ITestOutputHelper output)
     static PopulationData InstallPopulation(TerrainHeightmap map, out WorldLevelData levels)
     {
         var install = InstallData.Install!;
-        var db = InstallData.FullLoadOrder!;
+        var db = InstallData.BaseGame!;
         levels = WorldLevelData.LoadBaseGame(install, includeInteriors: true);
         var buildings = TownBuildings.Build(db, levels, new BuildingLayouts(db, levels.Interiors), (x, z) => map.HeightAt((float)x, (float)z));
         return PopulationData.Create(db, levels.Towns(), new GeneratedAppearances(db, install.Root), buildings: buildings);

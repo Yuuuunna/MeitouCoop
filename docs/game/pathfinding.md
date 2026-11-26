@@ -394,6 +394,8 @@ save, zone 43.11, Y-House `16-Newwworld-INGAME`'s `Steps`, `--probe 53497.6,-947
 1022.6) and 766 (ground, y 1009) there, ours had one; a guard on the ramp got a path pulled off its side (a 13-unit drop, refused), then the next start's
 path doubled back to its feet and it circled that point for good. Now its path goes down the ramp to the foot. `--compare` over 8 zones (43.11, 42.22,
 20.32, 18.39, 23.22, 28.60, 18.35, 39.16): area against the original unchanged within 0.03 %, kept polygons up 0.3..2.2 %.
+**Verified** (`navmesh --fingerprint --base` on either side of the step-region rule, and `HubNavmeshTests`). At the Hub's Storm House, separating
+the regions moves two points in each direction between the street and the floor. The door still blocks entry when closed.
 **Cell height 0.5** (engine choice): a span's top is its surface rounded up to a cell, so at height 1 a 5.9 step could come out as the 5-cell climb.
 **Observed** (zone 23.22, Y-House `554-Newwworld-INGAME`): its walkable wall top, 5.9 above the upper floor, joined it; ours-only area 22840 → 1540. A
 climb of 4 cells instead cut Squin's rock top (18.35, RockOut_Rock at 1709) from the hillside it meets (orig-only 1115 → 7369); build time unchanged (zones 18.35, 42.22).
