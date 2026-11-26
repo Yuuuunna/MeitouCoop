@@ -167,7 +167,7 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
                         && Vector3.Distance(table.Next[m].Position, table.Next[s].Position) <= SlaveSaleRange
                         && (t.Context.Actor is null || world.Players.CanControl(t.Context.Actor.Value, id)))
                     {
-                        string name = world.ShownName(mc);
+                        string name = world.ShownName(mc, ShownPlace.Window);
                         rows.Add(new(id, name, SalePrice(mc, t.Price),
                             [(Loc.Tr("Name:"), name), (Loc.Tr("WARNING: Character will become a slave!"), "")], []));
                     }
@@ -178,14 +178,14 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
         {
             foreach (var (id, ac) in AnimalsForSale(world, s, sc))
             {
-                string name = world.ShownName(ac);
+                string name = world.ShownName(ac, ShownPlace.Window);
                 rows.Add(new(id, name, AnimalPrice(ac, t.Price), AnimalPanel(ac), [(name, ""), (Loc.Tr("Age:"), AgeLine(ac))]));
             }
         }
         else
         {
             foreach (var (id, c) in SlavesForSale(world, s, sc))
-                rows.Add(new(id, world.ShownName(c), PurchasePrice(world, c, t.Price, t.Context.Faction),
+                rows.Add(new(id, world.ShownName(c, ShownPlace.Window), PurchasePrice(world, c, t.Price, t.Context.Faction),
                     StatLines(c, StatsEnumerated.Strength, StatsEnumerated.Dexterity, StatsEnumerated.Toughness, StatsEnumerated.MeleeAttack,
                         StatsEnumerated.MeleeDefence),
                     StatLines(c, StatsEnumerated.Labouring, StatsEnumerated.Farming, StatsEnumerated.Cooking, StatsEnumerated.Engineering,

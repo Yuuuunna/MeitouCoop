@@ -322,8 +322,9 @@ sealed class LookPresets(SettingsMenu menu)
             or WorldFrame.DepthOfFieldSwitch => "Medium impact",
         "Night air" or "Night sky" or "Skin" or "Rock smoothing (tessellation)" or "Cloud shadows in fog" or "Bloom strength (0 = game)" or "Lit dust"
             or WorldFrame.BloomSwitch or "Heat haze" or "Blood cells" or WorldFrame.BloodDrawsSlider or "Item icons" or "Fog" or "Bolt tracers"
-            or "Water contact foam, wakes and ripples" or "Light shafts air (0 = none)" or WorldFrame.ShaftQualitySlider or WorldFrame.GiRaysSwitch
-            or WorldFrame.ShadowCascadesSlider or "Reflection range x (game 0.6)" or WorldFrame.ReflectionSamplesSlider or "Hair highlights" or "Cloth sheen"
+            or "Water contact foam, wakes and ripples" or "Light shafts air (0 = none)" or WorldFrame.ShaftQualitySlider
+            or WorldFrame.SmaaQualitySlider or WorldFrame.GiRaysSwitch or WorldFrame.ShadowCascadesSlider or "Reflection range x (game 0.6)"
+            or WorldFrame.ReflectionSamplesSlider or "Hair highlights" or "Cloth sheen"
             or "Lamp warmth" or "Soft grazing sun" or "Contact shadows" or "Glass bottles" or "Haze" or "Advanced materials" or "Mesh welding"
             or WorldFrame.FilteringSlider or WorldFrame.ObjectDistanceSlider or "Foliage draw distance x" or "Grass draw distance x"
             or "Large foliage range (F6 Meitou)" or "Medium foliage range" or "Small foliage range" or "Landmark distance (Meitou)"
@@ -331,7 +332,7 @@ sealed class LookPresets(SettingsMenu menu)
             or WorldFrame.GrassDensitySlider or "Impostor distance (F7 Meitou)" or "Large impostor distance (F7 Meitou)"
             or "Ground displacement distance (m)" or WorldFrame.MaterialDistanceSlider or "Character draw distance" or WorldFrame.GroundReliefQualitySlider
             or WorldFrame.VignetteSwitch or WorldFrame.FilmGrainSwitch or WorldFrame.VignetteStrengthSlider or WorldFrame.GrainStrengthSlider
-            => "Low impact",
+            or "High Altitude Clouds" => "Low impact",
         "Far impostors" or "Foliage levels" or "Character levels" or "Weather particles" or "Shadows" => "Faster with Meitou",
         _ when label == WorldFrame.ParticleSliders[0] || label == WorldFrame.ParticleSliders[1] => "Low impact",
         _ when IsLook(label, false) || IsLook(label, true) => "No impact",

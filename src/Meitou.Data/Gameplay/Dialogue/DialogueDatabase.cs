@@ -60,6 +60,11 @@ public static class DialogueEvents
     public static readonly int[] Sight = [3, 4, 17, 27, 34, 36, 40, 66, 67];
 
     /// <summary>
+    /// 15 I_DEFEATED_SQUAD: what a melee striker says at a victim whose blow beat the victim's whole squad (<c>FUN_1404394f0</c>).
+    /// </summary>
+    public const int DefeatedSquad = 15;
+
+    /// <summary>
     /// 70 LOST_LEG: what a character cries when a leg is cut off.
     /// </summary>
     public const int LostLeg = 70;
@@ -90,7 +95,14 @@ public static class DialogueEvents
 /// A DIALOG_ACTION used as a condition: <c>condition name</c> (<c>DialogConditionEnum</c>), <c>compare by</c> (0 ==, 1 &lt;, 2 &gt;), <c>who</c>
 /// (<see cref="Talker"/>) and the reference's val0.
 /// </summary>
-public readonly record struct DialogueCondition(int Condition, int CompareBy, int Who, int Value);
+public readonly record struct DialogueCondition(int Condition, int CompareBy, int Who, int Value)
+{
+    /// <summary>
+    /// The DIALOG_ACTION's <c>tag</c>: the game reads it only for the conditions folded into the tag masks; BFrizz's Extra Extensions' short-term tag
+    /// and stat conditions read it as the tag or stat number (<see cref="ExtraConditions.ReadsTag"/>).
+    /// </summary>
+    public int Tag { get; init; }
+}
 
 /// <summary>
 /// A DIALOG_ACTION used as an effect: <c>action name</c> (<c>DialogActionEnum</c>) and the reference's val0.
@@ -287,6 +299,27 @@ public sealed class DialogueNode
     /// <c>world state</c>: WORLD_EVENT_STATE string ids and the value each must have (val0 not 0).
     /// </summary>
     public IReadOnlyList<(string Id, bool Value)> WorldStates { get; internal set; } = [];
+
+    /// <summary>
+    /// The Extra Extensions variable conditions (<c>variable equals</c>, <c>variable less than</c>, <c>variable greater than</c>), in list order.
+    /// </summary>
+    public IReadOnlyList<VariableTest> Variables { get; internal set; } = [];
+
+    /// <summary>
+    /// The Extra Extensions <c>set variable</c> effects: each variable set to val0.
+    /// </summary>
+    public IReadOnlyList<VariableChange> SetVariables { get; internal set; } = [];
+
+    /// <summary>
+    /// The Extra Extensions <c>add to variable</c> effects: val0 (negative to take away) added to each variable.
+    /// </summary>
+    public IReadOnlyList<VariableChange> AddToVariables { get; internal set; } = [];
+
+    /// <summary>
+    /// The Extra Extensions item actions (<c>take item</c>, <c>take item from squad</c>, <c>destroy item</c>, <c>destroy item from squad</c>), in
+    /// the order its hook runs them.
+    /// </summary>
+    public IReadOnlyList<ItemAction> ItemActions { get; internal set; } = [];
 
     /// <summary>
     /// <c>give item</c>: items and counts (val0).
@@ -706,7 +739,7 @@ public sealed class DialogueDatabase(GameDatabase db)
                 else node.MemoryForbidden |= bit;
                 continue;
             }
-            conditions.Add(new(dc, a.GetInt("compare by"), a.GetInt("who"), c.Values.Value0));
+            conditions.Add(new(dc, a.GetInt("compare by"), a.GetInt("who"), c.Values.Value0) { Tag = tag });
         }
         node.Conditions = conditions;
         return (tagConditions, requiredTags);
@@ -736,6 +769,10 @@ public sealed class DialogueDatabase(GameDatabase db)
         if (itemTyped) node.TargetHasItemFunction = db.Find(typeRefs[0].TargetStringId)!.GetInt("item function");
 
         node.WorldStates = [.. record.GetReferences("world state").Select(r => (r.TargetStringId, r.Values.Value0 != 0))];
+        node.Variables = VariableData.DialogueTests(db, record);
+        node.SetVariables = VariableData.Changes(db, record, "set variable");
+        node.AddToVariables = VariableData.Changes(db, record, "add to variable");
+        node.ItemActions = ItemActionData.Read(record);
         node.GiveItems = [.. record.GetReferences("give item").Select(r => (r.TargetStringId, r.Values.Value0))];
         node.ChangeRelations = [.. record.GetReferences("change relations").Select(r => (r.TargetStringId, r.Values.Value0))];
         node.Unlocks = [.. record.GetReferences("unlocks").Select(r => r.TargetStringId)];

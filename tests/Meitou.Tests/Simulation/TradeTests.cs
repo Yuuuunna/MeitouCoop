@@ -136,14 +136,18 @@ public class TradeTests
         /// </summary>
         public DialogueSystem Dialogue { get; }
 
-        public Bazaar(params FcsRecord[] extra)
+        public Bazaar(params FcsRecord[] extra) : this(false, extra) { }
+
+        public Bazaar(bool heldItems, params FcsRecord[] extra)
         {
             // The NPCs' record says is trader, as a real shopkeeper's: with the dialogue system there, IS_A_TRADER reads it (DialogueSystem.Trades).
             Data = TradeTests.Data([.. Shops, Rec("keeper-t", FcsRecordType.Character, r => r.Bools["is trader"] = true), .. extra]);
             Trade = new TradeSystem(Data);
             Dialogue = new DialogueSystem(Data);
             var ground = new OpenGroundWalkability((_, _) => 150);   // above the water line
-            ITickSystem[] systems = [new MovementSystem(new PathService(ground, true)), Trade, Dialogue];
+            ITickSystem[] systems = heldItems
+                ? [new PlayerSystem(Data), new MovementSystem(new PathService(ground, true)), Trade, Dialogue]
+                : [new MovementSystem(new PathService(ground, true)), Trade, Dialogue];
             World = new SimWorld(new WorldSettings { Seed = 3 }, ground, systems);
             World.Player.Faction = Data.PlayerFaction;
             World.Player.Money = 1000;
@@ -180,7 +184,7 @@ public class TradeTests
 
     sealed class MultiplayerShop : IDisposable
     {
-        public Bazaar Bazaar { get; } = new();
+        public Bazaar Bazaar { get; }
         public SimWorld World => Bazaar.World;
         public TradeSystem Trade => Bazaar.Trade;
         public PlayerId A { get; } = new(2);
@@ -193,8 +197,9 @@ public class TradeTests
         public Shop Shop => Bazaar.SquadOf(Trader).Shop!;
         public Squad Vendor => Bazaar.SquadOf(Trader);
 
-        public MultiplayerShop()
+        public MultiplayerShop(bool heldItems = false)
         {
+            Bazaar = new Bazaar(heldItems);
             int other = Bazaar.Data.RegisterFaction("remote", "Remote", Bazaar.Data.PlayerFaction);
             Bazaar.Data.Relations.PlayerFaction = -1;
             World.Players.Register(A);
@@ -279,9 +284,74 @@ public class TradeTests
         Assert.Equal(1000 - firstView.Stock.Single().UnitPrice, m.World.Players.Find(first)!.State.Money);
         Assert.Equal(1000, m.World.Players.Find(second)!.State.Money);
         Assert.Equal(vendorBefore + 2000, m.Vendor.Money + m.PlayerA.State.Money + m.PlayerB.State.Money);
-        Assert.Contains(m.World.TakeMessages(first), message => message.Contains("bought", StringComparison.Ordinal));
+        Assert.Empty(m.World.TakeMessages(first)); // successful trades no longer post bought/sold messages upstream
         Assert.Empty(m.World.TakeMessages(second));
         Assert.Empty(m.World.TakeMessages());
+    }
+
+    /// <summary>
+    /// Failed purchases still report only to their issuer after successful trade messages were removed.
+    /// </summary>
+    [Fact]
+    public void UnaffordablePurchaseReportsOnlyToTheIssuingPlayer()
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        m.PlayerA.State.Money = 0;
+        long vendor = m.Vendor.Money;
+        var view = m.View(m.A);
+        m.Send(m.A, new BuyItem(view.Stock.Single().Token, 1)
+            { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.StockRevision });
+        m.World.RunTick();
+
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Empty(m.Bazaar.Bag(m.CustomerB).Items);
+        Assert.Single(m.Shop.Stock.Items);
+        Assert.Equal(0, m.PlayerA.State.Money);
+        Assert.Equal(1000, m.PlayerB.State.Money);
+        Assert.Equal(vendor, m.Vendor.Money);
+        Assert.Contains("You can't afford that.", m.World.TakeMessages(m.A));
+        Assert.Empty(m.World.TakeMessages(m.B));
+        Assert.Empty(m.World.TakeMessages());
+    }
+
+    /// <summary>
+    /// The held stock item returns to the registered shop's current projection without a purchase, a ground drop or another player's custody.
+    /// </summary>
+    [Fact]
+    public void Dropping_from_trader_stock_returns_the_item_instead_of_dropping_it()
+    {
+        using var m = new MultiplayerShop(heldItems: true);
+        m.OpenBoth();
+        var view = m.View(m.A);
+        var goods = Assert.Single(view.Stock);
+        long vendor = m.Vendor.Money;
+        m.Send(m.A, new LiftItem(m.CustomerA, ItemOwner.Stock, goods.Token, goods.Quantity)
+        {
+            Tick = 0, ControlledCharacters = [m.CustomerA], Serial = 1, ExpectedHeldSerial = 0,
+            InventoryRevision = view.StockRevision, SessionId = view.SessionId
+        });
+        m.World.RunTick();
+        var held = Assert.IsType<HeldItem>(m.PlayerA.State.Held);
+        Assert.Equal(ItemOwner.Stock, held.From);
+        Assert.Same(m.Shop, held.SourceShop);
+        Assert.Null(m.PlayerB.State.Held);
+        Assert.Null(m.World.Player.Held);
+
+        m.Send(m.A, new DropHeld
+        {
+            Tick = 0, ControlledCharacters = [m.CustomerA], HolderActor = m.CustomerA,
+            Serial = 2, ExpectedHeldSerial = 1, SessionId = view.SessionId
+        });
+        m.World.RunTick();
+
+        Assert.Empty(m.World.GroundItems.All);
+        Assert.Null(m.PlayerA.State.Held);
+        Assert.Null(m.PlayerB.State.Held);
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Equal((goods.Record, goods.Quantity), (Assert.Single(m.Shop.Stock.Items).Record, m.Shop.Stock.Items.Sum(item => item.Quantity)));
+        Assert.Equal(goods.Record, Assert.Single(m.View(m.B).Stock).Record);
+        Assert.Equal((1000L, 1000L, vendor), (m.PlayerA.State.Money, m.PlayerB.State.Money, m.Vendor.Money));
     }
 
     [Fact]

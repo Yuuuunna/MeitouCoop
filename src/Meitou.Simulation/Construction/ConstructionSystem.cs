@@ -353,9 +353,13 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
                 if (place.Plans.Count > 2048 || place.Issuer is not null && Settings.Placement is null)
                     break;
                 var placed = new List<BuildSite>(place.Plans.Count);
-                foreach (var plan in place.Plans)
-                    if (Place(world, plan, faction.Index, place.Issuer)is { } site)
+                var batch = Settings.Placement?.BeginBatch(world, place.Issuer, faction.Index, place);
+                for (int i = 0; i < place.Plans.Count; i++)
+                    if (Place(world, place.Plans[i], faction.Index, place.Issuer, batch, i)is { } site)
+                    {
                         placed.Add(site);
+                        batch?.Accepted(i, site);
+                    }
                 TownForWalls(world, placed, faction.Index);
                 AssignFinalTowns(world, placed);
                 AttachWalls(world.Buildings, Data, placed);
@@ -2196,7 +2200,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
         return sites;
     }
 
-    BuildSite? Place(World world, PlannedBuilding plan, int faction, PlayerId? actor)
+    BuildSite? Place(World world, PlannedBuilding plan, int faction, PlayerId? actor, IConstructionPlacementBatch? batch, int index)
     {
         void Notice(string text) => world.Post(actor ?? PlayerId.Local, text);
         if (!float.IsFinite(plan.Position.X) || !float.IsFinite(plan.Position.Y) || !float.IsFinite(plan.Position.Z) || !float.IsFinite(plan.Rotation.LengthSquared()) || plan.Rotation.LengthSquared() < 1e-6f || plan.Floor < 0)
@@ -2208,7 +2212,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
             return null;
         }
 
-        if (Settings.Placement?.Check(world, actor, faction, plan)is { } invalid && invalid != PlacementFailure.None)
+        if ((batch?.Check(index) ?? Settings.Placement?.Check(world, actor, faction, plan)) is { } invalid && invalid != PlacementFailure.None)
         {
             Notice(PlacementRules.Message(invalid));
             return null;

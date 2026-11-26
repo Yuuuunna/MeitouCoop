@@ -628,6 +628,7 @@ public sealed partial class FixtureRegistry
                 Position = spot.Position,
                 Yaw = spot.Yaw,
                 Marker = spot.Marker,
+                Rotation = Whole(spot.Rotation),
                 UseRange = 15,
                 RecordId = spot.Record ?? "",
                 Indoors = true,
@@ -752,7 +753,7 @@ public sealed partial class FixtureRegistry
                 Owner = owner,
                 Position = at,
                 Yaw = yaw,
-                Rotation = rotation is { } turn && turn.LengthSquared() > 1e-12f ? Quaternion.Normalize(turn) : null,
+                Rotation = Whole(rotation),
                 DoorIndex = i,
                 WantsLock = door?.GetBool("always locks") ?? false,
                 HostRecordId = record.StringId,
@@ -869,13 +870,19 @@ public sealed partial class FixtureRegistry
         Owner = owner,
         Position = at,
         Yaw = TownBuildings.YawOf(rotation),
-        Rotation = rotation.LengthSquared() > 1e-12f ? Quaternion.Normalize(rotation) : null,
+        Rotation = Whole(rotation),
         Marker = WorldObjectLayout.PositionMarker(db, record, at, rotation),
         UseRange = 15,
         RecordId = record.StringId,
         HostRecordId = record.StringId,
         Bed = bed,
     };
+
+    /// <summary>
+    /// A placement turn as a fixture keeps it (<see cref="Fixture.Rotation"/>): normalised, null when there is none or it is degenerate.
+    /// </summary>
+    static Quaternion? Whole(Quaternion? rotation) =>
+        rotation is { } turn && turn.LengthSquared() > 1e-12f ? Quaternion.Normalize(turn) : null;
 
     /// <summary>
     /// How a bed standing on a slope leans its sleeper: the turn that, applied after the sleeper's own yaw about +Y, gives the bed's whole
@@ -971,7 +978,7 @@ public sealed partial class FixtureRegistry
     public static void MarkBadNode(World world, Fixture bed, Vector3 at)
     {
         if (bed.Bed.Nodes is not { Length: >= 2 } nodes) return;
-        var turn = Matrix4x4.CreateRotationY(bed.Yaw);
+        var turn = NodeTurn(bed);
         int best = -1;
         float bestD = BadNodeReach * BadNodeReach;
         for (int i = 0; i < nodes.Length; i++)
@@ -1016,7 +1023,7 @@ public sealed partial class FixtureRegistry
         if (Find(fixtureId) is not { } f) return null;
         if (f.Kind == FixtureKind.Bed || f.UseNodes is not { Length: > 0 } nodes) return PositionMarker(fixtureId, from, now);
 
-        var turn = Matrix4x4.CreateRotationY(f.Yaw);
+        var turn = NodeTurn(f);
         Vector3? best = null;
         float bestD = float.MaxValue;
         foreach (var node in nodes)
@@ -1031,13 +1038,19 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
+    /// How the fixture's use nodes are turned into the world: by its whole rotation where it is known (a bed in a tilted building has its nodes
+    /// tilted with it, as the original's node instances are children of the building), else by its yaw about +Y.
+    /// </summary>
+    static Matrix4x4 NodeTurn(Fixture f) => f.Rotation is { } whole ? Matrix4x4.CreateFromQuaternion(whole) : Matrix4x4.CreateRotationY(f.Yaw);
+
+    /// <summary>
     /// The use node of <paramref name="f"/> nearest <paramref name="from"/> in the world (squared 3D distance), with its facing; null with no nodes.
     /// </summary>
     static (Vector3 At, float Yaw)? Nearest(Fixture f, UseNode[]? nodes, Vector3 from, Func<int, bool>? skip = null)
     {
         if (nodes is null) return null;
 
-        var turn = Matrix4x4.CreateRotationY(f.Yaw);
+        var turn = NodeTurn(f);
         (Vector3 At, float Yaw)? best = null;
         float bestD = float.MaxValue;
         for (int i = 0; i < nodes.Length; i++)
@@ -2133,7 +2146,8 @@ public sealed partial class FixtureRegistry
         if (releaserFaction >= 0 && !world.IsPlayerFaction(releaserFaction) && c.SlaveState != 0)
             c.SlaveOwner = releaserFaction;
 
-        if (jailer && c.IsPlayer && c.SlaveState == 0) world.PostCharacter(c, Loc.Tr("{1} has been released from prison.", world.ShownName(c)));
+        if (jailer && c.IsPlayer && c.SlaveState == 0)
+            world.PostCharacter(c, Loc.Tr("{1} has been released from prison.", world.ShownName(c, ShownPlace.Notice)));
         return true;
     }
 
@@ -2397,7 +2411,7 @@ public sealed partial class FixtureRegistry
     {
         byte before = c.SlaveState;
         if (c.SlaveState == 0 && state == 1 && (c.IsPlayer || world.IsPlayerFaction(c.Faction)))
-            world.PostCharacter(c, Loc.Tr("{1} has been enslaved", world.ShownName(c)));
+            world.PostCharacter(c, Loc.Tr("{1} has been enslaved", world.ShownName(c, ShownPlace.Notice)));
 
         if (state == 2) c.RecentlyWanted = CrimeSystem.RecentlyWantedSeconds;
         if (state > 1 && before != state) c.SlaveSince = world.GameHours;

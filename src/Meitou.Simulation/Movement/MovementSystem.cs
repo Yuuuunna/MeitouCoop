@@ -18,8 +18,9 @@ namespace Meitou.Simulation.Movement;
 /// that speed at once (the nav agent, Observed), speeds up by 15 units/s per second only in combat (<see cref="Acceleration"/>, the combat steering),
 /// and stops at once on arrival.</item>
 /// <item>Separation: the repulsion along self-other is nonzero only closer than R and proportional to 100 x (1 - d/R), over at most
-/// 26 neighbours (Observed); R is twice the footprint radius 4 of a human (<see cref="SeparationRadius"/>), and the scale from that
-/// proportionality to a speed is an engine choice (<see cref="SeparationStrength"/>).</item>
+/// 26 neighbours (Observed); R is the two footprint radii, 8 for two humans (<see cref="SeparationRadius"/>; the nav agent's avoidance circle is
+/// the other's footprint plus its own), and the scale from that proportionality to a speed is an engine choice
+/// (<see cref="SeparationStrength"/>).</item>
 /// <item>Body contact (engine choice; the original only avoids the standing bodies round a character, no physical collision was found:
 /// docs/game/pathfinding.md "Bodies in the way"): two standing bodies (<see cref="BodyShare"/> of their footprints) do not stay overlapped. Each
 /// takes half of the overlap between its stepped position and the other's last position, averaged over the bodies it overlaps, so a walker shoves a
@@ -1325,11 +1326,15 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         var squad = cold.SquadId >= 0 ? world.Squads.Find(cold.SquadId) : null;
         var leader = Followed(world, squad, cold);
 
-        if (leader.IsNone || leader.Slot == i || !table.IsAlive(leader))
+        if (leader.IsNone || !table.IsAlive(leader) || (leader.Slot == i && squad?.Leader == table.IdOf(i)))
         {
             TaskStart.Step(table, i, CharacterTask.Wander);
             return;
         }
+
+        // It stands in for its leader, who is down (carried, often by itself): it follows nobody and waits for its think to give it the leader's
+        // goals.
+        if (leader.Slot == i) return;
 
         // It carries its leader: the squad follows it, it does not follow itself. Nor does the original's: a carried character is down (isDown), the
         // follow rows need it standing (state 7), so no Task_Follow runs and no hold point is written.
@@ -1533,7 +1538,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// </summary>
     static CharacterId Followed(World world, Squad? squad, CharacterCold cold) =>
         !cold.FollowOrder.IsNone ? cold.FollowOrder : cold.Ai is { FollowTarget.IsNone: false } follows ? follows.FollowTarget
-        : Kidnap.ObedientSlave.OwnerOf(world, cold) is { } owner ? owner : squad?.Leader ?? CharacterId.None;
+        : Kidnap.ObedientSlave.OwnerOf(world, cold) is { } owner ? owner
+        : squad is not null ? Population.PopulationSystem.ActingLeaderOf(world, squad)
+        : CharacterId.None;
 
     /// <summary>
     /// The squad whose formation a follower takes its slot in (<c>Task_Follow</c>'s formation test <c>FUN_14033b160</c> and its spot
@@ -1626,7 +1633,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     public const float Acceleration = 15;
 
     /// <summary>
-    /// R of the separation steering: neighbour radius plus margin; a human's footprint radius is 4.
+    /// R of the separation steering between two humans (footprint radius 4 each); a pair's R is its two footprints (<see cref="AddSeparation"/>).
     /// </summary>
     public const float SeparationRadius = 8;
 
@@ -1807,6 +1814,11 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         /// The stepping character's slot.
         /// </summary>
         public int Self;
+
+        /// <summary>
+        /// The stepping character's footprint radius.
+        /// </summary>
+        public float Own;
 
         /// <summary>
         /// Neighbours counted.
@@ -2336,8 +2348,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (s.FollowStepLimit > 0 && s.Speed * dt > s.FollowStepLimit) dt = s.FollowStepLimit / s.Speed;
 
         // Separation from the neighbours of the last tick, visited in the grid's fixed order.
-        var push = new SeparationState { Table = world.Characters, Self = i };
-        world.Grid.Query(p.Position.X, p.Position.Z, SeparationRadius, ref push, AddSeparation);
+        // Those within twice its own footprint (at least two humans' R): a larger body finds the smaller ones round it and gives way itself.
+        var push = new SeparationState { Table = world.Characters, Self = i, Own = Footprint(cold) };
+        world.Grid.Query(p.Position.X, p.Position.Z, MathF.Max(SeparationRadius, 2 * push.Own), ref push, AddSeparation);
 
         // Closing on its spot it is not held off by those standing round it (they are pushed aside as it arrives); a sitter is not moved at all.
         bool seated = Seated(n, cold);
@@ -2409,29 +2422,29 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// One neighbour of the separation query (<see cref="StepBody"/>): its repulsion, and its slot for the body contact.
+    /// One neighbour of the separation query (<see cref="StepBody"/>): its repulsion within the two footprints, and its slot for the body contact.
     /// </summary>
     static void AddSeparation(int other, ref SeparationState s)
     {
         if (other == s.Self || s.Count >= MaxSeparationContributions) return;
 
         var all = s.Table.Previous;
+        var them = s.Table.Cold(other);
         var d = new Vector2(all[s.Self].Position.X - all[other].Position.X, all[s.Self].Position.Z - all[other].Position.Z);
-        float len = d.Length();
-        if (len >= SeparationRadius) return;
+        float len = d.Length(), reach = s.Own + Footprint(them);
+        if (len >= reach) return;
 
         // One on another floor is out of the avoidance list, which holds only bodies within 20 in height (FUN_14085a070).
         if (MathF.Abs(all[s.Self].Position.Y - all[other].Position.Y) >= CombatSteering.FlockHeight) return;
 
         // A carried body is on its carrier's shoulder and a downed or dead one lies out of the flocking list: neither is in anyone's way
         // (docs/game/pathfinding.md "Bodies in the way").
-        if (s.Table.Cold(other) is { } them && (!them.CarriedBy.IsNone || them.Medical is { Incapacitated: true }))
-            return;
+        if (them is not null && (!them.CarriedBy.IsNone || them.Medical is { Incapacitated: true })) return;
 
         s.Near[s.Count++] = other;
 
         // Exactly on top of each other: the lower slot is pushed one way, the other the opposite.
-        s.Sum += (len > 1e-4f ? d / len : (s.Self < other ? Vector2.UnitX : -Vector2.UnitX)) * (100 * (1 - len / SeparationRadius));
+        s.Sum += (len > 1e-4f ? d / len : (s.Self < other ? Vector2.UnitX : -Vector2.UnitX)) * (100 * (1 - len / reach));
     }
 
     /// <summary>
@@ -2652,7 +2665,12 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// <summary>
     /// The solid radius of a body: <see cref="BodyShare"/> of its footprint (a human's when it has no race data).
     /// </summary>
-    static float BodyRadius(CharacterCold cold) => BodyShare * (cold.FootprintRadius > 0 ? cold.FootprintRadius : CombatTuning.DefaultFootprint);
+    static float BodyRadius(CharacterCold cold) => BodyShare * Footprint(cold);
+
+    /// <summary>
+    /// A body's footprint radius (a human's when it has no race data).
+    /// </summary>
+    static float Footprint(CharacterCold? cold) => cold?.FootprintRadius > 0 ? cold.FootprintRadius : CombatTuning.DefaultFootprint;
 
     /// <summary>
     /// How far a character stepped to <paramref name="at"/> is put out of the standing bodies among its separation neighbours (partition-safe: the

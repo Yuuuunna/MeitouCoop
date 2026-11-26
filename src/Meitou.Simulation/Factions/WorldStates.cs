@@ -10,8 +10,9 @@ namespace Meitou.Simulation.Factions;
 /// queries): a state holds when every <c>NPC is</c> unique has its state (and, with <c>player involvement</c>, one other than alive has the player
 /// flag), no <c>NPC is NOT</c> unique has its state (with the player flag needed for an alive one), and each <c>player ally</c> / <c>player enemy</c>
 /// faction is or is not the player's ally (relation ≥ 50) / hostile to it (≤ -30) as the entry says. A unique with no entry is alive and the player
-/// not involved, so a new game answers by the data alone. A code-mod override, while set, answers before these clauses.
-/// The unique table, faction relations and mod-owned override values are saved by their respective owners.
+/// not involved, so a new game answers by the data alone. Extra Extensions variable conditions are ANDed on (<see cref="VariablesHold"/>).
+/// A code-mod override, while set, answers before these clauses. The unique table, faction relations, variables and mod-owned overrides are saved
+/// by their respective owners.
 /// <para>The population refreshes the unique states it reads every tick (<see cref="Refresh"/>, serial; a look's own changes to the table are taken
 /// again at once); a query reads that copy, so the build threads may ask at any time.</para>
 /// </summary>
@@ -27,16 +28,16 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
     volatile Snapshot _current = new(new Dictionary<string, UniqueFact>(StringComparer.Ordinal), [], new Dictionary<string, int>(StringComparer.Ordinal), -1);
 
     /// <summary>
-    /// The unique states (state and player flag by record id) and the player's faction, as taken by <see cref="Refresh"/>.
+    /// The unique facts, faction witnesses and code-mod overrides as taken by <see cref="Refresh"/>, with the world's variable table read live.
     /// </summary>
     sealed record Snapshot(IReadOnlyDictionary<string, UniqueFact> Uniques, FactionFact[] Players,
-        IReadOnlyDictionary<string, int> FactionIndices, int LegacyPlayer, IReadOnlyDictionary<string, bool>? Mods = null);
+        IReadOnlyDictionary<string, int> FactionIndices, int LegacyPlayer, IReadOnlyDictionary<string, bool>? Mods = null, WorldVariables? Variables = null);
 
     /// <summary>
-    /// Takes the unique table's states and the player's faction (serial phase); cheap when nothing changed.
+    /// Takes the unique table's states, the player's relations and code-mod overrides in the serial phase, and binds the world's live variables.
     /// </summary>
-    public void Refresh(UniqueCharacters uniques, int playerFaction, ModWorldStates? mods = null) =>
-        Capture(uniques, [playerFaction], playerFaction, mods);
+    public void Refresh(UniqueCharacters uniques, int playerFaction, ModWorldStates? mods = null, WorldVariables? variables = null) =>
+        Capture(uniques, [playerFaction], playerFaction, mods, variables);
 
     /// <summary>
     /// The state's record, read once (null: not a WORLD_EVENT_STATE).
@@ -52,6 +53,7 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
         if (Find(worldStateId) is not { } state) return false;
         var snapshot = _current;
         if (snapshot.Mods is { } mods && mods.TryGetValue(worldStateId, out bool value)) return value;
+        if (!VariablesHold(state, snapshot.Variables)) return false;
         bool needsFaction = state.PlayerAlly.Count + state.PlayerEnemy.Count > 0
             || state.PlayerInvolvement && (state.NpcIs.Any(n => n.State != 1) || state.NpcIsNot.Any(n => n.State == 1));
         if (!needsFaction) return MatchesUniques(state, snapshot, -1);
@@ -69,6 +71,7 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
         if (Find(worldStateId) is not { } state) return false;
         var snapshot = _current;
         if (snapshot.Mods is { } mods && mods.TryGetValue(worldStateId, out bool value)) return value;
+        if (!VariablesHold(state, snapshot.Variables)) return false;
         var player = snapshot.Players.FirstOrDefault(p => p.Index == faction);
         return player is not null && MatchesUniques(state, snapshot, faction) && MatchesRelations(state, snapshot, player);
     }
@@ -77,8 +80,9 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
     /// <summary>
     /// Player factions are persistent membership/ownership, not the currently connected clients.
     /// </summary>
-    public void Refresh(UniqueCharacters uniques, IEnumerable<int> playerFactions, int legacyPlayerFaction = -1, ModWorldStates? mods = null) =>
-        Capture(uniques, playerFactions.Where(relations.Contains).Distinct().Order().ToArray(), legacyPlayerFaction, mods);
+    public void Refresh(UniqueCharacters uniques, IEnumerable<int> playerFactions, int legacyPlayerFaction = -1, ModWorldStates? mods = null,
+        WorldVariables? variables = null) =>
+        Capture(uniques, playerFactions.Where(relations.Contains).Distinct().Order().ToArray(), legacyPlayerFaction, mods, variables);
 
 
     sealed record UniqueFact(UniqueState State, bool LegacyPlayer, IReadOnlySet<int> Factions);
@@ -94,6 +98,22 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
         return true;
     }
 
+
+    /// <summary>
+    /// Extra Extensions variable clauses gate both global and faction-specific queries. The variable table is immutable on each write, so a
+    /// dialogue effect is visible to later readers without refreshing faction witnesses or sharing the mutable game database.
+    /// </summary>
+    bool VariablesHold(WorldEventStateData state, WorldVariables? variables)
+    {
+        if (state.VariablesNeverHold) return false;
+
+        foreach (var test in state.Variables)
+        {
+            int value = variables?.Value(db, test.Variable) ?? db.Find(test.Variable)!.GetInt("value");
+            if (!test.Holds(value)) return false;
+        }
+        return true;
+    }
 
     static bool MatchesUniques(WorldEventStateData state, Snapshot snapshot, int faction)
     {
@@ -114,7 +134,7 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
     }
 
 
-    void Capture(UniqueCharacters uniques, int[] players, int legacyPlayer, ModWorldStates? mods)
+    void Capture(UniqueCharacters uniques, int[] players, int legacyPlayer, ModWorldStates? mods, WorldVariables? variables)
     {
         var copy = _current.Uniques;
         if (_uniqueVersion != uniques.Version)
@@ -141,7 +161,7 @@ public sealed class WorldStates(GameDatabase db, FactionRelations relations) : I
             overrides = mods is { Count: > 0 } ? mods.Copy() : null;
             _modVersion = modVersion;
         }
-        _current = new Snapshot(copy, facts, indices, legacyPlayer, overrides);
+        _current = new Snapshot(copy, facts, indices, legacyPlayer, overrides, variables);
     }
 
     long _uniqueVersion = -1;

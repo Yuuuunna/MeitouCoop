@@ -438,7 +438,7 @@ public static class SquadManagement
                     dead.Members.Add(id);
                     cold.SquadId = dead.Id;
                     moved = true;
-                    world.PostFaction(faction, DeathMessage(cold, world.ShownName(cold)));
+                    world.PostFaction(faction, DeathMessage(cold, world.ShownName(cold, ShownPlace.Notice)));
                 }
                 if (moved) Relead(table, squad);
             }

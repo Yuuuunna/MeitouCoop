@@ -34,7 +34,7 @@ public sealed partial class DialogueSystem
         foreach (var (prisoner, name, price) in offers)
         {
             string cost = $" (c.{price.ToString("N0", CultureInfo.InvariantCulture)})";
-            c.Choices.Add((null, name + cost, ShownText.Any ? world.ShownName(prisoner) + cost : null));
+            c.Choices.Add((null, name + cost, ShownText.Any ? world.ShownName(prisoner, ShownPlace.Dialogue) + cost : null));
         }
         c.Choices.Add((null, LeaveChoice, null));
         if (offers.Count == 0) Post(world, c, Loc.Tr("Nobody here to bail out."));

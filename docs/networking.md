@@ -12,7 +12,7 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-29c61c20-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
+The current identity is `meitou-upstream-e820fb87-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
 named mod sounds, cage-click commands, item-tag digests, compressed JSON component envelopes,
 experience rules, corpse-machine sound metadata, sparse binary ragdoll poses, shared authority visuals, counted stack lifts,
 shown-machine hints, turret-shot sound selection, shared item-tag definitions, trail/tint/pulse/audio state and portable WAV playback identities,
@@ -42,6 +42,32 @@ the displayed queue revision and faction; site mutations bind the canonical site
 Worksite views include record, shown name and kind without granting inventory access. `Engineering`/`Attacking` use fields 2107/2108;
 the private `HasMedkit`/`HasSplintKit` details use 2109/2110 only for controlled characters. Paused execution preserves these checks and
 does not advance world ticks; only issuerless authority commands may use the trusted mod paused-handler path.
+
+**Observed** (source): command 156 (`TakeOffShacklesOrder`) binds the wearer's control and membership grants independently of the current
+selection. Execution rechecks the live grant, equipped shackles and open lock, including while paused. Field 2111 (`ShacklesOpen`) is
+private to controlled characters; `ShacklesOff` retains its item identity and is audible only to that character's controller. `Victory`
+uses the existing observable event journal. Replays cannot repeat the inventory mutation or sound.
+
+World field 1073 (`CraftStations`) is an Economy keyed collection indexed by canonical site ID. Names come from the recipient's selected
+faction and allies, then pass the existing manageable-machine filter; another player's selected faction never populates this directory.
+Renaming one station changes only its entry; authorization withdrawal and older baselines obey the existing collection revision fences.
+`DropFromLoot` joins the authority rule digest and remote read-only settings. Inventory pause/focus and the half-second jobs resume delay
+belong to the actual player's valid inventory session; closing a forged or stale session cannot affect another controller.
+
+Extra Extensions variables and saved character mod tags remain authority-owned script/save state. Dialogue preflight checks identity,
+funds, permissions and recruitment capacity before item or variable effects. Visible results use existing inventory, dialogue and world
+components; arbitrary variable/tag tables are not broadcast. Checkpoints preserve these values and their multi-player ownership.
+
+**Observed** (source): character text sources receive the existing `LastingId` (field 2104, eight exact bytes) and the display call's
+`ShownPlace`. Remote UI resolves names through the admitted frontend database without calling local population services. Cache answers
+are scoped to character and place; assigning a smith its first lasting ID also invalidates the server's derived smith-name cache.
+Refreshing a UI text source changes no authoritative character name, ID or state hash and adds no component traffic. Server-generated
+notices, dialogue and shop/smith strings retain their existing text publication contract; already generated text is not retrospectively
+rewritten by a client's source. This interface does not broadcast private character tags or add a per-character table of display strings.
+
+**Verified** (`ShownTextTests`, `PlayerSessionUiTests`, `SmithViewCacheTests`): a lasting ID above 2^53 survives publisher/replica/UI round trip;
+two characters and two display places keep separate answers, source refresh sends no Name/RecordId/LastingId component, withdrawal fences
+an older baseline, and assigning an idle or working smith its first ID refreshes the name without requiring an explicit text refresh.
 
 Trusted code-mod data phases run before derived game content. Both endpoints independently fingerprint the actual merged-record edits
 under `code-data/*`; copying the server's rule strings cannot substitute for running the locally trusted phase. The client reuses the
@@ -225,7 +251,7 @@ do not establish installed-game or renderer acceptance.
 
 ### Incremental component bandwidth
 
-**Observed** (2026-11-26, .NET 11 Release, repository-external deterministic diagnostics): the production `GameStatePublisher`,
+**Observed** (e975a97d baseline, 2026-11-26, .NET 11 Release, repository-external deterministic diagnostics): the production `GameStatePublisher`,
 `GameStateReplica`, `MotionReplicationProducer`, scheduler, bulk/control framing and reverse acknowledgements encode recipient views.
 Each trace covers ten seconds after its initial baseline, world time at 30 Hz, motion at 20 Hz and full/critical captures at 10 Hz.
 All 500 characters are interactive combat actors with independently scattered positions, drift and changing head targets. DrawYaw is
@@ -262,6 +288,33 @@ these complete constructed loads; it is not an attribution of every byte to a si
 No application bytes/s limiter, cadence reduction, quantization or event dropping enforces the target. These traces omit installed Kenshi
 animation/equipment churn, concurrent gameplay command families, player count scaling and impaired links. The 500 KiB/s/player average
 optimization target requires a separate installed-game wire measurement, including cold sync, stable play, reconnect and retransmission.
+
+#### Crafting and interaction increment
+
+**Verified** (2026-11-27 UTC+08, .NET 11 Release, repository-external production codec/publisher/replica diagnostic): a separate ten-second
+fixture uses 500 combat actors, 30 Hz source ticks, 20 Hz motion and 10 Hz full/critical capture. It counts the same application lanes,
+bulk handshake and reverse ACKs, with the separate 96 B/message allowance described above. Each scene preserves 100,000 bit-exact motion
+records, 500 acknowledged checkpoints and 100 full publications, with zero reduced-cadence results. An additional 100 static captures
+emit no component changes, including the station directory, shackle flag and authority rules.
+
+| Paired change | Additional application KiB/s | Additional KiB/s with 96 B/message |
+| --- | ---: | ---: |
+| 128 stations, one rename/s, whole-list representation | 0.7694 | 0.7694 |
+| Same activity, keyed station entries | 0.1177 | 0.1177 |
+| Ten characters' shackle state changes/s | 0.5647 | 0.5647 |
+| Ten new sounds/s over 100 existing turret sounds/s | 0.4395 | 0.4395 |
+| Existing sound background plus station rename, ten shackle changes and ten new sounds/s | 1.0973 | 1.0973 |
+
+Keyed station entries reduce this rename increment by 84.7%; 64- and 128-entry directories have the same steady rename cost. The combined
+fixture delivers all 1,100 sounds exactly once, retaining the new sound kinds and shackle item. Its complete rate is 280.7000 application
+KiB/s, or 320.5250 with the message allowance; entry baseline is 96.302 KiB. It omits the older trace's mod visuals, tags and inventory
+churn, so it neither reruns the 498.00 KiB/s row nor establishes a new total by adding its increment to that row. Starting new sounds from
+an otherwise silent fixture adds event-component overhead; that combined increment is 2.2195 KiB/s. Neither fixture bounds arbitrary play.
+
+**Verified** (the same diagnostic, command round trips): one `TakeOffShacklesOrder` with a role grant is 253 B JSON / 279 B framed reliable
+application data / 375 B with the allowance. A four-piece `PlaceBuildings` is 816/842/938 B; adding one `WallLineIntent` makes it
+984/1010/1106 B, an increment of 168 B per confirmation. These samples exclude receipts and vary with field lengths. Wall-line intent is
+command-only and adds no steady snapshot traffic. No application limiter, precision loss, cadence reduction or event dropping was added.
 
 ### Item actions and shared stock
 

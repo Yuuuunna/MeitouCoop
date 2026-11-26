@@ -67,6 +67,7 @@ public sealed class NavSystem : IDisposable
         }, routeObstacles: () => [.._footprints.Value.Obstacles(levels.Buildings(), levels, _placementHeight), .._footprints.Value.FeatureObstacles(_placementHeight)]);
         _service = new NavMeshService(install, db, levels, Walkability, settings, cache, Runtime, deferPublication);
         Walkability.AllowUnloadedFallback = !deferPublication;
+        Walkability.StreamsZones = deferPublication;
         Walkability.KeepStanding = _service.KeepAt;
         Walkability.NavigationIncarnation = () => _service.Incarnation;
         Walkability.DoorGeometry = new NavDoorGeometry(install, db);

@@ -46,6 +46,9 @@ public sealed class NavAdapter(NavmeshWalkability nav) : IAgentWalkability, Lock
     /// <inheritdoc/>
     public bool TryStand(float x, float z, float nearY, out float y) => nav.TryStand(x, z, nearY, out y);
     /// <inheritdoc/>
+    public bool AwaitsMesh(float x, float z) => nav.AwaitsMesh(x, z);
+
+    /// <inheritdoc/>
     public float? SeatHeight(float x, float z, float y) => nav.SeatHeight(x, z, y);
 
     /// <inheritdoc/>

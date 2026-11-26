@@ -7,22 +7,24 @@ namespace Meitou.Simulation.Production;
 /// <summary>
 /// The Craft tab's Current Smith per bench as the host shows it (<see cref="ProductionSystem.SmithsView"/>, docs/simulation.md "Snapshots"): each
 /// publish after the machines worked or changed reads every bench's smith, his effective level and penalty and the queue, and makes a bench's view
-/// again only when one of those differs; the map is new only when some view or the set of benches did. Exact: a view reads nothing else but the
-/// bench record and the static game data.
+/// again only when one of those differs; a mod's shown name also follows the smith's lasting identity and the text revision. The map is new only
+/// when some view or the set of benches did. Other inputs are the bench record and the static game data.
 /// </summary>
 sealed class SmithViewCache(GameDatabase db)
 {
     /// <summary>
     /// A bench's view and every value it was made from.
     /// </summary>
-    sealed record Entry(Machine Machine, CharacterId Smith, string Name, float Level, int Penalty, CraftOption[] Queue, CraftSmithView View)
+    sealed record Entry(Machine Machine, CharacterId Smith, LastingId Identity, string Name, float Level, int Penalty, CraftOption[] Queue,
+        CraftSmithView View)
     {
         /// <summary>
         /// Whether the view was made from these values (the level by its bits, the queued options by value).
         /// </summary>
-        public bool Matches(Machine machine, CharacterId smith, string name, float level, int penalty, List<CraftJob> queue)
+        public bool Matches(Machine machine, CharacterId smith, LastingId identity, string name, float level, int penalty, List<CraftJob> queue)
         {
-            if (!ReferenceEquals(Machine, machine) || Smith != smith || !string.Equals(Name, name, StringComparison.Ordinal)) return false;
+            if (!ReferenceEquals(Machine, machine) || Smith != smith || Identity != identity
+                || !string.Equals(Name, name, StringComparison.Ordinal)) return false;
             if (!Level.Equals(level) || Penalty != penalty || Queue.Length != queue.Count) return false;
 
             for (int i = 0; i < Queue.Length; i++)
@@ -63,7 +65,8 @@ sealed class SmithViewCache(GameDatabase db)
     public IReadOnlyDictionary<string, CraftSmithView> Of(World world)
     {
         var machines = (world.Machines.Version, world.Machines.Worked);
-        if (_published is not null && _version == machines && _shownRevision == ShownText.Revision) return _published;
+        if (_published is not null && _version == machines && _shownRevision == ShownText.Revision
+            && (!ShownText.Any || IdentitiesMatch(world))) return _published;
 
         _version = machines;
         if (_shownRevision != ShownText.Revision)
@@ -75,6 +78,17 @@ sealed class SmithViewCache(GameDatabase db)
         bool changed = Collect(world);
         if (_published is not null && !changed) return _published;
         return _published = Published();
+    }
+
+    /// <summary>
+    /// A mod may give an idle smith his first lasting ID without changing any machine or refreshing its text source.
+    /// </summary>
+    bool IdentitiesMatch(World world)
+    {
+        foreach (var entry in _entries.Values)
+            if (!world.Characters.TryResolveNext(entry.Smith, out int slot)
+                || world.Characters.Cold(slot)?.LastingId != entry.Identity) return false;
+        return true;
     }
 
     /// <summary>
@@ -92,14 +106,16 @@ sealed class SmithViewCache(GameDatabase db)
                 || world.Characters.Cold(m.Smith.Slot) is not { Stats: { } stats, Medical: { } medical } cold) continue;
             var (level, penalty) = World.EffectiveSkill(cold, medical, stats, (StatsEnumerated)m.Data.Stat);
 
-            if (_entries.TryGetValue(m.Site, out var entry) && entry.Matches(m, m.Smith, cold.Name, level, penalty, state.Queue))
+            if (_entries.TryGetValue(m.Site, out var entry)
+                && entry.Matches(m, m.Smith, cold.LastingId, cold.Name, level, penalty, state.Queue))
             {
                 _fresh.Add((m.Site, entry));
                 continue;
             }
 
-            var view = new CraftSmithView(world.ShownName(cold), (int)level, penalty, Predictions(m, bench, state, level)) { Stat = m.Data.Stat };
-            _fresh.Add((m.Site, new Entry(m, m.Smith, cold.Name, level, penalty, [.. state.Queue.Select(j => j.Option)], view)));
+            string smithName = world.ShownName(cold, ShownPlace.Window);
+            var view = new CraftSmithView(smithName, (int)level, penalty, Predictions(m, bench, state, level)) { Stat = m.Data.Stat };
+            _fresh.Add((m.Site, new Entry(m, m.Smith, cold.LastingId, cold.Name, level, penalty, [.. state.Queue.Select(j => j.Option)], view)));
             changed = true;
         }
 

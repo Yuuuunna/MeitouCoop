@@ -97,6 +97,10 @@ public sealed record GameplayRules
     /// </summary>
     public bool CounterTalk { get; init; } = true;
     /// <summary>
+    /// Allows an authorized looter to drag an item out of the body window onto the ground, with the ordinary theft checks.
+    /// </summary>
+    public bool DropFromLoot { get; init; } = true;
+    /// <summary>
     /// Cage guards spare captives of their own faction when the authority enables the optional rule.
     /// </summary>
     public bool CagesSpareOwn { get; init; }
@@ -174,6 +178,7 @@ public sealed record GameplayRules
             GroundRepair = world.GroundRepair,
             BagSearchFix = world.BagSearchFix,
             CounterTalk = world.CounterTalk,
+            DropFromLoot = world.DropFromLoot,
             CagesSpareOwn = captives?.Settings.SpareOwnFaction ?? false,
             AnimalsPickUp = world.SystemOf<PlayerSystem>()?.AnimalsPickUp ?? false,
             SquadSize = population?.Settings.SquadSizeMultiplier ?? 1,

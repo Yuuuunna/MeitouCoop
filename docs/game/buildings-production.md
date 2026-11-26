@@ -186,8 +186,10 @@ was held by that body (Meitou's contact, [bodies in the way](pathfinding.md#bodi
 none stepping on the spot, the workplaces' operators 20 at tick 9 000 (8 at tick 5 000 before); a Well's worker stands on its node.
 
 Meitou (`SiteReach`): builders 40 (walls 60), operators and storage fetches the `use range`, doubled once stopped, measured
-to the building's footprint hull (engine choice standing in for touching; a building without collision uses its parts' bounds
-hull) or, unknown, its position. A player machine with two or more use nodes is measured instead from its position marker
+to the building's position or its footprint hull, whichever is nearer (the hull stands in for touching; a building without collision uses
+its parts' bounds hull; unknown, the position alone). **Observed** (#1432 save, live game): a `Defensive Wall Ramp IV`'s hull lies 159..188
+off its origin on the wall, so builders standing on the origin, 164 off the hull, never arrived and left every 20 s; four ramps kept 0 of 3
+materials for four game hours. A player machine with two or more use nodes is measured instead from its position marker
 (`ProductionSystem.UseNodeMarker`: the node nearest the worker that stands on the machine's floor within the height limit above, others
 passed over), and its operator or hauler walks to that node; for a machine inside a building the worker must also stand on that building's
 floor, as the node does (`IWalkability.InteriorNear`, engine choice). **Observed** (original 1.0.68, #1180: a Copper Alloy Bench against a
@@ -452,14 +454,16 @@ shows the first failing message in this order (**Verified** unless marked):
   node type (`0x1404dd250`) is 3 for a `gun turret`, else the `node type` of the first `snaps to` record when that is an `is node` record, else
   none (it snaps to `snaps to` buildings). With a node type the update (`0x1404dd7a0`) takes the nearest node of that **node type** (any record,
   `0x14038aca0`) within 300 units 3D, 60 for a `gun turret`, and its position and turn; a turret then turns 180 degrees about its own up
-  (`0x1404dda21` -> `0x1404d4f80`). The `Node Turret` instances sit on wall parts' walkways (`Wall Level 02`: three at x -1.2, y 43.4, turned
+  (`0x1404dda21` -> `0x1404d4f80`). The `Node Turret` instances sit on wall parts' walkways (`Wall Level 02`: three at x -1.2, y 43.4 before scale, turned
   180 degrees about Y; data). The placed building is then mounted on the building it snapped to (`FUN_1404ec160`, **Verified** by decompile):
   class 8 (BCTYPE_TURRET) through `TurretBuilding::setMountedBuilding` (`FUN_140298220`, the `mounted` handle `+0x478`); Meitou records it as
   the site's parent ([turret line of fire](combat.md#line-of-fire-and-the-hit-shape)).
 - **Snap nodes and blue node markers** (**Verified**, `PreviewBuilding_Snapping` vtable `0x1416e1cb8`, `0x1404dd410`, `0x1404ddb43`, `0x1404d0ff0`,
   `0x1404fe160`, `0x14038cdf0`, `0x140388e10`):
   - A building's `is node` child instances (such as `Node Light Mount`, `node type` 5, or `Node Turret`, `node type` 3) are placed at
-    `parent.pos + parent.rot * instance.pos` (unscaled by `scale`) and `parent.rot * instance.rot` (`0x140388e10`).
+    `parent.pos + parent.rot * (instance.pos * scale)` and `parent.rot * instance.rot` (`0x140553fbd` scales the offset by the building's
+    `scale`, `0x140388e10` turns and moves it): `Wall Level 02`'s turret nodes stand 10% further out on Defensive Wall II (scale 1.1), Walls
+    III and IV and their towers (0.85) 15% further in.
   - Without a snap node type (`0x1404dda4e`) the ghost searches its `snaps to` buildings from origin + turn x centre (the cursor point): the
     building of a `snaps to` record under the pointer ray (mask `0x7879e00`) at any distance, else the nearest whose bounding box (Building
     slot `0xf0`) is within squared distance `32400` (`180` units, `0x1404ddb43`, 0 inside the box, `0x1404ec030`), queued ghosts by their
@@ -559,7 +563,8 @@ short; a piece runs from its position along its own +Z for `link length` x `scal
 - **Controls**: click the start, move, click the end (no hold-drag). The first click starts a line for a normal wall, or
   for a single only when snapped (unsnapped singles and selected subsections place as one ordinary ghost). The second
   click queues every piece and, unless the end snapped or the wall is a single, a new line starts at the far end (clicks
-  chain a polyline). Right click drops the line; with no line, Meitou's right click on empty ground drops the chosen item (ghost and list highlight, queue stays; [level-editor](level-editor.md)). The first click posts "Blue arrows point outwards, towards enemy.";
+  chain a polyline), snapped there with the old line's direction from its start (before bend pieces) to its end, negated when backwards
+  (**Verified**, `FUN_140428fe0`). Right click drops the line; with no line, Meitou's right click on empty ground drops the chosen item (ghost and list highlight, queue stays; [level-editor](level-editor.md)). The first click posts "Blue arrows point outwards, towards enemy.";
   arrows (`arrow.mesh`, "bluebuilding", at rot x (0, 30, len/2), turned 180 deg, scale 2) mark each piece. A global flag `DAT_1421337b8` can block the first click.
 - **Pieces** (`FUN_14042b660`): the wall and its `wall subsections`; connector and lower wedge kept apart, the rest with a
   length sorted longest first. A single is used once per line.
@@ -590,9 +595,17 @@ short; a piece runs from its position along its own +Z for `link length` x `scal
   (none for a single) each turned an equal share; connectors at the joint and after each piece only when the line leaves
   on one side (`dot(perp, b) > -0.01` xor backwards, perp = (D.z, 0, -D.x)). Straight runs get no connectors.
 - **Validity**: every piece runs the ordinary checks (footprint, slope as its own pitch: `rot x Y` within `max slope` of
-  up, `FUN_140429510`); one failure refuses the line, pieces are drawn by their own result. Near a snapped joint (pieces
-  within the first/last 120 of the run) walls with a link point within 20 of it do not block; connectors and wedges
-  never block (`FUN_140427b00`, **Observed**). Meitou: level town walls, sites and queued ghosts alike (`BuildMode.WallIgnore`, `PlacementCheck.Blocks`).
+  up, `FUN_140429510`); one failure refuses the line, pieces are drawn by their own result.
+- **What a wall ghost passes** (**Verified**, `FUN_140428290` for buildings, `FUN_1404283e0` for ghosts, `FUN_140427b00`; constants read from
+  the exe): only walls ever pass. A ghost outside a line passes every wall when snapped; unsnapped, only queued connector and wedge ghosts
+  (placed ones block it; Meitou: `PlacementQuery.QueuedPassThrough`). A piece of a line passes its line's other pieces, connectors and wedges, and a wall with a link point nearer (3D) to the line's snapped start or snapped end than 20, or than the
+  shortest piece's length + 20 when that piece is a short (`link type` 4). At the start the pass holds for a piece whose run index is below the
+  number of list entries, from the front, whose lengths (`link length` x `scale`) first sum to 120 or more; at the end for an index above the
+  piece count - 1 minus the entries so taken from the back, or of 0. The list holds the start's bend pieces, the end's, then the run's; bend
+  pieces and their connectors have index 0, every other piece the previous entry's + 1 (the first 0). Meitou: `WallJointPass`, for level town
+  walls, sites and queued ghosts alike (`BuildMode.WallIgnore`, `PlacementCheck.Blocks`). #1447: a Defensive Wall III-V line turning 90
+  degrees or more towards the walls' thick side (-X) overlaps, with its first short, the previous line's second-to-last short (end 40 from the
+  joint), which only the short's reach passes.
 - **Commit**: each piece is queued and becomes its own building and construction site from its own record (`is wall
   gate` -> gate building, else `WallBuilding`). On Confirm and zone load a short/connector/wedge without a parent
   attaches to a nearby wall (`FUN_14029ac50`, links not saved, **Observed**); a child forwards build work and deliveries
@@ -627,7 +640,8 @@ Description box (`DescriptionText`): the BUILDING's `Description`, capitalised u
 `gamedata.base`, `Newwworld.mod` and `rebirth.mod` carries `Description`; 18 also a lowercase one, empty on all but one). 25 of the 228
 research-unlocked base buildings leave it empty (walls and gates II-IV, indoor farms, medical desks, tables, storage barrels, Battery Bank, Wind
 Generator II, Oil Silo, Rain Collector, Storm_House_07); Meitou shows its own translated text for those, and a mod that sets their `Description`
-replaces it (`BuildingDescriptions`).
+replaces it (`BuildingDescriptions`). Meitou ends the box with a blank line and `Mod: {1}` / `Mods: {1}` when mods define or change the record
+(`BuildingDescriptions.WithMods`, as the item tooltip's last row, [ui-screens.md](ui-screens.md#tooltips)).
 Opening the menu pauses the game (a normal pause, the speed buttons resume) and closes the inventory windows
 (**Observed**, in-game).
 

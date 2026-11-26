@@ -310,17 +310,31 @@ sealed partial class PlayerInterface
     /// <paramref name="name"/> itself when no mod adds a source or no world is loaded.
     /// </summary>
     internal string ShownName(string what, string record, string name) =>
-        ShownText.Any && PopulationOf?.Invoke() is { } d ? d.Db.ShownName(what, record, name) : name;
+        ShownName(what, record, name, 0, ShownPlace.Unknown);
 
     /// <summary>
-    /// Character <paramref name="c"/>'s name as shown (<see cref="ShownName(string, string, string)"/>, with the record it was made from).
+    /// Compatible records for presentation. Remote interfaces use their loaded content without consulting a mutable local population.
     /// </summary>
-    internal string ShownName(CharacterSnapshot c) => ShownName("character", c.RecordId, c.Name);
+    Data.GameDatabase? PresentationDb => IsRemoteSession ? Frontend.GameData : PopulationOf?.Invoke()?.Db ?? Frontend.GameData;
 
     /// <summary>
-    /// <paramref name="lead"/>'s name as shown (<see cref="ShownName(CharacterSnapshot)"/>); null when there is no character.
+    /// As <see cref="ShownName(string, string, string)"/>, for one character's name: <paramref name="character"/> its lasting id (0: none known),
+    /// <paramref name="place"/> where it is shown.
     /// </summary>
-    internal string? ShownLeadName(CharacterSnapshot? lead) => lead is null ? null : ShownName(lead);
+    internal string ShownName(string what, string record, string name, ulong character, ShownPlace place) =>
+        ShownText.Any && PresentationDb is { } db ? db.ShownName(what, record, name, character, place) : name;
+
+    /// <summary>
+    /// Character <paramref name="c"/>'s name as shown at <paramref name="place"/> (<see cref="ShownName(string, string, string)"/>, with the record
+    /// it was made from and its lasting id).
+    /// </summary>
+    internal string ShownName(CharacterSnapshot c, ShownPlace place) => ShownName("character", c.RecordId, c.Name, c.LastingId.Value, place);
+
+    /// <summary>
+    /// <paramref name="lead"/>'s name as shown at <paramref name="place"/> (<see cref="ShownName(CharacterSnapshot, ShownPlace)"/>); null when
+    /// there is no character.
+    /// </summary>
+    internal string? ShownLeadName(CharacterSnapshot? lead, ShownPlace place) => lead is null ? null : ShownName(lead, place);
 
     /// <summary>
     /// The name of the backpack <paramref name="lead"/> wears (the item in its <c>backpack_attach</c> section) as shown
@@ -337,6 +351,7 @@ sealed partial class PlayerInterface
     {
         var name = FactionName?.Invoke(faction);
         if (name is null || !ShownText.Any) return name;
+        if (IsRemoteSession) return ShownName("faction", Session.DescribeFaction(faction)?.RecordId ?? "", name);
 
         return PopulationOf?.Invoke() is { } d && faction >= 0 && faction < d.Factions.Count
             ? d.ShownFactionName(faction, name)
@@ -349,6 +364,8 @@ sealed partial class PlayerInterface
     /// </summary>
     internal string ShownFactionName(string name)
     {
+        if (IsRemoteSession)
+            return ShownName("faction", Session.FactionCatalogue.FirstOrDefault(f => f.Name == name)?.RecordId ?? "", name);
         if (!ShownText.Any || PopulationOf?.Invoke() is not { } d) return name;
 
         string record = "";
@@ -668,7 +685,7 @@ sealed partial class PlayerInterface
         b.Text["MoneyAmountText"] = Session.Money is { } money ? "c." + money.ToString("N0", CultureInfo.InvariantCulture) : "—";
 
         // The name bar draws its own lines over the widget (HudPanels).
-        b.Text["NameText"] = lead is null ? "No character selected" : ShownName(lead);
+        b.Text["NameText"] = lead is null ? "No character selected" : ShownName(lead, ShownPlace.Panel);
         b.Properties["NameText"] = new Dictionary<string, string> { ["SkipCaption"] = "true" };
         b.Text["hunger"] = lead?.Body is { } hungry ? $"Hunger {hungry.Hunger:0.00} / 3" : "";
         b.Text["condition"] = lead?.Body is { } status
@@ -710,7 +727,7 @@ sealed partial class PlayerInterface
         {
             if (!c.IsPlayer) continue;
 
-            if (count < 8) b.Text[RosterNameKeys[count]] = ShownName(c);
+            if (count < 8) b.Text[RosterNameKeys[count]] = ShownName(c, ShownPlace.Squad);
             count++;
         }
 
@@ -975,7 +992,7 @@ sealed partial class PlayerInterface
             [UiSlots.Squad] = FaithfulSlot("SquadPanel"),
         };
         var overlay = hud ? _uiHost.Arrange(UiMode, Width, Height, b, slots).ToList() : [];
-        var layers = RecordPortraits.Resolve(overlay).ToLookup(UiHost.LayerOf);
+        var layers = overlay.ToLookup(UiHost.LayerOf);
         controls.InsertRange(0, layers[UiOverlayLayer.Back]);
         controls.AddRange(layers[UiOverlayLayer.Hud]);
         PortraitBar.SquadBarRow = 0;
@@ -992,7 +1009,9 @@ sealed partial class PlayerInterface
 
         // After the screens: a mod's text box may lie in one (screen controls) as well as on the overlay.
         FaithfulScreens.ArrangeOverlayEdits(controls);
-        return controls;
+
+        // Last: the portraits the overlay, the screens' extension controls and the screen overrides ask for share the atlas cells.
+        return [.. RecordPortraits.Resolve(controls)];
     }
 
     /// <summary>
@@ -1039,6 +1058,7 @@ sealed partial class PlayerInterface
         MessageRoller.AddNotice(controls);
         InventoryWindows.AddInventoryDrag(controls);
         ItemsWindow.AddDrag(controls);
+        OrdersPanel.AddJobDrag(controls);
 
         AddUnderLayers(controls);
 

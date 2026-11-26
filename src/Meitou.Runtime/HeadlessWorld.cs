@@ -255,6 +255,7 @@ public sealed class HeadlessWorld : IDisposable
         world.GroundRepair = rules.GroundRepair;
         world.BagSearchFix = rules.BagSearchFix;
         world.CounterTalk = rules.CounterTalk;
+        world.DropFromLoot = rules.DropFromLoot;
         world.Luckyren = rules.Luckyren;
         world.GroundItems.Limit = rules.GroundItemLimit;
         world.Sight.InteriorLampsAllDay = rules.InteriorLampsAllDay;

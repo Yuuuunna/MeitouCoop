@@ -75,6 +75,15 @@ Bounds/range/frustum, Hi-Z occlusion, fog culls and projected-size LOD are disti
 `VramGuard` scales demand under device-local pressure; textures, meshes, scratch and atlases
 must cooperate. Resident mip and mesh detail track projected demand; avoid refine/unload churn.
 FrameScratch overflow must leave the affected view safely rather than writing past allocations.
+Under its pressure zones within 3000 of the eye (`VramGuard.NearReach`) are still laid out, their meshes (the resource rocks and mines among them)
+decoded again and grass pages made while the held use (the driver's figure less the room free in our blocks) stays under 94.5% (`StreamsNear`,
+`FoliageRenderer.StreamsAt`), as for the objects, and the driver's figure stays under the budget less its reserve (mesh uploads ask nothing
+else; textures and scratch check each allocation against the driver's figure). A reload leaves 300 to 380 MB of
+holes in the blocks: gated by the driver's figure, the use sat at 94.6 to 96.1% with 88% held, nothing near was loaded to fill them and the swamp
+stayed bare (#1440). **Observed** (#1440's save, `MEITOU_VRAM_BUDGET_MB=4800`, two quickloads a run): before, no trees after the reloads in the
+4 of 5 runs left at 94.5% or more; after, trees after every reload of 2 runs at 94.3 to 95.2%. Before #1424's change, nothing
+round the eye was laid out or reloaded while the use stayed over 80% (#1424: vegetation, Iron Resources and mines gone until a reload). **Observed**
+(guard held in pressure, 3.6 GB budget, a teleport to Stack): before, no plant near the eye and 6 layouts waiting; after, plants near the eye, 2 waiting.
 Mesh textures stream mips as the objects' do (`MipStreaming`): the once-a-second residency pass offers each group's nearest box distance over
 the mesh's texel size (`MeshTexelScale` of its most stretched part over the material tile) at the group's largest scale, before reading the keys.
 Triplanar and TERRAIN materials and grass sprites keep every mip. **Observed** (VRAM dump, 2026-11-01): 808 MB of foliage textures, all at full

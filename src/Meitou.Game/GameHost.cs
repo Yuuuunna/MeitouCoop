@@ -743,6 +743,7 @@ sealed partial class GameHost(
         LocalSession.World.BagSearchFix = Config.FixBagSearch;
         LocalSession.World.CounterTalk = Config.CounterTalk;
         LocalSession.World.TakeIntoBackpack = Config.TakeIntoBackpack;
+        LocalSession.World.DropFromLoot = Config.DropFromLoot;
         LocalSession.World.ActionLog = ActionLogs.Log;
         LocalSession.Simulation.SetFastSpeeds(Config.FastSpeed, Config.FastestSpeed);
         if (Gpu.Characters is { } nearChars)
@@ -1311,6 +1312,7 @@ sealed partial class GameHost(
         // Kept per item with the shown text revision it was made at, since the race names in it are shown text.
         var specialFoodRaces = new System.Collections.Concurrent.ConcurrentDictionary<string, (int Revision, string Text)>(StringComparer.Ordinal);
         ui.TooltipRuntime.ItemRecordOf = id => PopData?.Db.Find(id);
+        ui.TooltipRuntime.RecordMods = record => PopData?.Db.ModsOf(record) ?? [];
         ui.TooltipRuntime.SpecialFoodRaces = id =>
         {
             if (PopData is not { } d) return "";
