@@ -371,7 +371,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         if (cold.TreatTarget != patient || cold.TreatSplint != splint || n.Task != (byte)CharacterTask.Treat) cold.TreatKit = null;
         TaskStart.Stand(table, slot);
         n.Task = (byte)CharacterTask.Treat;
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.TaskTime = 0;
         cold.TreatTarget = patient;
         cold.TreatSplint = splint;
@@ -567,7 +567,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
 
             // the spot's floor: an upstairs patient is walked to up the stairs, not to the ground below it
             (cold.GoalHeight, cold.GoalHeightAt) = (spot.Y, goal);
-            n.Mode = SpeedMode.Free;
+            n.Mode = cold.RunSpeed;
             n.Flags |= (ushort)MoveFlags.NeedPath;
             n.TaskTime = PursuitSystem.RepathSeconds;
         }

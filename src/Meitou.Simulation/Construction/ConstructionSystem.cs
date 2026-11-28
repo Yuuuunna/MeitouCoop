@@ -1054,7 +1054,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
         ref var n = ref table.Next[slot];
         TaskStart.Stand(table, slot);
         n.Task = (byte)task;
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.TaskTime = 0;
         cold.BuildSite = site.Id;
         cold.BuildBar = 0;
@@ -1241,7 +1241,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
         n.TaskTime -= dt;
         if (n.TaskTime > 0) return;
 
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         WalkTo(world, ref n, cold, goal);
         n.TaskTime = PursuitSystem.RepathSeconds;
     }
@@ -1516,7 +1516,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
         ref var n = ref table.Next[slot];
         TaskStart.Stand(table, slot);
         n.Task = (byte)CharacterTask.Build;
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.TaskTime = 0;
         cold.BuildSite = door.Id;
         cold.BuildBar = 0;
@@ -1566,7 +1566,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
         if (n.TaskTime > 0)
             return true;
         n.Goal = at;
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.Flags |= (ushort)MoveFlags.NeedPath;
         n.TaskTime = PursuitSystem.RepathSeconds;
         return true;
@@ -1750,7 +1750,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
         TaskStart.Stand(table, slot);
         ref var n = ref table.Next[slot];
         TaskStart.Step(table, slot, CharacterTask.FetchMaterials);
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.TaskTime = 0;
         cold.BuildBar = 0;
         cold.FetchSite = source.Site;

@@ -1015,7 +1015,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         ref var n = ref table.Next[slot];
         TaskStart.Stand(table, slot);
         n.Task = (byte)CharacterTask.Operate;
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.TaskTime = 0;
         cold.OperateSite = site.Id;
         // A gunner holds "combatstance" (Verified, Task_UseTurret FUN_1403474f0), not its functionality's clip.
@@ -1164,7 +1164,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         n.TaskTime -= dt;
         if (n.TaskTime > 0) return;
         WalkToSite(ref n, cold, site, GoalOf(world, site, m, n.Position));
-        n.Mode = SpeedMode.Free;
+        n.Mode = cold.RunSpeed;
         n.TaskTime = PursuitSystem.RepathSeconds;
     }
 
